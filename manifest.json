@@ -1,0 +1,51 @@
+{
+  "_comment": "Replace every occurrence of YOUR-PROJECT.vercel.app with your real Vercel domain before pasting this into Slack. There are three: slash command, interactivity, and nothing else — search for 'YOUR-PROJECT' to check.",
+  "display_information": {
+    "name": "Task Manager",
+    "description": "Create, assign and track tasks without leaving Slack.",
+    "background_color": "#1f2937"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Task Manager",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/todo",
+        "url": "https://YOUR-PROJECT.vercel.app/api/slack/events",
+        "description": "Create a task",
+        "usage_hint": "[optional task title]",
+        "should_escape": false
+      }
+    ],
+    "shortcuts": [
+      {
+        "name": "Create task from message",
+        "type": "message",
+        "callback_id": "create_task_from_message",
+        "description": "Turn this message into a tracked task"
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "commands",
+        "chat:write",
+        "chat:write.public",
+        "im:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://YOUR-PROJECT.vercel.app/api/slack/events"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
