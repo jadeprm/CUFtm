@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>งานจุฬาฯแฟร์ · Chula Fair Tasks</title>
+<meta name="description" content="Task tracker for the Chulalongkorn University Fair committee.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<!-- Signed out ------------------------------------------------------------->
+<div id="auth-view" class="auth-wrap" hidden>
+  <form class="auth" id="auth-form" autocomplete="off">
+    <h1 id="auth-title">เข้าสู่ระบบ</h1>
+    <div id="auth-notice" class="notice err" hidden></div>
+
+    <!-- step 1: who are you -->
+    <div class="field" id="step-username">
+      <label for="in-username" data-t="username">ชื่อผู้ใช้</label>
+      <input type="text" id="in-username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    </div>
+
+    <!-- step 2: recognised -->
+    <div id="step-known" hidden>
+      <div class="who">
+        <span class="avatar" id="auth-avatar"></span>
+        <div><b id="auth-name"></b><br><small id="auth-sub" style="color:var(--ink-faint)"></small></div>
+      </div>
+      <p class="hint" id="auth-help" style="margin-top:12px"></p>
+
+      <div class="field" id="field-password" style="margin-top:10px">
+        <label for="in-password" data-t="password">รหัสผ่าน</label>
+        <input type="password" id="in-password" autocomplete="current-password">
+      </div>
+      <div class="field" id="field-confirm" style="margin-top:10px" hidden>
+        <label for="in-confirm" data-t="confirmPassword">ยืนยันรหัสผ่าน</label>
+        <input type="password" id="in-confirm" autocomplete="new-password">
+      </div>
+      <p class="hint" id="pw-rules" style="margin-top:8px"></p>
+    </div>
+
+    <button type="submit" class="btn primary" id="auth-submit">ถัดไป</button>
+    <button type="button" class="link" id="auth-forgot" hidden></button>
+    <button type="button" class="link" id="auth-back" hidden data-t="back">ย้อนกลับ</button>
+
+    <div class="lang-toggle" style="align-self:center;margin-top:4px">
+      <button type="button" data-lang="th">ไทย</button>
+      <button type="button" data-lang="en">EN</button>
+    </div>
+  </form>
+</div>
+
+<!-- Signed in -------------------------------------------------------------->
+<div id="app-view" hidden>
+  <header class="topbar">
+    <div class="topbar-in">
+      <div class="brand"><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span></div>
+
+      <nav class="tabs" id="tabs">
+        <a href="#/mine" data-page="mine" data-t="navMine">งานของฉัน</a>
+        <a href="#/all" data-page="all" data-t="navAll">งานทั้งหมด</a>
+        <a href="#/calendar" data-page="calendar" data-t="navCalendar">ปฏิทิน</a>
+        <a href="#/profile" data-page="profile" data-t="navProfile">โปรไฟล์</a>
+        <a href="#/admin" data-page="admin" data-t="navAdmin" id="tab-admin" hidden>จัดการผู้ใช้</a>
+      </nav>
+
+      <div class="topbar-right">
+        <div class="lang-toggle">
+          <button type="button" data-lang="th">ไทย</button>
+          <button type="button" data-lang="en">EN</button>
+        </div>
+
+        <div class="bell" style="position:relative">
+          <button class="btn ghost" id="bell-btn" aria-label="Notifications">🔔<span class="count" id="bell-count" hidden>0</span></button>
+          <div class="pop" id="bell-pop" hidden>
+            <header>
+              <b data-t="notifications">การแจ้งเตือน</b>
+              <button class="btn ghost sm" id="mark-read" data-t="markAllRead">อ่านทั้งหมดแล้ว</button>
+            </header>
+            <div class="items" id="bell-items"></div>
+          </div>
+        </div>
+
+        <a href="#/profile" class="avatar" id="me-avatar" title="Profile"></a>
+        <button class="btn ghost sm" id="sign-out" data-t="signOut">ออกจากระบบ</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+
+<script src="./i18n.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

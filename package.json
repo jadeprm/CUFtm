@@ -1,20 +1,16 @@
 {
-  "name": "slack-task-manager",
-  "version": "1.0.0",
+  "name": "fair-tasks",
+  "version": "2.0.0",
   "private": true,
-  "description": "A task manager that lives inside Slack. Deploys free to Vercel.",
+  "description": "Task tracker for the Chulalongkorn University Fair committee.",
   "type": "module",
   "engines": {
     "node": "22.x"
   },
   "scripts": {
-    "dev": "node --watch app.js",
-    "start": "node app.js",
-    "test": "node test/e2e.mjs"
+    "test": "node test/run.mjs"
   },
   "dependencies": {
-    "@slack/bolt": "^4.7.3",
-    "@vercel/slack-bolt": "^1.7.0",
-    "dotenv": "^16.4.7"
+    "@neondatabase/serverless": "^1.0.1"
   }
 }

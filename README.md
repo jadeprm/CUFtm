@@ -1,107 +1,135 @@
-# Slack Task Manager
+# Fair Tasks
 
-A task manager that lives inside Slack. Create tasks from a slash command or straight off a message, assign them, and move them through To do → In Progress → Done without leaving the channel.
+A task tracker for the fair committee. Thai and English, accounts driven by your Google Sheet, departments from the org chart, a calendar, and reminders.
 
-Built with [Bolt for JavaScript](https://tools.slack.dev/bolt-js/). Deploys free to Vercel via [`@vercel/slack-bolt`](https://www.npmjs.com/package/@vercel/slack-bolt).
-
-**To deploy it, follow [DEPLOY.md](./DEPLOY.md)** — written for a non-programmer, no command line needed.
+No Slack. No paid service. Vercel's free plan and its free Postgres are the whole stack.
 
 ---
 
-## What it does
+## What was built, against your list
 
-| Trigger | Slack payload | What happens |
+| # | Asked for | Built |
 | --- | --- | --- |
-| `/todo`, or `/todo fix the login bug` | `command` | Opens the task form, title prefilled from whatever followed the command |
-| More actions (⋯) → **Create task from message** | `message_action` | Opens the same form, prefilled with the message text, its author as assignee, and a link back to it |
-| The form's **Create** button | `view_submission` | Validates, then posts an interactive card to the chosen conversation |
-| **In Progress** / **Done** / **Reopen** | `block_actions` | Rewrites the card in place with the new status |
+| 1 | Thai and English | Full translation, toggle in the header, remembered per person |
+| 2 | Admin page managing users | Directory with access badges, department assignment, suspend, password-reset authorisation. Membership and access come from your sheet — see the note below |
+| 3 | Set password on first use; reset via admin | First sign-in sets a password. Forgotten ones need an Admin or Co-Admin to authorise, then the person sets their own. Nobody ever types someone else's password |
+| 4 | Profile page | Picture, display name, position, role, department. Picture and display name are editable |
+| 5 | Tag real users on tasks | Searchable picker with avatars and positions |
+| 6 | Optional time on tasks | Date plus optional time |
+| 7 | Task detail popup | Title, description, due date and time, people, departments, status, reminder settings |
+| 8 | Departments from the org chart | All eleven from your chart, taggable as everyone / heads only / members only, plus "all heads" and "all members" |
+| 9 | Main page of only my work | "My tasks" — tasks you're tagged in, directly or through a department |
+| 10 | Calendar, 1 / 7 / 30 days | With an "only mine" filter |
+| 11 | Reminders, customisable per task | On being added, 7 days before, 1 day before, and on the due date. The creator picks which |
 
-There is no web interface, and there shouldn't be — Slack is the interface.
+### One thing that works differently from the brief
+
+You chose to keep the Google Sheet as the master for accounts. That is a real trade-off, and it means **adding and removing people happens in the sheet, not in the app** — the admin page shows a Sync button and a link to the sheet instead of an "Add user" form.
+
+The reason is honesty about what would otherwise happen: if the app let you set someone's access to Admin, the next sync would silently reset it to whatever the sheet said. A control that quietly undoes itself is worse than no control. So the app refuses that edit and tells you where to make it.
+
+Everything the sheet does not own — passwords, profile pictures, department assignments, suspensions — is owned by the app and is never touched by a sync. That is tested.
 
 ---
 
-## Project layout
+## ⚠️ Change your sheet's sharing first
+
+Your sheet is currently **"Anyone with the link can edit."** Since the sheet decides who gets Admin, anyone who ever sees that link can make themselves Admin here.
+
+Open the sheet → **Share** → change "Anyone with the link" from **Editor** to **Viewer**.
+
+Viewer is all the sync needs. People you've explicitly shared it with can still edit.
+
+---
+
+## Setup
+
+### 1. Replace the old files
+
+Delete everything from the previous version — `api/`, `src/`, `index.html`, `app.js`, `manifest.json`, `test/` — then upload this project. The safest route on GitHub is to delete the old files first, since a leftover file that imports a package no longer listed will fail the build.
+
+Upload `api/`, `lib/`, `public/`, `test/` and `package.json`.
+
+### 2. Connect the database
+
+Vercel → **Storage** → **Neon** → **Create** → connect it to your project. Vercel sets `DATABASE_URL` itself; there is nothing to copy.
+
+Then **Deployments** → top one → **⋯** → **Redeploy**.
+
+### 3. First sign-in
+
+Open your site. Enter the username exactly as it appears in the sheet — `Jade_Pres`. The app pulls the roster automatically on its first request, recognises you, and asks you to set a password.
+
+Everyone else does the same with their own username.
+
+### 4. Hourly reminders
+
+Reminders need something to poke the app each hour, because Vercel's free plan only allows a once-daily schedule.
+
+1. In Vercel → Settings → Environment Variables, add `CRON_SECRET` with any long random string. Redeploy.
+2. Sign up free at [cron-job.org](https://cron-job.org).
+3. Create a job that fetches `https://your-site.vercel.app/api/cron?key=YOUR_SECRET` every hour.
+
+Without this, reminders simply never fire — nothing else breaks. The same endpoint also refreshes the roster from the sheet, so adding someone to the sheet brings them in within the hour without anyone pressing Sync.
+
+---
+
+## How access levels behave
+
+| | Admin | Co-Admin | Editor |
+| --- | --- | --- | --- |
+| Create and edit any task | ✅ | ✅ | ✅ |
+| See the directory | ✅ | ✅ | ✅ |
+| Authorise password resets, suspend, set departments | ✅ | Editors only | ❌ |
+| Act on an Admin or another Co-Admin | ✅ | ❌ | ❌ |
+| Sync from the sheet | ✅ | ✅ | ❌ |
+
+Every one of these is enforced on the server and tested, not just hidden in the interface. Hiding a button is not security; refusing the request is.
+
+---
+
+## Run the tests
+
+```bash
+npm test          # needs a Postgres; set DATABASE_URL
+```
+
+70 checks covering the permission boundaries, the password-reset flow, department tagging, reminder scheduling, and that a sheet sync never destroys passwords, pictures or department assignments.
+
+---
+
+## Files
 
 ```
-api/slack/events.js    The Vercel entry point. Its path IS the Request URL
-                       you give Slack: /api/slack/events
-app.js                 Optional local entry point (Socket Mode)
-manifest.json          Slack app definition — paste into api.slack.com
-src/
-  constants.js         Every callback_id / block_id / action_id
-  task.js              Task shape, id generation, button-value encoding
-  views/
-    taskModal.js       The form, and reading its submission
-    taskCard.js        The task card, and the patcher that updates it
-  listeners/
-    index.js           Wires all four triggers
-    commands/todo.js
-    shortcuts/createTaskFromMessage.js
-    views/taskSubmission.js
-    actions/taskStatus.js
+public/index.html     page shell
+public/styles.css     all styling, both themes
+public/app.js         the whole client
+public/i18n.js        every visible string, th + en
+api/auth.js           sign in, first password, reset
+api/users.js          directory, profile, account management, sheet sync
+api/tasks.js          task CRUD, people and department tagging
+api/notifications.js  the bell
+api/cron.js           hourly reminder run
+api/meta.js           department tree
+lib/db.js             schema and connection
+lib/auth.js           password hashing, sessions, permission rules
+lib/sheet.js          Google Sheet reader and sync
+lib/departments.js    your org chart, in code
+test/run.mjs          the test suite
 ```
 
-Both entry points call the same `registerListeners`, so local and deployed behaviour can't drift apart.
-
 ---
 
-## The one design decision worth understanding
+## Honest limits
 
-**There is no database, on purpose. The Slack message is the record.**
+**Passwords.** Salted scrypt, HttpOnly cookies, no plaintext anywhere. Sensible for an internal club tool; not bank-grade. There's no two-factor and no rate limiting beyond Vercel's own. Nobody should reuse a password here that protects anything important.
 
-The first version of this app kept tasks in a `Map` in memory. That works on a server that stays running, and breaks completely on free serverless hosting: the function that handles a button click is usually not the one that created the task, and nothing survives between requests. Every card would go dead within minutes.
+**Reminders are in-app.** They appear on the bell and in the list. There is no phone push notification: real web push needs a service worker plus VAPID keys, and on iPhone the site must be added to the Home Screen first. Say the word and I'll add it.
 
-So status changes don't look anything up. When someone clicks a button, Slack's payload includes the card's *current blocks*. `applyStatusToCard` patches those — swaps the status field, restyles the title, replaces the buttons — and `chat.update` writes them back. The task id and due date ride along in the button's `value` (35 characters, against Slack's 2000-character cap), because those two facts can't be read back off the rendered card.
+**No history or undo.** Deleting a task asks once, then it's gone.
 
-What this buys: a card posted months ago still works after any number of redeploys, and there's nothing to pay for, back up, or run migrations against.
+**Free Postgres sleeps.** The first request after a quiet spell takes a few seconds.
 
-What it costs: nothing can query across tasks. No `/todo list`, no "what's overdue", no reminders, no reporting.
+**Anyone with a username and no password set can claim it.** The first person to reach a never-used account sets its password. With an 18-person internal roster that's usually right, but tell people to sign in early rather than leaving accounts unclaimed.
 
----
-
-## Adding a real database
-
-When you want the querying, one file changes shape and one gets added back:
-
-1. Pick free hosted Postgres ([Neon](https://neon.tech), [Supabase](https://supabase.com)) or Redis ([Upstash](https://upstash.com)). All have free tiers that work from serverless functions.
-2. Add a `src/store/taskStore.js` with async `createTask` / `getTask` / `updateTask` / `listTasks`.
-3. Write to it in `listeners/views/taskSubmission.js` after posting the card, storing the returned `{channel, ts}` so you can find the message later.
-4. In `listeners/actions/taskStatus.js`, read the task by id, update it, then rebuild the card with `buildTaskCard` instead of patching. Keep the patch path as a fallback for cards older than the database.
-
-Then `/todo list`, a daily digest and an App Home view all become possible.
-
----
-
-## Other things worth knowing
-
-**Acknowledge within three seconds.** Every listener calls `ack()` before anything slow. Slack shows the user an error past that, and a `trigger_id` — needed to open a modal — expires in three seconds too.
-
-**`private_metadata` carries context through the form.** A `view_submission` payload has no channel or message of its own. The channel id, thread timestamp and source permalink are serialised in when the modal opens and read back on submit. Capped at 3000 characters, so identifiers only.
-
-**Inline validation keeps the form open.** `ack({ response_action: 'errors', errors })` shows errors under the named blocks; a plain `ack()` closes the form. You get one or the other, once.
-
-**Blocks are found by `block_id`, never by index.** Redesigning the card can't corrupt cards already sitting in channels.
-
-**User text is escaped.** Slack mrkdwn treats `&`, `<` and `>` as control characters, so a title like `a < b` would otherwise render wrong or break the block.
-
-**One card, not two.** The assignee is `@`-mentioned in the card, which notifies them, rather than posting a second copy to their DMs that could drift out of sync with the first.
-
----
-
-## Limits to be aware of
-
-- **Non-commercial only** on Vercel's free plan — see [DEPLOY.md](./DEPLOY.md).
-- **One workspace.** A single bot token means one workspace. Distributing the app to others requires implementing Bolt's OAuth `installationStore`.
-- **Retries aren't deduplicated.** Slack retries deliveries it thinks failed. Without storage there's nothing to dedupe against, so a retried submission could post a task twice. Rare, and fixed by the database step above.
-- **Due dates compare in UTC.** For a team spread across timezones, read the user's `tz` via `users.info` and validate against their local date.
-- **Logs last one hour** on Vercel's free plan.
-
----
-
-## Sources
-
-- [Deploying Bolt to Vercel](https://docs.slack.dev/tools/bolt-js/deployments/vercel/) — Slack Developer Docs
-- [`@vercel/slack-bolt`](https://www.npmjs.com/package/@vercel/slack-bolt) — the receiver this uses
-- [Vercel Hobby plan](https://vercel.com/docs/plans/hobby) — free limits and the non-commercial restriction
-- [Escaping text](https://docs.slack.dev/messaging/formatting-message-text) — Slack mrkdwn rules
+**Department heads were guessed** from the ตำแหน่ง column — anyone whose title contains ประธานฝ่าย is marked a head. Check the Users page and untick anyone that's wrong; your choices there survive every sync.
