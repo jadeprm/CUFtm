@@ -1,10 +1,7 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
-
-export const config = {
-  runtime: 'edge',
-};
+import { withNode } from '../lib/http.js';
 
 /**
  * Tasks.
@@ -126,7 +123,7 @@ async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
   }
 }
 
-export default async function handler(request) {
+async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
   const { sql, ready } = getSql();
@@ -231,3 +228,6 @@ export default async function handler(request) {
     return json({ error: 'SERVER', message: 'The database did not respond. Please try again.' }, 500);
   }
 }
+
+/** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
+export default withNode(handler);

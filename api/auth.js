@@ -4,10 +4,7 @@ import {
   newToken, sessionCookie, sessionExpiry,
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
-
-export const config = {
-  runtime: 'edge',
-};
+import { withNode } from '../lib/http.js';
 
 /**
  * Sign in, first-time password setup, password reset, sign out.
@@ -31,7 +28,7 @@ const publicUser = (u) => ({
   lang: u.lang || 'th',
 });
 
-export default async function handler(request) {
+async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
   const { sql, ready } = getSql();
@@ -145,3 +142,6 @@ export default async function handler(request) {
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);
 }
+
+/** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
+export default withNode(handler);

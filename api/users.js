@@ -2,10 +2,7 @@ import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js'
 import { currentUser, canManageAccounts, cannotActOn, ACCESS } from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
 import { isDepartment } from '../lib/departments.js';
-
-export const config = {
-  runtime: 'edge',
-};
+import { withNode } from '../lib/http.js';
 
 /**
  * People: the directory everyone can see, the profile each person owns, and
@@ -35,7 +32,7 @@ const directoryRow = (u) => ({
   resetAllowedBy: u.reset_allowed_by,
 });
 
-export default async function handler(request) {
+async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
   const { sql, ready } = getSql();
@@ -179,3 +176,6 @@ export default async function handler(request) {
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);
 }
+
+/** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
+export default withNode(handler);

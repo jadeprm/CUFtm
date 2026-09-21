@@ -1,9 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
-
-export const config = {
-  runtime: 'edge',
-};
+import { withNode } from '../lib/http.js';
 
 /**
  * The reminder run. Something external calls this every hour — see README,
@@ -53,7 +50,7 @@ const MESSAGES = {
   due: { th: 'ครบกำหนดวันนี้', en: 'Due today' },
 };
 
-export default async function handler(request) {
+async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
   // If a secret is configured it must match, so the endpoint can't be hammered.
@@ -112,7 +109,7 @@ export default async function handler(request) {
       await sql`
         INSERT INTO notifications (id, username, task_id, kind, title, body)
         VALUES (${id}, ${username}, ${task.id}, ${kind}, ${task.title},
-                ${`${MESSAGES[kind].th} / ${MESSAGES[kind].en} —${when}`})`;
+                ${`${MESSAGES[kind].th} / ${MESSAGES[kind].en} — ${when}`})`;
       await sql`
         INSERT INTO reminders_sent (task_id, username, kind)
         VALUES (${task.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
@@ -141,3 +138,6 @@ export default async function handler(request) {
     ...(secret ? {} : { warning: 'Set CRON_SECRET in Vercel and add ?key=… to the ping URL.' }),
   });
 }
+
+/** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
+export default withNode(handler);

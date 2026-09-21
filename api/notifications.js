@@ -1,5 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
+import { withNode } from '../lib/http.js';
 
 /**
  * The bell: a person's own notifications.
@@ -7,7 +8,7 @@ import { currentUser } from '../lib/auth.js';
  *   GET   /api/notifications            my notifications, newest first
  *   PATCH /api/notifications            { ids: [...] } or { all: true } to mark read
  */
-export default async function handler(request) {
+async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
   const { sql, ready } = getSql();
@@ -55,3 +56,6 @@ export default async function handler(request) {
 
   return json({ error: 'METHOD' }, 405);
 }
+
+/** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
+export default withNode(handler);
