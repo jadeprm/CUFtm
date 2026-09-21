@@ -1,4 +1,4 @@
-import { getSql, json, noDatabase, hasDatabase } from '../lib/db.js';
+import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import {
   currentUser, hashPassword, verifyPassword, passwordProblem,
   newToken, sessionCookie, sessionExpiry,
@@ -33,7 +33,7 @@ export default async function handler(request) {
   const { sql, ready } = getSql();
   await ready;
 
-  const url = new URL(request.url);
+  const url = requestUrl(request);
   const action = url.searchParams.get('do');
 
   // On a completely empty database, pull the roster so the first person can sign in.

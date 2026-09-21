@@ -1,4 +1,4 @@
-import { getSql, json, noDatabase, hasDatabase } from '../lib/db.js';
+import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
 
 /**
@@ -55,7 +55,7 @@ export default async function handler(request) {
   // If a secret is configured it must match, so the endpoint can't be hammered.
   const secret = process.env.CRON_SECRET || '';
   if (secret) {
-    const url = new URL(request.url);
+    const url = requestUrl(request);
     const given = url.searchParams.get('key') || request.headers.get('authorization')?.replace(/^Bearer /, '');
     if (given !== secret) return json({ error: 'BAD_KEY' }, 401);
   }

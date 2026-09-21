@@ -1,4 +1,4 @@
-import { getSql, json, noDatabase, hasDatabase } from '../lib/db.js';
+import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
 
@@ -131,7 +131,7 @@ export default async function handler(request) {
   const me = await currentUser(request, sql);
   if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
 
-  const url = new URL(request.url);
+  const url = requestUrl(request);
 
   try {
     if (request.method === 'GET') {
