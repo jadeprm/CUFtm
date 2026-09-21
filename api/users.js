@@ -3,6 +3,10 @@ import { currentUser, canManageAccounts, cannotActOn, ACCESS } from '../lib/auth
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
 import { isDepartment } from '../lib/departments.js';
 
+export const config = {
+  runtime: 'edge',
+};
+
 /**
  * People: the directory everyone can see, the profile each person owns, and
  * the account controls only admins and co-admins get.

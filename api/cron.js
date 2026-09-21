@@ -1,6 +1,10 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
 
+export const config = {
+  runtime: 'edge',
+};
+
 /**
  * The reminder run. Something external calls this every hour — see README,
  * "Hourly reminders".
@@ -108,7 +112,7 @@ export default async function handler(request) {
       await sql`
         INSERT INTO notifications (id, username, task_id, kind, title, body)
         VALUES (${id}, ${username}, ${task.id}, ${kind}, ${task.title},
-                ${`${MESSAGES[kind].th} / ${MESSAGES[kind].en} — ${when}`})`;
+                ${`${MESSAGES[kind].th} / ${MESSAGES[kind].en} —${when}`})`;
       await sql`
         INSERT INTO reminders_sent (task_id, username, kind)
         VALUES (${task.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;

@@ -5,6 +5,10 @@ import {
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
 
+export const config = {
+  runtime: 'edge',
+};
+
 /**
  * Sign in, first-time password setup, password reset, sign out.
  *

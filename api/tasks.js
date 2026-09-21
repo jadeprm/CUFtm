@@ -2,6 +2,10 @@ import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js'
 import { currentUser } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
 
+export const config = {
+  runtime: 'edge',
+};
+
 /**
  * Tasks.
  *
