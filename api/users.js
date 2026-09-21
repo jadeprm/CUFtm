@@ -1,5 +1,5 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
-import { currentUser, canManageAccounts, cannotActOn, ACCESS } from '../lib/auth.js';
+import { currentUser, canManageAccounts, cannotActOn, ACCESS, newToken } from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
 import { isDepartment } from '../lib/departments.js';
 import { withNode } from '../lib/http.js';
@@ -30,6 +30,8 @@ const directoryRow = (u) => ({
   hasPassword: Boolean(u.password_hash),
   resetAllowed: u.reset_allowed,
   resetAllowedBy: u.reset_allowed_by,
+  // Deliberately no calendar_token here: this row is visible to every
+  // signed-in person, and that token grants read access to someone's tasks.
 });
 
 async function handler(request) {
@@ -78,6 +80,10 @@ async function handler(request) {
       patch.lang = body.lang === 'en' ? 'en' : 'th';
     }
 
+    if (body.theme !== undefined) {
+      patch.theme = ['light', 'dark', 'system'].includes(body.theme) ? body.theme : 'system';
+    }
+
     /**
      * Username is the key the sheet, sessions and every task assignment hang
      * off, so it is not editable here. The sheet owns it: change it there and
@@ -92,11 +98,14 @@ async function handler(request) {
         display_name = COALESCE(${patch.displayName ?? null}, display_name),
         avatar       = CASE WHEN ${patch.avatar !== undefined} THEN ${patch.avatar ?? null} ELSE avatar END,
         lang         = COALESCE(${patch.lang ?? null}, lang),
+        theme        = COALESCE(${patch.theme ?? null}, theme),
         updated_at   = now()
       WHERE username = ${me.username}`;
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${me.username}`;
-    return json({ user: directoryRow(fresh) });
+    return json({
+      user: { ...directoryRow(fresh), theme: fresh.theme, calendarToken: fresh.calendar_token || null },
+    });
   }
 
   // ---- account management ------------------------------------------------
@@ -160,6 +169,19 @@ async function handler(request) {
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${target.username}`;
     return json({ user: directoryRow(fresh), did: sets });
+  }
+
+  /**
+   * Issues (or replaces) this person's calendar feed token.
+   *
+   * Calling it again invalidates the old URL, which is the fix if a feed link
+   * ever gets shared further than intended.
+   */
+  if (request.method === 'POST' && action === 'calendar-token') {
+    const token = newToken();
+    await sql`UPDATE users SET calendar_token = ${token}, updated_at = now()
+              WHERE username = ${me.username}`;
+    return json({ calendarToken: token });
   }
 
   // ---- pull the sheet ----------------------------------------------------

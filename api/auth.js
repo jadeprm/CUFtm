@@ -26,6 +26,9 @@ const publicUser = (u) => ({
   isHead: u.is_head,
   avatar: u.avatar || null,
   lang: u.lang || 'th',
+  theme: u.theme || 'system',
+  // Only ever built for the signed-in person, so this is their own token.
+  calendarToken: u.calendar_token || null,
 });
 
 async function handler(request) {

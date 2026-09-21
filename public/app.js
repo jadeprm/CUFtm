@@ -8,6 +8,7 @@
 
   var S = {
     lang: 'th',
+    theme: 'system',
     user: null,
     users: [],
     departments: [],
@@ -23,6 +24,29 @@
     calRange: 7,
     calMineOnly: false,
   };
+
+  /**
+   * Applies the chosen appearance.
+   *
+   * 'system' removes the attribute entirely so the stylesheet's
+   * prefers-color-scheme rules take over; 'light' and 'dark' stamp data-theme,
+   * which every token block is written to respect in both directions.
+   */
+  function applyTheme(theme) {
+    S.theme = ['light', 'dark', 'system'].indexOf(theme) !== -1 ? theme : 'system';
+    if (S.theme === 'system') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', S.theme);
+    try { localStorage.setItem('fair-theme', S.theme); } catch (e) {}
+    document.querySelectorAll('.theme-toggle button').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.theme === S.theme);
+      b.setAttribute('aria-pressed', String(b.dataset.theme === S.theme));
+    });
+  }
+
+  function setTheme(theme) {
+    applyTheme(theme);
+    if (S.user) api('/api/users?do=me', { method: 'PATCH', body: { theme: S.theme } }).catch(function () {});
+  }
 
   var t = function (key) {
     var table = window.STRINGS[S.lang] || window.STRINGS.th;
@@ -130,6 +154,41 @@
     return key;
   }
 
+  /**
+   * Builds the one-click "Add to Google Calendar" URL.
+   * Bangkok never observes daylight saving, so the offset is a constant.
+   */
+  function googleCalUrl(task) {
+    if (!task.dueDate) return null;
+    var p = new URLSearchParams();
+    p.set('action', 'TEMPLATE');
+    p.set('text', task.title);
+
+    var flat = function (iso) { return iso.replace(/-/g, ''); };
+    if (task.dueTime) {
+      var toUtc = function (iso, hhmm) {
+        var a = iso.split('-').map(Number), b = hhmm.split(':').map(Number);
+        var d = new Date(Date.UTC(a[0], a[1] - 1, a[2], b[0], b[1]) - 7 * 60 * 60000);
+        var z = function (n) { return String(n).padStart(2, '0'); };
+        return d.getUTCFullYear() + z(d.getUTCMonth() + 1) + z(d.getUTCDate()) + 'T' +
+               z(d.getUTCHours()) + z(d.getUTCMinutes()) + '00Z';
+      };
+      var hh = Number(task.dueTime.slice(0, 2));
+      var endTime = String((hh + 1) % 24).padStart(2, '0') + task.dueTime.slice(2);
+      var endDate = hh + 1 > 23 ? addDays(task.dueDate, 1) : task.dueDate;
+      p.set('dates', toUtc(task.dueDate, task.dueTime) + '/' + toUtc(endDate, endTime));
+    } else {
+      p.set('dates', flat(task.dueDate) + '/' + flat(addDays(task.dueDate, 1)));
+    }
+
+    var people = (task.assignees || []).map(nameOf).join(', ');
+    var details = [task.description || '', people ? t('assignTo') + ': ' + people : '']
+      .filter(Boolean).join('\n');
+    if (details) p.set('details', details);
+    p.set('ctz', 'Asia/Bangkok');
+    return 'https://calendar.google.com/calendar/render?' + p.toString();
+  }
+
   /* ======================================================================
      Sign in
      ====================================================================== */
@@ -207,11 +266,19 @@
     if (setup) {
       if (password !== $('in-confirm').value) { showAuthNotice(t('errMismatch')); return; }
       api('/api/auth?do=setup', { method: 'POST', body: { username: authState.username, password: password } })
-        .then(function (data) { S.user = data.user; S.lang = data.user.lang || S.lang; boot(); })
+        .then(function (data) {
+          S.user = data.user; S.lang = data.user.lang || S.lang;
+          if (data.user.theme) applyTheme(data.user.theme);
+          boot();
+        })
         .catch(function (err) { showAuthNotice(errText(err.code)); });
     } else {
       api('/api/auth?do=login', { method: 'POST', body: { username: authState.username, password: password } })
-        .then(function (data) { S.user = data.user; S.lang = data.user.lang || S.lang; boot(); })
+        .then(function (data) {
+          S.user = data.user; S.lang = data.user.lang || S.lang;
+          if (data.user.theme) applyTheme(data.user.theme);
+          boot();
+        })
         .catch(function (err) {
           if (err.code === 'RESET_PENDING') {
             authState.known.needsSetup = true;
@@ -246,6 +313,9 @@
   }
   document.querySelectorAll('.lang-toggle button').forEach(function (b) {
     b.addEventListener('click', function () { setLang(b.dataset.lang); });
+  });
+  document.querySelectorAll('.theme-toggle button').forEach(function (b) {
+    b.addEventListener('click', function () { setTheme(b.dataset.theme); });
   });
 
   function renderShell() {
@@ -348,6 +418,7 @@
   function pageTasks(main, mineOnly) {
     main.appendChild(h('div', { class: 'page-head' }, [
       h('h1', { text: mineOnly ? t('navMine') : t('navAll') }),
+      mineOnly ? null : h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }),
       h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }),
     ]));
 
@@ -504,6 +575,11 @@
       h('footer', {}, [
         h('button', { class: 'btn primary', text: isNew ? t('addTask') : t('saveTask'), onclick: save }),
         h('button', { class: 'btn', text: t('cancel'), onclick: close }),
+        // Only for a saved task with a date — there is nothing to add otherwise.
+        task && task.dueDate ? h('a', {
+          class: 'btn', target: '_blank', rel: 'noopener',
+          href: googleCalUrl(task), text: '📅 ' + t('addToCalendar'),
+        }) : null,
         h('span', { class: 'grow' }),
         task ? h('button', {
           class: 'btn danger', text: t('deleteTask'),
@@ -644,6 +720,153 @@
     redraw();
   }
 
+  /* ---------- bulk import ----------------------------------------------- */
+  var TEMPLATE_CSV =
+    'title,description,assignees,departments,due date,due time,status,notify\n' +
+    'จองเวทีกลาง,ติดต่อฝ่ายอาคาร,Jade_Pres;Kaew_VP,content:heads,2026-10-05,18:30,todo,"created,7d,24h,due"\n' +
+    'Confirm sponsor banners,,Yam_HeadSpon,sponsor,2026-10-12,,doing,"created,24h"\n' +
+    'ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,operations:all,2026-10-20,14:00,todo,\n';
+
+  function openImport() {
+    var mode = 'paste';
+    var rows = null;
+    var notice = h('div', { class: 'notice err', hidden: true });
+
+    var textarea = h('textarea', { placeholder: t('pasteCsv'), style: 'min-height:9rem' });
+    var sheetInput = h('input', { type: 'text', placeholder: 'https://docs.google.com/spreadsheets/d/...' });
+    var fileInput = h('input', { type: 'file', accept: '.csv,text/csv' });
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () { textarea.value = reader.result; mode = 'paste'; paintTabs(); };
+      reader.readAsText(file, 'utf-8');
+    });
+
+    var tabs = h('div', { class: 'imp-tabs' });
+    var input = h('div');
+    var previewBox = h('div');
+
+    function paintTabs() {
+      clear(tabs);
+      [['paste', t('pasteCsv')], ['sheet', t('sheetLink')], ['file', t('chooseFile')]].forEach(function (pair) {
+        tabs.appendChild(h('button', {
+          type: 'button', class: 'btn sm' + (mode === pair[0] ? ' primary' : ''), text: pair[1],
+          onclick: function () { mode = pair[0]; paintTabs(); },
+        }));
+      });
+      clear(input);
+      input.appendChild(mode === 'paste' ? textarea : mode === 'sheet' ? sheetInput : fileInput);
+    }
+    paintTabs();
+
+    function showError(code, message) {
+      notice.hidden = false;
+      notice.className = 'notice err';
+      notice.textContent = message || errText(code);
+    }
+
+    function doPreview() {
+      notice.hidden = true;
+      var payload = mode === 'sheet' ? { sheetUrl: sheetInput.value.trim() } : { csv: textarea.value };
+      if (!payload.csv && !payload.sheetUrl) { showError('EMPTY'); return; }
+
+      api('/api/import?do=preview', { method: 'POST', body: payload })
+        .then(function (data) { rows = data.rows; paintPreview(data); })
+        .catch(function (err) { showError(err.code, err.data && err.data.message); });
+    }
+
+    function paintPreview(data) {
+      clear(previewBox);
+      if (!rows || !rows.length) { showError('EMPTY'); return; }
+
+      var good = rows.filter(function (r) { return !r.problems.length; });
+      previewBox.appendChild(h('p', { style: 'margin:10px 0 6px;font-size:13.5px' },
+        [t('rowsFound') + ' ' + rows.length + ' ' + t('rowsUnit') + ' \u00B7 ' + t('willCreate') + ' ' + good.length]));
+
+      var body = rows.map(function (r) {
+        var flags = [];
+        r.unknownPeople.forEach(function (n) { flags.push(h('div', { class: 'imp-warn', text: t('nameNotFound') + ': ' + n })); });
+        r.unknownDepts.forEach(function (n) { flags.push(h('div', { class: 'imp-warn', text: t('deptNotFound') + ': ' + n })); });
+        if (r.problems.indexOf('BAD_DATE') !== -1) flags.push(h('div', { class: 'imp-bad', text: t('badDate') }));
+        if (r.problems.indexOf('BAD_TIME') !== -1) flags.push(h('div', { class: 'imp-bad', text: t('badTime') }));
+        if (r.notes.indexOf('DAY_FIRST_ASSUMED') !== -1) flags.push(h('div', { class: 'imp-warn', text: t('dayFirstNote') }));
+
+        return h('tr', { class: r.problems.length ? 'off' : '' }, [
+          h('td', { text: r.title }),
+          h('td', {}, [h('span', { class: 'stack' }, r.assignees.map(function (u) { return avatarNode(u, 'sm'); }))]),
+          h('td', {}, r.departments.map(function (d) { return h('span', { class: 'chip dept', text: deptLabel(d.key) }); })),
+          h('td', { text: (r.dueDate || '\u2014') + (r.dueTime ? ' ' + r.dueTime : '') }),
+          h('td', {}, flags),
+        ]);
+      });
+
+      previewBox.appendChild(h('div', { class: 'imp-rows' }, [
+        h('table', {}, [
+          h('thead', {}, [h('tr', {}, [
+            h('th', { text: t('taskTitle') }), h('th', { text: t('assignTo') }),
+            h('th', { text: t('departments') }), h('th', { text: t('dueDate') }), h('th', { text: '' }),
+          ])]),
+          h('tbody', {}, body),
+        ]),
+      ]));
+
+      footer.hidden = false;
+      importBtn.textContent = t('importNow') + ' (' + good.length + ')';
+      importBtn.disabled = good.length === 0;
+    }
+
+    var importBtn = h('button', {
+      class: 'btn primary', text: t('importNow'),
+      onclick: function () {
+        var good = rows.filter(function (r) { return !r.problems.length; });
+        importBtn.disabled = true;
+        api('/api/import?do=commit', { method: 'POST', body: { rows: good } })
+          .then(function (data) {
+            return api('/api/tasks').then(function (fresh) {
+              S.tasks = fresh.tasks;
+              notice.hidden = false; notice.className = 'notice ok';
+              notice.textContent = t('importedOk') + ': ' + data.created + ' ' + t('rowsUnit');
+              clear(previewBox); footer.hidden = true;
+              renderPage();
+            });
+          })
+          .catch(function (err) { showError(err.code); importBtn.disabled = false; });
+      },
+    });
+    var footer = h('div', { style: 'display:flex;gap:8px;align-items:center', hidden: true }, [importBtn]);
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    veil.appendChild(h('div', { class: 'modal' }, [
+      h('header', {}, [
+        h('h2', { text: t('importTasks') }),
+        h('button', { class: 'btn ghost sm', text: '\u2715', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        h('p', { style: 'margin:0;font-size:13.5px;color:var(--ink-soft)', text: t('importHelp') }),
+        h('p', { style: 'margin:0;font-size:12.5px;color:var(--ink-faint)', text: t('templateHelp') }),
+        h('button', {
+          class: 'btn sm', style: 'align-self:flex-start', text: '\u2193 ' + t('downloadTemplate'),
+          onclick: function () {
+            // A BOM makes Excel open Thai text correctly instead of as mojibake.
+            var blob = new Blob(['\uFEFF' + TEMPLATE_CSV], { type: 'text/csv;charset=utf-8' });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'fair-tasks-template.csv';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+          },
+        }),
+        tabs, input,
+        h('button', { class: 'btn', style: 'align-self:flex-start', text: t('preview'), onclick: doPreview }),
+        previewBox,
+        footer,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+  }
+
   /* ---------- calendar -------------------------------------------------- */
   function pageCalendar(main) {
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navCalendar') })]));
@@ -766,6 +989,19 @@
           h('label', { text: t('department') }),
           h('input', { type: 'text', value: S.user.department ? deptLabel(S.user.department) : '—', disabled: true }),
         ]),
+
+        h('div', { class: 'field' }, [
+          h('label', { text: t('theme') }),
+          h('div', { class: 'seg' }, [['system', 'themeSystem'], ['light', 'themeLight'], ['dark', 'themeDark']]
+            .map(function (pair) {
+              return h('button', {
+                type: 'button', class: S.theme === pair[0] ? 'on' : '', text: t(pair[1]),
+                onclick: function () { setTheme(pair[0]); renderPage(); },
+              });
+            })),
+        ]),
+
+        h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
       ]),
       h('footer', {}, [
         h('button', {
@@ -785,6 +1021,66 @@
         }),
       ]),
     ]));
+  }
+
+  /**
+   * The calendar subscription panel.
+   *
+   * The URL carries a token rather than a cookie, because Google's fetcher
+   * cannot sign in. That makes the link itself the secret, which the warning
+   * here says plainly, and the "new link" button is the remedy.
+   */
+  function calendarBox() {
+    var box = h('div', { class: 'cal-box' });
+
+    function paint() {
+      clear(box);
+      if (!S.user.calendarToken) {
+        box.appendChild(h('p', { class: 'hint', style: 'margin:0 0 8px;color:var(--ink-soft);font-size:13px', text: t('calendarHelp') }));
+        box.appendChild(h('button', {
+          class: 'btn sm primary', text: t('createCalendarLink'),
+          onclick: function (e) {
+            e.target.disabled = true;
+            api('/api/users?do=calendar-token', { method: 'POST' }).then(function (d) {
+              S.user.calendarToken = d.calendarToken; paint();
+            }).catch(function () { e.target.disabled = false; });
+          },
+        }));
+        return;
+      }
+
+      var url = location.origin + '/api/calendar?token=' + S.user.calendarToken;
+      var field = h('input', { type: 'text', class: 'mono', value: url, readonly: true,
+        onclick: function (e) { e.target.select(); } });
+
+      box.appendChild(field);
+      box.appendChild(h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:8px' }, [
+        h('button', {
+          class: 'btn sm', text: t('copyLink'),
+          onclick: function (e) {
+            var btn = e.target;
+            field.select();
+            var done = function () { btn.textContent = t('copied'); setTimeout(function () { btn.textContent = t('copyLink'); }, 1600); };
+            if (navigator.clipboard) navigator.clipboard.writeText(url).then(done, done);
+            else done();
+          },
+        }),
+        h('button', {
+          class: 'btn sm ghost', text: t('newCalendarLink'),
+          onclick: function () {
+            api('/api/users?do=calendar-token', { method: 'POST' }).then(function (d) {
+              S.user.calendarToken = d.calendarToken; paint();
+            });
+          },
+        }),
+      ]));
+      box.appendChild(h('p', { style: 'margin:8px 0 0;font-size:12.5px;color:var(--ink-soft)', text: t('calendarHelp') }));
+      box.appendChild(h('p', { style: 'margin:6px 0 0;font-size:12.5px;color:var(--ink-faint)', text: t('calendarDelay') }));
+      box.appendChild(h('p', { style: 'margin:6px 0 0;font-size:12.5px;color:var(--doing)', text: '\u26A0 ' + t('calendarWarn') }));
+    }
+
+    paint();
+    return box;
   }
 
   /**
@@ -977,8 +1273,16 @@
     if (saved) S.lang = saved;
   } catch (e) {}
 
+  // Read the theme before the first paint so the page never flashes the wrong one.
+  try { applyTheme(localStorage.getItem('fair-theme') || 'system'); } catch (e) { applyTheme('system'); }
+
   api('/api/auth').then(function (data) {
-    if (data.user) { S.user = data.user; S.lang = data.user.lang || S.lang; boot(); }
+    if (data.user) {
+      S.user = data.user;
+      S.lang = data.user.lang || S.lang;
+      if (data.user.theme) applyTheme(data.user.theme);
+      boot();
+    }
     else renderAuth();
   }).catch(function (err) {
     renderAuth();

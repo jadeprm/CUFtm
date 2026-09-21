@@ -47,9 +47,16 @@
     <button type="button" class="link" id="auth-forgot" hidden></button>
     <button type="button" class="link" id="auth-back" hidden data-t="back">ย้อนกลับ</button>
 
-    <div class="lang-toggle" style="align-self:center;margin-top:4px">
-      <button type="button" data-lang="th">ไทย</button>
-      <button type="button" data-lang="en">EN</button>
+    <div style="display:flex;gap:8px;align-self:center;margin-top:4px">
+      <div class="lang-toggle">
+        <button type="button" data-lang="th">ไทย</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <div class="lang-toggle theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-theme="system" title="System">◐</button>
+        <button type="button" data-theme="light" title="Light">☀</button>
+        <button type="button" data-theme="dark" title="Dark">☾</button>
+      </div>
     </div>
   </form>
 </div>
@@ -69,6 +76,11 @@
       </nav>
 
       <div class="topbar-right">
+        <div class="lang-toggle theme-toggle" role="group" aria-label="Theme">
+          <button type="button" data-theme="system" title="System">◐</button>
+          <button type="button" data-theme="light" title="Light">☀</button>
+          <button type="button" data-theme="dark" title="Dark">☾</button>
+        </div>
         <div class="lang-toggle">
           <button type="button" data-lang="th">ไทย</button>
           <button type="button" data-lang="en">EN</button>
