@@ -1,5 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
+import { sendToUser, unreadCount } from '../lib/push.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -67,6 +68,9 @@ async function handler(request) {
   const today = todayInBangkok();
   const hour = hourInBangkok();
   const created = [];
+  // Collected as we go and pushed at the end, so a slow or unreachable push
+  // service can never stop a reminder being written to the bell.
+  const toPush = [];
 
   const tasks = await sql`
     SELECT * FROM tasks
@@ -115,7 +119,39 @@ async function handler(request) {
         VALUES (${task.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
 
       created.push({ task: task.id, username, kind });
+      toPush.push({
+        username,
+        id,
+        taskId: task.id,
+        title: task.title,
+        when,
+        kind,
+        // A deadline that has arrived is worth interrupting someone for; a
+        // reminder a week out is not.
+        level: kind === 'due' ? 'urgent' : 'normal',
+      });
     }
+  }
+
+  /**
+   * Now the phones. Each person's own language is used, because a committee
+   * member who set the app to English should not get Thai on their lock screen.
+   */
+  let pushed = 0;
+  for (const item of toPush) {
+    const [person] = await sql`SELECT lang FROM users WHERE username = ${item.username}`;
+    const lang = person?.lang === 'en' ? 'en' : 'th';
+    const result = await sendToUser(sql, item.username, {
+      id: item.id,
+      taskId: item.taskId,
+      title: item.title,
+      body: `${MESSAGES[item.kind][lang]} — ${item.when}`,
+      level: item.level,
+      lang,
+      tag: `task-${item.taskId}`,
+      unread: await unreadCount(sql, item.username),
+    });
+    pushed += result.sent;
   }
 
   // Keep the roster current, and tidy up expired sessions while we're here.
@@ -133,6 +169,7 @@ async function handler(request) {
     hour,
     remindersCreated: created.length,
     created,
+    pushesSent: pushed,
     roster,
     secured: Boolean(secret),
     ...(secret ? {} : { warning: 'Set CRON_SECRET in Vercel and add ?key=… to the ping URL.' }),

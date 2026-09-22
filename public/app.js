@@ -25,6 +25,8 @@
     prio: '',            // priority filter
     seesEverything: false,
     myDepartments: [],   // every teamspace I may work in
+    push: { supported: false, permission: 'default', subscribed: false, key: null, standalone: false },
+    announcements: [],
     calRange: 7,
     calMineOnly: false,
   };
@@ -434,6 +436,7 @@
       a.classList.toggle('on', a.dataset.page === S.page);
     });
     $('tab-admin').hidden = !S.canManage;
+    $('tab-announce').hidden = !S.canManage;
 
     var av = clear($('me-avatar'));
     if (S.user.avatar) av.appendChild(h('img', { src: S.user.avatar, alt: '' }));
@@ -474,24 +477,41 @@
     }
     S.notifs.forEach(function (n) {
       box.appendChild(h('div', {
-        class: 'item' + (n.read ? '' : ' unread'),
+        class: 'item' + (n.read ? '' : ' unread') + (n.level === 'urgent' ? ' urgent' : ''),
         onclick: function () {
           $('bell-pop').hidden = true;
-          var task = S.tasks.filter(function (x) { return x.id === n.taskId; })[0];
-          if (task) openTask(task);
+          openNotification(n.id);
         },
       }, [
-        h('b', { text: n.title }),
+        h('b', {}, [
+          n.level === 'urgent' ? h('span', { class: 'chip urgent-dot', text: t('urgent') }) : null,
+          n.title,
+        ]),
         h('span', { text: n.body }),
+        h('small', { class: 'when', text: fmtWhen(n.createdAt) }),
       ]));
     });
   }
 
   window.addEventListener('hashchange', function () { routeFromHash(); renderShell(); renderPage(); });
   function routeFromHash() {
-    var page = (location.hash || '#/mine').replace('#/', '');
-    if (['mine', 'all', 'calendar', 'profile', 'admin'].indexOf(page) === -1) page = 'mine';
-    if (page === 'admin' && !S.canManage) page = 'mine';
+    var raw = (location.hash || '#/mine').replace('#/', '');
+
+    /**
+     * #/n/<id> is where a tapped notification lands. It opens the detail
+     * popup over whatever page was last used rather than being a page of its
+     * own, so closing it leaves someone somewhere useful instead of blank.
+     */
+    if (raw.indexOf('n/') === 0) {
+      var id = decodeURIComponent(raw.slice(2));
+      location.replace('#/' + (S.page || 'mine'));
+      setTimeout(function () { openNotification(id); }, 0);
+      return;
+    }
+
+    var page = raw;
+    if (['mine', 'all', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'mine';
+    if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'mine';
     S.page = page;
   }
 
@@ -505,6 +525,7 @@
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'profile') return pageProfile(main);
     if (S.page === 'admin') return pageAdmin(main);
+    if (S.page === 'announce') return pageAnnounce(main);
   }
 
   /* ---------- tasks ----------------------------------------------------- */
@@ -1242,6 +1263,7 @@
             })),
         ]),
 
+        h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
       ]),
       h('footer', {}, [
@@ -1271,6 +1293,84 @@
    * cannot sign in. That makes the link itself the secret, which the warning
    * here says plainly, and the "new link" button is the remedy.
    */
+  /**
+   * Turning phone notifications on, and explaining honestly when that is not
+   * possible yet.
+   *
+   * The iPhone branch is the important one. Apple only delivers push to a site
+   * that has been added to the Home Screen, so on an iPhone still in a Safari
+   * tab there is no permission to grant — showing a dead "allow" button there
+   * would just look broken.
+   */
+  function pushBox() {
+    var box = h('div', { class: 'push-box' });
+
+    function draw() {
+      clear(box);
+      pushState();
+
+      if (S.push.needsInstall) {
+        box.appendChild(h('div', { class: 'notice warn install-steps' }, [
+          h('b', { text: t('iosInstallTitle') }),
+          h('ol', {}, [t('iosStep1'), t('iosStep2'), t('iosStep3')].map(function (line) {
+            return h('li', { text: line });
+          })),
+        ]));
+        return;
+      }
+
+      if (!S.push.supported) {
+        box.appendChild(h('div', { class: 'notice warn', text: t('pushUnsupported') }));
+        return;
+      }
+
+      if (S.push.permission === 'denied') {
+        box.appendChild(h('div', { class: 'notice warn', text: t('pushBlocked') }));
+        return;
+      }
+
+      var on = S.push.permission === 'granted' && S.push.subscribed;
+
+      box.appendChild(h('div', { class: 'row' }, [
+        h('span', { class: 'chip ' + (on ? 'done' : ''), text: on ? t('pushOn') : t('pushOff') }),
+        h('span', { class: 'grow' }),
+        h('button', {
+          class: 'btn ' + (on ? '' : 'primary'),
+          text: on ? t('turnOff') : t('turnOn'),
+          onclick: function (e) {
+            e.target.disabled = true;
+            var job = on ? disablePush() : enablePush();
+            job.then(function () { draw(); })
+              .catch(function (err) {
+                draw();
+                box.appendChild(h('div', {
+                  class: 'notice err',
+                  text: err.message === 'DENIED' ? t('pushBlocked') : t('pushFailed'),
+                }));
+              });
+          },
+        }),
+        on ? h('button', {
+          class: 'btn sm', text: t('sendTest'),
+          onclick: function (e) {
+            e.target.disabled = true;
+            api('/api/push?do=test', { method: 'POST' })
+              .then(function () { e.target.disabled = false; })
+              .catch(function () {
+                e.target.disabled = false;
+                box.appendChild(h('div', { class: 'notice err', text: t('pushNoDevice') }));
+              });
+          },
+        }) : null,
+      ]));
+
+      box.appendChild(h('p', { class: 'hint', text: t('pushExplained') }));
+    }
+
+    draw();
+    return box;
+  }
+
   function calendarBox() {
     var box = h('div', { class: 'cal-box' });
 
@@ -1548,6 +1648,493 @@
     return 'EDITORS_CANNOT_MANAGE_ACCOUNTS';
   }
 
+  /* ---------- announcements (admin / co-admin) --------------------------- */
+  function pageAnnounce(main) {
+    var notice = h('div', { class: 'notice', hidden: true });
+
+    var draft = {
+      title: '',
+      body: '',
+      level: 'normal',
+      audience: { kind: 'everyone', departments: [], people: [] },
+      includeSelf: false,
+    };
+
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navAnnounce') })]));
+    main.appendChild(notice);
+
+    var titleInput = h('input', { type: 'text', maxlength: '120', placeholder: t('announceTitlePlaceholder') });
+    var bodyInput = h('textarea', { maxlength: '2000', rows: '4', placeholder: t('announceBodyPlaceholder') });
+
+    /**
+     * Who it goes to. Three choices rather than a free-form picker, because
+     * the mistake to design against is sending an urgent 2 am alert to 200
+     * people when you meant to tell one department something.
+     */
+    var audienceBox = h('div', { class: 'picker' });
+    var countLine = h('p', { class: 'hint' });
+
+    /**
+     * Mirrors the server's rule exactly, self-exclusion included — a count
+     * that says 8 and then sends to 7 makes everything else on the page look
+     * untrustworthy.
+     */
+    function recipientCount() {
+      var live = S.users.filter(function (u) {
+        if (!u.active || u.suspended) return false;
+        return draft.includeSelf || u.username !== S.user.username;
+      });
+
+      if (draft.audience.kind === 'people') {
+        return draft.audience.people.filter(function (n) {
+          return live.some(function (u) { return u.username === n; });
+        }).length;
+      }
+
+      if (draft.audience.kind === 'departments') {
+        var keys = draft.audience.departments;
+        if (!keys.length) return 0;
+        return live.filter(function (u) {
+          return u.allDepartments || (u.departments || []).some(function (k) {
+            return keys.indexOf(k) !== -1;
+          });
+        }).length;
+      }
+
+      return live.length;
+    }
+
+    function paintCount() {
+      var n = recipientCount();
+      countLine.textContent = t('willReach').replace('{n}', String(n));
+      sendBtn.disabled = n === 0 || !titleInput.value.trim();
+    }
+
+    function drawAudience() {
+      clear(audienceBox);
+
+      var seg = h('div', { class: 'seg wrap' }, [
+        ['everyone', t('audEveryone')],
+        ['departments', t('audDepartments')],
+        ['people', t('audPeople')],
+      ].map(function (pair) {
+        return h('button', {
+          type: 'button', class: draft.audience.kind === pair[0] ? 'on' : '', text: pair[1],
+          onclick: function () { draft.audience.kind = pair[0]; drawAudience(); paintCount(); },
+        });
+      }));
+      audienceBox.appendChild(seg);
+
+      if (draft.audience.kind === 'departments') {
+        var opts = h('div', { class: 'options' });
+        S.departments.forEach(function (d) {
+          var on = draft.audience.departments.indexOf(d.key) !== -1;
+          opts.appendChild(h('div', {
+            class: 'opt' + (on ? ' on' : ''),
+            onclick: function () {
+              draft.audience.departments = on
+                ? draft.audience.departments.filter(function (k) { return k !== d.key; })
+                : draft.audience.departments.concat([d.key]);
+              drawAudience(); paintCount();
+            },
+          }, [deptOptionLabel(d)]));
+        });
+        audienceBox.appendChild(opts);
+      }
+
+      if (draft.audience.kind === 'people') {
+        audienceBox.appendChild(h('div', { class: 'selected' }, draft.audience.people.length
+          ? draft.audience.people.map(function (u) {
+              return h('span', {
+                class: 'chip who x',
+                onclick: function () {
+                  draft.audience.people = draft.audience.people.filter(function (x) { return x !== u; });
+                  drawAudience(); paintCount();
+                },
+              }, [avatarNode(u, 'sm'), nameOf(u), ' \u2715']);
+            })
+          : [h('span', { class: 'chip', text: t('noOne') })]));
+
+        var pick = h('select', {
+          onchange: function (e) {
+            if (e.target.value && draft.audience.people.indexOf(e.target.value) === -1) {
+              draft.audience.people.push(e.target.value);
+            }
+            drawAudience(); paintCount();
+          },
+        }, [h('option', { value: '', text: '+ ' + t('addPerson') })].concat(
+          groupedPeopleOptions(S.users.filter(function (u) {
+            return u.active && !u.suspended && draft.audience.people.indexOf(u.username) === -1;
+          }))
+        ));
+        audienceBox.appendChild(pick);
+      }
+    }
+
+    var levelSeg = h('div', { class: 'seg wrap' }, [
+      ['normal', t('levelNormal')], ['urgent', t('levelUrgent')],
+    ].map(function (pair) {
+      return h('button', {
+        type: 'button',
+        class: (draft.level === pair[0] ? 'on ' : '') + (pair[0] === 'urgent' ? 'prio-highest' : ''),
+        text: pair[1],
+        onclick: function () {
+          draft.level = pair[0];
+          levelSeg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+          this.classList.add('on');
+          urgentNote.hidden = draft.level !== 'urgent';
+        },
+      });
+    }));
+
+    var urgentNote = h('p', { class: 'hint urgent-note', hidden: true, text: t('urgentExplained') });
+
+    var sendBtn = h('button', {
+      class: 'btn primary', text: t('sendAnnouncement'), disabled: true,
+      onclick: function () {
+        var payload = {
+          title: titleInput.value.trim(),
+          body: bodyInput.value.trim(),
+          level: draft.level,
+          audience: draft.audience,
+          includeSelf: draft.includeSelf,
+        };
+        var n = recipientCount();
+        var ask = draft.level === 'urgent'
+          ? t('confirmUrgent').replace('{n}', String(n))
+          : t('confirmSend').replace('{n}', String(n));
+        if (!confirm(ask)) return;
+
+        sendBtn.disabled = true;
+        api('/api/push?do=announce', { method: 'POST', body: payload })
+          .then(function (d) {
+            notice.hidden = false;
+            notice.className = 'notice ok';
+            notice.textContent = t('sentTo')
+              .replace('{n}', String(d.recipients))
+              .replace('{p}', String(d.reached));
+            titleInput.value = ''; bodyInput.value = '';
+            loadSent();
+            paintCount();
+          })
+          .catch(function (err) {
+            notice.hidden = false; notice.className = 'notice err';
+            notice.textContent = errText(err.code);
+            sendBtn.disabled = false;
+          });
+      },
+    });
+
+    titleInput.addEventListener('input', paintCount);
+
+    main.appendChild(h('div', { class: 'modal', style: 'width:min(46rem,100%);margin:0 0 18px' }, [
+      h('div', { class: 'body' }, [
+        h('div', { class: 'field' }, [h('label', { text: t('announceTitle') }), titleInput]),
+        h('div', { class: 'field' }, [h('label', { text: t('announceBody') }), bodyInput]),
+        h('div', { class: 'field' }, [h('label', { text: t('audience') }), audienceBox, countLine]),
+        h('div', { class: 'field' }, [h('label', { text: t('level') }), levelSeg, urgentNote]),
+      ]),
+      h('footer', {}, [sendBtn]),
+    ]));
+
+    /* ---- what has been sent, and who has read it ---- */
+    var sentBox = h('div', {});
+    main.appendChild(h('h2', { class: 'section-head', text: t('recentAnnouncements') }));
+    main.appendChild(sentBox);
+
+    function loadSent() {
+      api('/api/push?do=sent').then(function (d) {
+        S.announcements = d.announcements;
+        drawSent();
+      }).catch(function () {});
+    }
+
+    function drawSent() {
+      clear(sentBox);
+      if (!S.announcements.length) {
+        sentBox.appendChild(h('div', { class: 'empty', text: t('noAnnouncements') }));
+        return;
+      }
+      S.announcements.forEach(function (a) {
+        var stat = a.level === 'urgent'
+          ? t('ackStat').replace('{a}', String(a.ackCount)).replace('{n}', String(a.recipients))
+          : t('readStat').replace('{r}', String(a.readCount)).replace('{n}', String(a.recipients));
+
+        sentBox.appendChild(h('div', { class: 'sent-row' + (a.level === 'urgent' ? ' urgent' : '') }, [
+          h('div', { class: 'grow' }, [
+            h('b', {}, [
+              a.level === 'urgent' ? h('span', { class: 'chip urgent-dot', text: t('urgent') }) : null,
+              a.title,
+            ]),
+            h('div', { class: 'sub', text: a.body }),
+            h('small', { text: nameOf(a.sentBy) + ' \u00B7 ' + fmtWhen(a.createdAt) + ' \u00B7 ' + t('pushedTo').replace('{p}', String(a.pushed)) }),
+          ]),
+          h('div', { class: 'stat' }, [
+            h('b', { text: stat }),
+            h('button', {
+              class: 'btn ghost sm', text: t('whoRead'),
+              onclick: function () { openWhoRead(a); },
+            }),
+          ]),
+        ]));
+      });
+    }
+
+    function openWhoRead(a) {
+      api('/api/push?do=who&id=' + encodeURIComponent(a.id)).then(function (d) {
+        var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+        var waiting = d.people.filter(function (p) { return a.level === 'urgent' ? !p.acked : !p.read; });
+        var done = d.people.filter(function (p) { return a.level === 'urgent' ? p.acked : p.read; });
+
+        veil.appendChild(h('div', { class: 'modal' }, [
+          h('header', {}, [
+            h('h2', { text: a.title }),
+            h('button', { class: 'btn ghost sm', text: '\u2715', onclick: function () { veil.remove(); } }),
+          ]),
+          h('div', { class: 'body' }, [
+            h('div', { class: 'field' }, [
+              h('label', { text: t('notYet') + ' (' + waiting.length + ')' }),
+              h('div', { class: 'selected' }, waiting.length
+                ? waiting.map(function (p) { return h('span', { class: 'chip who' }, [avatarNode(p.username, 'sm'), p.displayName]); })
+                : [h('span', { class: 'chip', text: t('everyoneHasSeen') })]),
+            ]),
+            h('div', { class: 'field' }, [
+              h('label', { text: (a.level === 'urgent' ? t('acknowledged') : t('read')) + ' (' + done.length + ')' }),
+              h('div', { class: 'selected' }, done.length
+                ? done.map(function (p) { return h('span', { class: 'chip who done' }, [avatarNode(p.username, 'sm'), p.displayName]); })
+                : [h('span', { class: 'chip', text: '\u2014' })]),
+            ]),
+          ]),
+        ]));
+        $('modal-root').appendChild(veil);
+      }).catch(function () {});
+    }
+
+    drawAudience();
+    paintCount();
+    loadSent();
+  }
+
+  /* ======================================================================
+     Push notifications
+     ====================================================================== */
+
+  /** The VAPID key arrives base64url-encoded; the browser wants raw bytes. */
+  function urlBase64ToUint8Array(base64) {
+    var padded = (base64 + '='.repeat((4 - base64.length % 4) % 4))
+      .replace(/-/g, '+').replace(/_/g, '/');
+    var raw = atob(padded);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  /** True when the app is running from a Home Screen icon rather than a tab. */
+  function isStandalone() {
+    try {
+      return window.matchMedia('(display-mode: standalone)').matches ||
+        window.navigator.standalone === true;
+    } catch (e) { return false; }
+  }
+
+  var isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  /**
+   * Works out what this device can actually do.
+   *
+   * Reported honestly rather than optimistically: on an iPhone still in a
+   * Safari tab, the Push API is simply absent, and telling someone to "allow
+   * notifications" when no prompt can ever appear is worse than telling them
+   * to add the app to their Home Screen first.
+   */
+  function pushState() {
+    var hasApi = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    S.push.standalone = isStandalone();
+    S.push.supported = hasApi;
+    S.push.needsInstall = isIos && !S.push.standalone;
+    S.push.permission = hasApi ? Notification.permission : 'unsupported';
+    return S.push;
+  }
+
+  function registerWorker() {
+    if (!('serviceWorker' in navigator)) return Promise.resolve(null);
+    return navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(function () { return null; });
+  }
+
+  /** Asks for permission and registers this browser. Must be called from a tap. */
+  function enablePush() {
+    pushState();
+    if (!S.push.supported) return Promise.reject(new Error('UNSUPPORTED'));
+
+    return Notification.requestPermission().then(function (permission) {
+      S.push.permission = permission;
+      if (permission !== 'granted') throw new Error('DENIED');
+      return api('/api/push?do=key');
+    }).then(function (info) {
+      S.push.key = info.publicKey;
+      return registerWorker();
+    }).then(function (reg) {
+      if (!reg) throw new Error('NO_WORKER');
+      return navigator.serviceWorker.ready;
+    }).then(function (reg) {
+      return reg.pushManager.getSubscription().then(function (existing) {
+        if (existing) return existing;
+        return reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(S.push.key),
+        });
+      });
+    }).then(function (sub) {
+      return api('/api/push?do=subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+    }).then(function () {
+      S.push.subscribed = true;
+      return true;
+    });
+  }
+
+  function disablePush() {
+    return navigator.serviceWorker.ready
+      .then(function (reg) { return reg.pushManager.getSubscription(); })
+      .then(function (sub) {
+        var endpoint = sub ? sub.endpoint : null;
+        var stop = sub ? sub.unsubscribe() : Promise.resolve();
+        return stop.then(function () {
+          return api('/api/push?do=unsubscribe', { method: 'POST', body: { endpoint: endpoint } });
+        });
+      })
+      .then(function () { S.push.subscribed = false; })
+      .catch(function () { S.push.subscribed = false; });
+  }
+
+  /**
+   * Quietly re-registers on every visit when permission is already granted.
+   *
+   * Browsers — Safari especially — drop push subscriptions after a spell of
+   * inactivity without telling anyone. Without this, notifications would stop
+   * one day and nobody would know why.
+   */
+  function refreshSubscription() {
+    pushState();
+    if (!S.push.supported || S.push.permission !== 'granted') return Promise.resolve();
+
+    return registerWorker()
+      .then(function () { return navigator.serviceWorker.ready; })
+      .then(function (reg) {
+        return api('/api/push?do=key').then(function (info) {
+          S.push.key = info.publicKey;
+          return reg.pushManager.getSubscription().then(function (sub) {
+            if (sub) return sub;
+            return reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(info.publicKey),
+            });
+          });
+        });
+      })
+      .then(function (sub) {
+        S.push.subscribed = true;
+        return api('/api/push?do=subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+      })
+      .catch(function () { /* a failed refresh must never block the app loading */ });
+  }
+
+  /* ======================================================================
+     Notification detail
+     ====================================================================== */
+
+  function fmtWhen(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString(S.lang === 'th' ? 'th-TH' : 'en-GB',
+        { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return ''; }
+  }
+
+  /**
+   * The popup behind a notification.
+   *
+   * Opened from the bell, and from a push the person tapped on their phone.
+   * It carries the whole message, because a lock-screen notification truncates
+   * anything longer than a line and there has to be somewhere to read the rest.
+   */
+  function openNotification(id) {
+    var n = S.notifs.filter(function (x) { return x.id === id; })[0];
+    if (!n) {
+      // Arrived from a push before the list had loaded — fetch, then retry once.
+      return refreshNotifications().then(function () {
+        var found = S.notifs.filter(function (x) { return x.id === id; })[0];
+        if (found) openNotification(id);
+      });
+    }
+
+    var urgent = n.level === 'urgent';
+    var task = S.tasks.filter(function (x) { return x.id === n.taskId; })[0];
+
+    var veil = h('div', {
+      class: 'veil',
+      onclick: function (e) {
+        // An urgent message cannot be dismissed by tapping past it: the
+        // acknowledge button is the only way out, which is what makes the
+        // read receipt on the sender's side mean something.
+        if (e.target === veil && !(urgent && !n.acked)) close();
+      },
+    });
+
+    var modal = h('div', { class: 'modal notice-modal' + (urgent ? ' urgent' : '') }, [
+      h('header', {}, [
+        h('h2', {}, [
+          urgent ? h('span', { class: 'chip urgent-dot', text: t('urgent') }) : null,
+          n.title,
+        ]),
+        (urgent && !n.acked) ? null : h('button', { class: 'btn ghost sm', text: '\u2715', onclick: close }),
+      ]),
+      h('div', { class: 'body' }, [
+        h('p', { class: 'notice-body', text: n.body || '' }),
+        h('p', { class: 'hint', text: t('notifKind' + (n.kind === 'announce' ? 'Announce' : 'Task')) + ' \u00B7 ' + fmtWhen(n.createdAt) }),
+      ]),
+      h('footer', {}, [
+        (urgent && !n.acked) ? h('button', {
+          class: 'btn primary', text: t('acknowledge'),
+          onclick: function () {
+            api('/api/notifications?do=ack', { method: 'PATCH', body: { id: n.id } })
+              .then(function (d) {
+                n.acked = true; n.read = true; S.unread = d.unread;
+                renderShell(); close();
+              })
+              .catch(function () { close(); });
+          },
+        }) : null,
+        task ? h('button', {
+          class: 'btn', text: t('openTask'),
+          onclick: function () { close(); openTask(task); },
+        }) : null,
+        h('span', { class: 'grow' }),
+        (urgent && !n.acked) ? null : h('button', { class: 'btn', text: t('close'), onclick: close }),
+      ]),
+    ]);
+
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+
+    // Opening it counts as reading it; acknowledging is the separate, deliberate act.
+    if (!n.read) {
+      api('/api/notifications', { method: 'PATCH', body: { ids: [n.id] } })
+        .then(function (d) { n.read = true; S.unread = d.unread; renderShell(); })
+        .catch(function () {});
+    }
+
+    function close() { veil.remove(); }
+  }
+
+  /** Urgent messages waiting to be acknowledged, shown one after another. */
+  function showPending() {
+    var waiting = S.notifs.filter(function (n) { return n.level === 'urgent' && !n.acked; });
+    if (!waiting.length) return;
+    if ($('modal-root').querySelector('.notice-modal')) return; // one at a time
+    openNotification(waiting[waiting.length - 1].id);
+  }
+
   /* ======================================================================
      Boot
      ====================================================================== */
@@ -1556,7 +2143,16 @@
       S.notifs = d.notifications; S.unread = d.unread;
       $('bell-count').hidden = S.unread === 0;
       $('bell-count').textContent = S.unread;
+      setBadge(S.unread);
     }).catch(function () {});
+  }
+
+  /** The number on the Home Screen icon, where the platform supports one. */
+  function setBadge(n) {
+    try {
+      if (!navigator.setAppBadge) return;
+      if (n > 0) navigator.setAppBadge(n); else navigator.clearAppBadge();
+    } catch (e) {}
   }
 
   function boot() {
@@ -1579,6 +2175,8 @@
       routeFromHash();
       renderShell();
       renderPage();
+      refreshSubscription();
+      showPending();
     }).catch(function (err) {
       if (err.code === 'NOT_SIGNED_IN') { S.user = null; renderAuth(); return; }
       alert(err.code === 'NO_DATABASE' ? t('noDatabase') : t('errOffline'));
@@ -1611,7 +2209,21 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible' && S.user) {
       api('/api/tasks').then(function (d) { S.tasks = d.tasks; renderPage(); }).catch(function () {});
-      refreshNotifications();
+      refreshNotifications().then(showPending);
     }
   });
+
+  /**
+   * A notification tapped while the app is already open. The service worker
+   * focuses the existing window and tells it which one, rather than opening a
+   * second copy of the app.
+   */
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function (event) {
+      if (!event.data || event.data.type !== 'open-notification' || !S.user) return;
+      refreshNotifications().then(function () {
+        if (event.data.id) openNotification(event.data.id);
+      });
+    });
+  }
 })();

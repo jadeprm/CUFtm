@@ -128,9 +128,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   max-width: 68rem; margin: 0 auto; padding: 10px 20px;
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
 }
-.brand { display: flex; flex-direction: column; line-height: 1.15; margin-right: 4px; }
+.brand { display: flex; align-items: center; gap: 9px; line-height: 1.15; margin-right: 4px; }
+.brand > div { display: flex; flex-direction: column; }
+.brand-mark { width: 30px; height: 30px; border-radius: 8px; flex: none; }
 .brand b { font-size: 15.5px; font-weight: 700; letter-spacing: -.01em; }
 .brand span { font-size: 11.5px; color: var(--ink-faint); }
+@media (max-width: 560px) { .brand-mark { width: 26px; height: 26px; } }
 nav.tabs { display: flex; gap: 2px; flex: 1; flex-wrap: wrap; }
 nav.tabs a {
   padding: 6px 12px; border-radius: 7px; text-decoration: none;
@@ -346,6 +349,16 @@ td .who-cell { display: flex; align-items: center; gap: 8px; }
 
 /* ---------- priority ---------- */
 .seg.wrap { flex-wrap: wrap; }
+/* Inside a form field a segmented control hugs its buttons rather than
+   stretching across the whole row, which reads as an empty input box. */
+.field > .seg { align-self: flex-start; width: max-content; max-width: 100%; }
+/* The urgent choice looks urgent once it is chosen — a plain highlight made
+   a decision with real consequences look like any other toggle. */
+.seg button.on.prio-highest {
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 700;
+}
 .chip.prio { font-weight: 600; }
 .chip.prio-low     { border-color: var(--line);   color: var(--ink-faint); }
 .chip.prio-high    { border-color: var(--doing);  color: var(--doing);  background: var(--doing-soft); }
@@ -392,4 +405,50 @@ optgroup { font-size: 12px; color: var(--ink-faint); }
   font-size: 11px;
   padding: 1px 6px;
   color: var(--accent);
+}
+
+
+/* ---- phone notifications (profile) -------------------------------------- */
+.push-box .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.push-box .notice { margin-top: 8px; }
+.install-steps ol { margin: 6px 0 0; padding-left: 20px; }
+.install-steps li { margin: 3px 0; line-height: 1.45; }
+.chip.done { border-color: var(--done); color: var(--done); }
+
+/* ---- urgent ------------------------------------------------------------- */
+.chip.urgent-dot {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 700;
+  margin-right: 6px;
+}
+.pop .items .item.urgent { border-left: 3px solid var(--danger); }
+.pop .items .item .when { display: block; margin-top: 3px; color: var(--ink-faint); font-size: 11px; }
+
+/**
+ * The detail popup. An urgent one is deliberately harder to dismiss — no
+ * close button until it has been acknowledged — because the read receipt on
+ * the sender's side is only worth anything if it means someone really looked.
+ */
+.notice-modal { width: min(34rem, 100%); }
+.notice-modal.urgent { border-top: 4px solid var(--danger); }
+.notice-body { white-space: pre-wrap; line-height: 1.55; margin: 0 0 10px; font-size: 15px; }
+.urgent-note { color: var(--danger); margin-top: 6px; }
+
+/* ---- announcements page ------------------------------------------------- */
+.section-head { font-size: 15px; margin: 6px 0 10px; }
+.sent-row {
+  display: flex; gap: 12px; align-items: flex-start;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 11px; padding: 11px 13px; margin-bottom: 8px;
+}
+.sent-row.urgent { border-left: 3px solid var(--danger); }
+.sent-row .sub { color: var(--ink-soft); font-size: 13px; margin: 2px 0 4px; }
+.sent-row small { color: var(--ink-faint); font-size: 11.5px; }
+.sent-row .stat { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex: none; }
+.sent-row .stat b { font-size: 12.5px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .sent-row { flex-direction: column; }
+  .sent-row .stat { align-items: flex-start; }
 }

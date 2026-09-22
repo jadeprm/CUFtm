@@ -9,6 +9,26 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="./styles.css">
+
+<!-- Installable app: the manifest is what lets iOS put this on a Home Screen,
+     which Apple requires before it will deliver a single push notification. -->
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#b51e64">
+<link rel="icon" href="./favicon.png" sizes="64x64">
+<link rel="icon" href="./icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="จุฬาฯแฟร์">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- The card people see when the link is shared in LINE, Messenger or Slack. -->
+<meta property="og:title" content="งานจุฬาฯแฟร์ · ระบบติดตามงาน">
+<meta property="og:description" content="ระบบติดตามงานของคณะกรรมการงานจุฬาฯแฟร์">
+<meta property="og:type" content="website">
+<meta property="og:image" content="./icon-512.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="./icon-512.png">
 </head>
 <body>
 
@@ -65,13 +85,17 @@
 <div id="app-view" hidden>
   <header class="topbar">
     <div class="topbar-in">
-      <div class="brand"><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span></div>
+      <div class="brand">
+        <img src="./icon-192.png" alt="" class="brand-mark">
+        <div><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span></div>
+      </div>
 
       <nav class="tabs" id="tabs">
         <a href="#/mine" data-page="mine" data-t="navMine">งานของฉัน</a>
         <a href="#/all" data-page="all" data-t="navAll">งานทั้งหมด</a>
         <a href="#/calendar" data-page="calendar" data-t="navCalendar">ปฏิทิน</a>
         <a href="#/profile" data-page="profile" data-t="navProfile">โปรไฟล์</a>
+        <a href="#/announce" data-page="announce" data-t="navAnnounce" id="tab-announce" hidden>ส่งประกาศ</a>
         <a href="#/admin" data-page="admin" data-t="navAdmin" id="tab-admin" hidden>จัดการผู้ใช้</a>
       </nav>
 

@@ -2,6 +2,7 @@ import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js'
 import { currentUser } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
 import { isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet } from '../lib/scope.js';
+import { sendToMany } from '../lib/push.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -126,12 +127,35 @@ function readTags(body) {
 }
 
 async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
-  for (const username of usernames) {
-    if (username === actor) continue; // no need to tell someone what they just did
+  const targets = usernames.filter((u) => u !== actor); // nobody needs telling what they just did
+  const idFor = {};
+
+  for (const username of targets) {
     const id = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    idFor[username] = id;
     await sql`
       INSERT INTO notifications (id, username, task_id, kind, title, body)
       VALUES (${id}, ${username}, ${task.id}, ${kind}, ${title}, ${body})`;
+  }
+
+  /**
+   * The bell row is written first and the push is attempted after, so a push
+   * service being slow or unreachable costs a lock-screen alert and nothing
+   * more — the notification is still waiting in the app either way.
+   */
+  if (targets.length) {
+    try {
+      await sendToMany(sql, targets, (username) => ({
+        id: idFor[username],
+        taskId: task.id,
+        title,
+        body,
+        level: 'normal',
+        tag: `task-${task.id}`,
+      }));
+    } catch (error) {
+      console.error('[tasks] push failed', error);
+    }
   }
 }
 

@@ -1,0 +1,35 @@
+{
+  "name": "งานจุฬาฯแฟร์ · Chula Fair Tasks",
+  "short_name": "จุฬาฯแฟร์",
+  "description": "Task tracker for the Chulalongkorn University Fair committee.",
+  "start_url": "./?source=home",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f6dfe9",
+  "theme_color": "#b51e64",
+  "lang": "th",
+  "categories": [
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
