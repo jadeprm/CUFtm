@@ -1,7 +1,7 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser, canManageAccounts } from '../lib/auth.js';
 import { isDepartment, expandAccess } from '../lib/departments.js';
-import { publicKey, sendToUser, sendToMany, unreadCount } from '../lib/push.js';
+import { publicKey, sendToUser, sendToMany, unreadCount, SUBJECT_IN_USE } from '../lib/push.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -17,6 +17,9 @@ import { withNode } from '../lib/http.js';
  */
 
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
+const hostOf = (endpoint) => {
+  try { return new URL(endpoint).host; } catch (e) { return 'unknown'; }
+};
 const newId = (prefix) =>
   `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -161,8 +164,44 @@ async function handler(request) {
       lang: me.lang,
       unread: await unreadCount(sql, me.username),
     });
-    if (!result.sent) return json({ error: 'NO_DEVICE', ...result }, 409);
+
+    /**
+     * When a test fails, the reason matters more than the failure. Apple and
+     * Google say exactly what was wrong with the request, and that sentence is
+     * handed straight back to the person rather than flattened into
+     * "something went wrong".
+     */
+    if (!result.sent) {
+      const registered = await sql`
+        SELECT count(*)::int AS n FROM push_subscriptions WHERE username = ${me.username}`;
+      return json({
+        error: registered[0].n ? 'PUSH_REFUSED' : 'NO_DEVICE',
+        devices: registered[0].n,
+        pushEnabled: me.push_enabled !== false,
+        errors: result.errors || [],
+        subject: SUBJECT_IN_USE,
+      }, 409);
+    }
     return json({ ok: true, ...result });
+  }
+
+  // ---- what is actually going on with this person's devices ---------------
+  if (request.method === 'GET' && action === 'diagnose') {
+    const subs = await sql`
+      SELECT endpoint, user_agent, created_at, last_ok_at, fail_count, last_error
+      FROM push_subscriptions WHERE username = ${me.username} ORDER BY created_at`;
+    return json({
+      pushEnabled: me.push_enabled !== false,
+      subject: SUBJECT_IN_USE,
+      devices: subs.map((s) => ({
+        service: hostOf(s.endpoint),
+        userAgent: s.user_agent,
+        registeredAt: s.created_at,
+        lastDeliveredAt: s.last_ok_at,
+        failures: s.fail_count,
+        lastError: s.last_error,
+      })),
+    });
   }
 
   if (request.method === 'PATCH' && action === 'prefs') {

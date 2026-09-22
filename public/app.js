@@ -25,7 +25,10 @@
     prio: '',            // priority filter
     seesEverything: false,
     myDepartments: [],   // every teamspace I may work in
-    push: { supported: false, permission: 'default', subscribed: false, key: null, standalone: false },
+    push: {
+      supported: false, permission: 'default', subscribed: false,
+      key: null, standalone: false, devices: [], serverKnown: false,
+    },
     announcements: [],
     calRange: 7,
     calMineOnly: false,
@@ -1309,6 +1312,12 @@
       clear(box);
       pushState();
 
+      // Ask the server once per render when permission is granted, so the
+      // panel reflects what can actually be delivered to.
+      if (S.push.permission === 'granted' && !S.push.serverKnown) {
+        checkServer().then(draw);
+      }
+
       if (S.push.needsInstall) {
         box.appendChild(h('div', { class: 'notice warn install-steps' }, [
           h('b', { text: t('iosInstallTitle') }),
@@ -1329,7 +1338,14 @@
         return;
       }
 
+      /**
+       * "On" means the server holds a device for this person — not merely that
+       * the browser said yes. The two came apart in testing: the panel read
+       * เปิดอยู่ while the server had nothing to send to, which sent everyone
+       * looking in the wrong place.
+       */
       var on = S.push.permission === 'granted' && S.push.subscribed;
+      var halfway = S.push.permission === 'granted' && !S.push.subscribed;
 
       box.appendChild(h('div', { class: 'row' }, [
         h('span', { class: 'chip ' + (on ? 'done' : ''), text: on ? t('pushOn') : t('pushOff') }),
@@ -1353,18 +1369,78 @@
         on ? h('button', {
           class: 'btn sm', text: t('sendTest'),
           onclick: function (e) {
-            e.target.disabled = true;
+            var btn = e.target;
+            btn.disabled = true;
             api('/api/push?do=test', { method: 'POST' })
-              .then(function () { e.target.disabled = false; })
-              .catch(function () {
-                e.target.disabled = false;
-                box.appendChild(h('div', { class: 'notice err', text: t('pushNoDevice') }));
+              .then(function () {
+                btn.disabled = false;
+                report(h('div', { class: 'notice ok' }, [
+                  h('b', { text: t('testSent') }),
+                  h('div', { text: t('testSentHint') }),
+                ]));
+              })
+              .catch(function (err) {
+                btn.disabled = false;
+                showFailure(err);
               });
           },
         }) : null,
       ]));
 
       box.appendChild(h('p', { class: 'hint', text: t('pushExplained') }));
+
+      // Permission granted, but the server has no device: the registration
+      // did not complete. One button fixes it, and says so if it cannot.
+      if (halfway) {
+        box.appendChild(h('div', { class: 'notice warn' }, [
+          h('b', { text: t('notRegistered') }),
+          h('div', { text: t('notRegisteredHint') }),
+          h('button', {
+            class: 'btn sm', style: 'margin-top:8px',
+            text: t('registerAgain'),
+            onclick: function (e) {
+              e.target.disabled = true;
+              enablePush().then(draw).catch(function (err) { draw(); showFailure(err); });
+            },
+          }),
+        ]));
+      }
+
+      // What the server is holding, in plain terms — one line per device.
+      if (on && S.push.devices.length) {
+        box.appendChild(h('div', { class: 'devices' }, S.push.devices.map(function (d) {
+          return h('div', { class: 'raw' }, [
+            d.service + (d.lastDeliveredAt ? ' \u00b7 ' + t('lastDelivered') + ' ' + fmtWhen(d.lastDeliveredAt) : ''),
+            d.lastError ? h('div', { class: 'raw err-text', text: d.lastError }) : null,
+          ]);
+        })));
+      }
+
+      /**
+       * What went wrong, in the words of the service that refused it.
+       *
+       * Deliberately shows the raw message alongside the plain-language line:
+       * "BadJwtToken" means nothing to most people, but it is the difference
+       * between fixing this in a minute and guessing for an afternoon.
+       */
+      function showFailure(err) {
+        var data = (err && err.data) || {};
+        var lines = [h('b', { text: data.error === 'NO_DEVICE' ? t('pushNoDevice') : t('pushRefused') })];
+
+        (data.errors || []).forEach(function (e) {
+          lines.push(h('div', { class: 'raw', text: e.host + ' · HTTP ' + e.status }));
+          if (e.message) lines.push(h('div', { class: 'raw', text: e.message }));
+        });
+        if (data.subject) lines.push(h('div', { class: 'raw', text: 'sub: ' + data.subject }));
+
+        report(h('div', { class: 'notice err diag' }, lines));
+      }
+
+      function report(node) {
+        var old = box.querySelector('.notice.ok, .notice.err');
+        if (old) old.remove();
+        box.appendChild(node);
+      }
     }
 
     draw();
@@ -1962,6 +2038,55 @@
     return navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(function () { return null; });
   }
 
+  /**
+   * Compares the key a subscription was created with against the one the
+   * server is signing with now.
+   *
+   * They can drift — the app generated its keys after some browsers had
+   * already subscribed, and a subscription made with the wrong key is
+   * accepted by the browser and then refused by Apple or Google forever.
+   * Catching it here is the difference between silence and a notification.
+   */
+  function keyMatches(sub, wanted) {
+    try {
+      var applied = sub.options && sub.options.applicationServerKey;
+      if (!applied) return true; // nothing to compare against; assume fine
+      var a = new Uint8Array(applied);
+      var b = urlBase64ToUint8Array(wanted);
+      if (a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    } catch (e) { return true; }
+  }
+
+  /**
+   * Gets this browser a subscription and makes sure the SERVER has it.
+   *
+   * The server is the authority throughout: the browser having a subscription
+   * object proves nothing if the row never arrived, and a panel that says
+   * "on" in that state is worse than one that says nothing, because it sends
+   * someone off to look for a problem that is not where they think it is.
+   */
+  function subscribeNow(reg, publicKey) {
+    return reg.pushManager.getSubscription()
+      .then(function (existing) {
+        if (existing && keyMatches(existing, publicKey)) return existing;
+        // Stale or mismatched: drop it and start again rather than keep a
+        // subscription that can never be delivered to.
+        var gone = existing ? existing.unsubscribe().catch(function () {}) : Promise.resolve();
+        return gone.then(function () {
+          return reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+        });
+      })
+      .then(function (sub) {
+        return api('/api/push?do=subscribe', { method: 'POST', body: { subscription: sub.toJSON() } })
+          .then(function () { return sub; });
+      });
+  }
+
   /** Asks for permission and registers this browser. Must be called from a tap. */
   function enablePush() {
     pushState();
@@ -1978,19 +2103,29 @@
       if (!reg) throw new Error('NO_WORKER');
       return navigator.serviceWorker.ready;
     }).then(function (reg) {
-      return reg.pushManager.getSubscription().then(function (existing) {
-        if (existing) return existing;
-        return reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(S.push.key),
-        });
-      });
-    }).then(function (sub) {
-      return api('/api/push?do=subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+      return subscribeNow(reg, S.push.key);
     }).then(function () {
-      S.push.subscribed = true;
-      return true;
+      return checkServer();   // only the server's answer sets this to on
     });
+  }
+
+  /**
+   * Asks the server what it actually holds for this person.
+   *
+   * This is what the panel reports, rather than what the browser believes.
+   */
+  function checkServer() {
+    return api('/api/push?do=diagnose')
+      .then(function (d) {
+        S.push.devices = d.devices || [];
+        S.push.subscribed = S.push.devices.length > 0;
+        S.push.serverKnown = true;
+        return S.push.subscribed;
+      })
+      .catch(function () {
+        S.push.serverKnown = false;
+        return false;
+      });
   }
 
   function disablePush() {
@@ -2023,20 +2158,15 @@
       .then(function (reg) {
         return api('/api/push?do=key').then(function (info) {
           S.push.key = info.publicKey;
-          return reg.pushManager.getSubscription().then(function (sub) {
-            if (sub) return sub;
-            return reg.pushManager.subscribe({
-              userVisibleOnly: true,
-              applicationServerKey: urlBase64ToUint8Array(info.publicKey),
-            });
-          });
+          return subscribeNow(reg, info.publicKey);
         });
       })
-      .then(function (sub) {
-        S.push.subscribed = true;
-        return api('/api/push?do=subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
-      })
-      .catch(function () { /* a failed refresh must never block the app loading */ });
+      .then(checkServer)
+      .catch(function () {
+        // A failed refresh must never block the app loading — but it must not
+        // leave the panel claiming everything is fine either.
+        S.push.subscribed = false;
+      });
   }
 
   /* ======================================================================
