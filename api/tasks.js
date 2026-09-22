@@ -1,6 +1,7 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
+import { isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -16,7 +17,6 @@ import { withNode } from '../lib/http.js';
  * access level.
  */
 
-const STATUSES = ['todo', 'doing', 'done'];
 const SCOPES = ['all', 'heads', 'members'];
 const NOTIFY_KINDS = ['created', '7d', '24h', 'due'];
 
@@ -39,8 +39,11 @@ function toIsoDate(value) {
 async function assembled(sql) {
   const tasks = await sql`
     SELECT * FROM tasks
-    ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
-             due_date NULLS LAST, due_time NULLS LAST, created_at`;
+    ORDER BY
+      CASE status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'feedback' THEN 2
+                  WHEN 'todo' THEN 3 ELSE 4 END,
+      CASE priority WHEN 'highest' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+      due_date NULLS LAST, due_time NULLS LAST, created_at`;
   const people = await sql`SELECT * FROM task_people`;
   const depts = await sql`SELECT * FROM task_departments`;
 
@@ -56,6 +59,8 @@ async function assembled(sql) {
     dueDate: toIsoDate(t.due_date),
     dueTime: t.due_time || null,
     status: t.status,
+    priority: t.priority || 'medium',
+    department: t.department || null,
     createdBy: t.created_by,
     notify: String(t.notify || '').split(',').filter(Boolean),
     createdAt: t.created_at,
@@ -74,12 +79,19 @@ async function expandPeople(sql, assignees, departments) {
   const set = new Set(assignees);
 
   for (const { key, scope } of departments) {
+    // Membership comes from the grants table, so someone who works across two
+    // departments is reached by a tag on either of them. People whose access
+    // is "all departments" are deliberately not swept in: tagging Content
+    // should not notify the project director.
     const rows =
       scope === 'heads'
-        ? await sql`SELECT username FROM users WHERE department = ${key} AND is_head = true AND active = true`
+        ? await sql`SELECT u.username FROM users u JOIN user_departments d ON d.username = u.username
+                    WHERE d.department = ${key} AND u.is_head = true AND u.active = true`
         : scope === 'members'
-          ? await sql`SELECT username FROM users WHERE department = ${key} AND is_head = false AND active = true`
-          : await sql`SELECT username FROM users WHERE department = ${key} AND active = true`;
+          ? await sql`SELECT u.username FROM users u JOIN user_departments d ON d.username = u.username
+                      WHERE d.department = ${key} AND u.is_head = false AND u.active = true`
+          : await sql`SELECT u.username FROM users u JOIN user_departments d ON d.username = u.username
+                      WHERE d.department = ${key} AND u.active = true`;
     for (const r of rows) set.add(r.username);
   }
   return [...set];
@@ -136,7 +148,14 @@ async function handler(request) {
 
   try {
     if (request.method === 'GET') {
-      return json({ tasks: await assembled(sql) });
+      const all = await assembled(sql);
+      // Filtering here rather than in SQL keeps one definition of the rule,
+      // in lib/scope.js, shared with the client's own display logic.
+      return json({
+        tasks: all.filter((task) => canSeeTask(me, task)),
+        seesEverything: seesEverything(me),
+        myDepartments: [...accessSet(me)],
+      });
     }
 
     if (request.method === 'POST') {
@@ -149,11 +168,25 @@ async function handler(request) {
         .filter((k) => NOTIFY_KINDS.includes(k))
         .join(',');
 
+      /**
+       * A task's teamspace defaults to the creator's home department, so
+       * nothing ever lands in a place nobody can see. Filing into a
+       * department you have no access to is refused rather than quietly
+       * redirected — a task that silently moved would be worse than an error.
+       */
+      const department = isDepartment(body.department) ? body.department : (me.department || null);
+      if (department && !canPostTo(me, department)) {
+        return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
+      }
+
       await sql`
-        INSERT INTO tasks (id, title, description, due_date, due_time, status, created_by, notify)
+        INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+                           department, created_by, notify)
         VALUES (${id}, ${title}, ${clean(body.description, 4000)},
                 ${cleanDate(body.dueDate)}, ${cleanTime(body.dueTime)},
-                ${STATUSES.includes(body.status) ? body.status : 'todo'}, ${me.username}, ${notify})`;
+                ${isStatus(body.status) ? body.status : 'todo'},
+                ${isPriority(body.priority) ? body.priority : 'medium'},
+                ${department}, ${me.username}, ${notify})`;
 
       const { assignees, departments } = readTags(body);
       const expanded = await writeTags(sql, id, assignees, departments);
@@ -164,7 +197,7 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
-      return json({ task: all.find((t) => t.id === id), tasks: all }, 201);
+      return json({ task: all.find((t) => t.id === id), tasks: all.filter((x) => canSeeTask(me, x)) }, 201);
     }
 
     if (request.method === 'PATCH') {
@@ -175,6 +208,15 @@ async function handler(request) {
       const [existing] = await sql`SELECT * FROM tasks WHERE id = ${id}`;
       if (!existing) return json({ error: 'NO_SUCH_TASK' }, 404);
 
+      // Editing is open to everyone who can SEE the task — but not beyond.
+      const visible = (await assembled(sql)).find((x) => x.id === id);
+      if (!canSeeTask(me, visible)) return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
+
+      if (body.department !== undefined && body.department !== null &&
+          !canPostTo(me, body.department)) {
+        return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
+      }
+
       // COALESCE keeps every field the caller left out, so two people editing
       // different fields of one task cannot overwrite each other.
       await sql`
@@ -183,7 +225,10 @@ async function handler(request) {
           description = COALESCE(${body.description === undefined ? null : clean(body.description, 4000)}, description),
           due_date    = CASE WHEN ${body.dueDate === undefined} THEN due_date ELSE ${cleanDate(body.dueDate)}::date END,
           due_time    = CASE WHEN ${body.dueTime === undefined} THEN due_time ELSE ${cleanTime(body.dueTime)} END,
-          status      = COALESCE(${STATUSES.includes(body.status) ? body.status : null}, status),
+          status      = COALESCE(${isStatus(body.status) ? body.status : null}, status),
+          priority    = COALESCE(${isPriority(body.priority) ? body.priority : null}, priority),
+          department  = CASE WHEN ${body.department === undefined} THEN department
+                             ELSE ${isDepartment(body.department) ? body.department : null} END,
           notify      = COALESCE(${
             Array.isArray(body.notify)
               ? body.notify.filter((k) => NOTIFY_KINDS.includes(k)).join(',')
@@ -211,15 +256,18 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
-      return json({ task: all.find((t) => t.id === id), tasks: all });
+      return json({ task: all.find((t) => t.id === id), tasks: all.filter((x) => canSeeTask(me, x)) });
     }
 
     if (request.method === 'DELETE') {
       const id = clean(url.searchParams.get('id'), 64);
       if (!id) return json({ error: 'ID_REQUIRED' }, 400);
+
+      const target = (await assembled(sql)).find((x) => x.id === id);
+      if (target && !canSeeTask(me, target)) return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
       await sql`DELETE FROM tasks WHERE id = ${id}`;
       await sql`DELETE FROM reminders_sent WHERE task_id = ${id}`;
-      return json({ ok: true, tasks: await assembled(sql) });
+      return json({ ok: true, tasks: (await assembled(sql)).filter((x) => canSeeTask(me, x)) });
     }
 
     return json({ error: 'METHOD' }, 405);

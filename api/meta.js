@@ -1,5 +1,6 @@
 import { json, hasDatabase } from '../lib/db.js';
 import { DEPARTMENTS } from '../lib/departments.js';
+import { STATUSES, PRIORITIES } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -9,7 +10,11 @@ import { withNode } from '../lib/http.js';
 async function handler() {
   return json({
     hasDatabase,
-    departments: DEPARTMENTS.map((d) => ({ key: d.key, th: d.th, en: d.en, units: d.units })),
+    departments: DEPARTMENTS.map((d) => ({
+      key: d.key, th: d.th, en: d.en, units: d.units, parent: d.parent || null,
+    })),
+    statuses: STATUSES,
+    priorities: PRIORITIES,
   });
 }
 

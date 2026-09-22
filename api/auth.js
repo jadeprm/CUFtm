@@ -1,6 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import {
-  currentUser, hashPassword, verifyPassword, passwordProblem,
+  currentUser, departmentsOf, hashPassword, verifyPassword, passwordProblem,
   newToken, sessionCookie, sessionExpiry,
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
@@ -23,6 +23,8 @@ const publicUser = (u) => ({
   position: u.position,
   access: u.access,
   department: u.department,
+  departments: u.departments || [],
+  allDepartments: Boolean(u.all_departments),
   isHead: u.is_head,
   avatar: u.avatar || null,
   lang: u.lang || 'th',
@@ -110,6 +112,7 @@ async function handler(request) {
               VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${u.username}`;
+    fresh.departments = await departmentsOf(sql, fresh.username);
     return json({ user: publicUser(fresh) }, 200, { 'set-cookie': sessionCookie(token) });
   }
 
@@ -130,6 +133,7 @@ async function handler(request) {
               VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
     await sql`DELETE FROM sessions WHERE username = ${u.username} AND expires_at < now()`;
 
+    u.departments = await departmentsOf(sql, u.username);
     return json({ user: publicUser(u) }, 200, { 'set-cookie': sessionCookie(token) });
   }
 

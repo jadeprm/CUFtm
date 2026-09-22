@@ -1,7 +1,10 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
-import { currentUser, canManageAccounts, cannotActOn, ACCESS, newToken } from '../lib/auth.js';
+import {
+  currentUser, canManageAccounts, cannotActOn, ACCESS, newToken,
+  departmentsByUser, departmentsOf, setDepartments,
+} from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
-import { isDepartment } from '../lib/departments.js';
+import { isDepartment, expandAccess } from '../lib/departments.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -16,14 +19,18 @@ import { withNode } from '../lib/http.js';
 
 const MAX_AVATAR = 200_000; // ~200 KB of data URL; the page downsizes before sending
 
-const directoryRow = (u) => ({
+const directoryRow = (u, grants = {}) => ({
   username: u.username,
   nickname: u.nickname,
   displayName: u.display_name || u.sheet_name || u.username,
   position: u.position,
   access: u.access,
   department: u.department,
+  departments: grants[u.username] || u.departments || [],
+  allDepartments: Boolean(u.all_departments),
+  deptsPinned: Boolean(u.depts_pinned),
   isHead: u.is_head,
+  unit: u.unit || null,
   avatar: u.avatar || null,
   active: u.active,
   suspended: u.suspended,
@@ -49,9 +56,10 @@ async function handler(request) {
   // ---- directory ---------------------------------------------------------
   if (request.method === 'GET') {
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const grants = await departmentsByUser(sql);
     const [meta] = await sql`SELECT value FROM meta WHERE key = 'last_sync'`;
     return json({
-      users: rows.map(directoryRow),
+      users: rows.map((u) => directoryRow(u, grants)),
       canManage: canManageAccounts(me),
       lastSync: meta?.value || null,
       sheetId: SHEET_ID,
@@ -103,6 +111,7 @@ async function handler(request) {
       WHERE username = ${me.username}`;
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${me.username}`;
+    fresh.departments = await departmentsOf(sql, me.username);
     return json({
       user: { ...directoryRow(fresh), theme: fresh.theme, calendarToken: fresh.calendar_token || null },
     });
@@ -142,12 +151,72 @@ async function handler(request) {
       sets.push(suspended ? 'suspended' : 'restored');
     }
 
+    /**
+     * Department access — the whole set, replaced in one call.
+     *
+     * Adding, removing and clearing are all "send the list you want", which
+     * means two admins editing the same person cannot end up with a half-
+     * applied change, and there is no separate delete endpoint to get wrong.
+     *
+     * `allDepartments` is the "every department, including ones added later"
+     * switch; it is stored as a flag rather than as a row per department so a
+     * new department does not have to be granted to the directors by hand.
+     */
+    if (body.departments !== undefined || body.allDepartments !== undefined) {
+      const wanted = Array.isArray(body.departments)
+        ? [...new Set(body.departments.map((d) => String(d)))]
+        : await departmentsOf(sql, target.username);
+
+      const bad = wanted.filter((d) => !isDepartment(d));
+      if (bad.length) return json({ error: 'BAD_DEPARTMENT', departments: bad }, 400);
+
+      const all =
+        body.allDepartments === undefined
+          ? Boolean(target.all_departments)
+          : Boolean(body.allDepartments);
+
+      await sql`UPDATE users SET all_departments = ${all}, depts_pinned = true, updated_at = now()
+                WHERE username = ${target.username}`;
+      await setDepartments(sql, target.username, expandAccess(wanted));
+
+      sets.push(all ? 'access: all departments' : `access: ${wanted.length} department(s)`);
+    }
+
+    /**
+     * Hands the person back to the sheet.
+     *
+     * The next sync then rewrites their departments from the Department
+     * column. Offered because an override with no way out would mean one
+     * mistaken click permanently detaches someone from the roster.
+     */
+    if (body.followSheet) {
+      await sql`UPDATE users SET depts_pinned = false, updated_at = now()
+                WHERE username = ${target.username}`;
+      sets.push('following the sheet again');
+    }
+
+    /** The home teamspace — where this person's new tasks land by default. */
     if (body.department !== undefined) {
       const dept = body.department === null ? null : String(body.department);
       if (dept !== null && !isDepartment(dept)) return json({ error: 'BAD_DEPARTMENT' }, 400);
+
+      // Read the grants back rather than trusting the ones this request came
+      // in with: the block above may just have changed them.
+      const [{ all_departments: nowAll }] =
+        await sql`SELECT all_departments FROM users WHERE username = ${target.username}`;
+      const allowed = expandAccess(await departmentsOf(sql, target.username));
+      if (dept !== null && !allowed.includes(dept) && !nowAll) {
+        return json({ error: 'HOME_NOT_GRANTED' }, 400);
+      }
       await sql`UPDATE users SET department = ${dept}, updated_at = now()
                 WHERE username = ${target.username}`;
-      sets.push('department set');
+      sets.push('home teamspace set');
+    }
+
+    if (body.unit !== undefined) {
+      const unit = body.unit === null ? null : String(body.unit).slice(0, 80);
+      await sql`UPDATE users SET unit = ${unit}, updated_at = now() WHERE username = ${target.username}`;
+      sets.push('unit set');
     }
 
     if (body.isHead !== undefined) {
@@ -168,6 +237,7 @@ async function handler(request) {
     if (!sets.length) return json({ error: 'NOTHING_TO_DO' }, 400);
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${target.username}`;
+    fresh.departments = await departmentsOf(sql, target.username);
     return json({ user: directoryRow(fresh), did: sets });
   }
 
@@ -190,7 +260,8 @@ async function handler(request) {
     try {
       const result = await syncPeople(sql, await fetchPeople());
       const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
-      return json({ ...result, users: rows.map(directoryRow) });
+      const grants = await departmentsByUser(sql);
+      return json({ ...result, users: rows.map((u) => directoryRow(u, grants)) });
     } catch (error) {
       return json({ error: 'SHEET_UNREADABLE', message: error.message }, 502);
     }

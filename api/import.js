@@ -3,6 +3,7 @@ import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
 import { parseCsv } from '../lib/sheet.js';
 import { DEPARTMENTS, isDepartment } from '../lib/departments.js';
+import { STATUSES, PRIORITIES, isPriority } from '../lib/scope.js';
 
 /**
  * Bulk import of tasks from a spreadsheet.
@@ -16,7 +17,6 @@ import { DEPARTMENTS, isDepartment } from '../lib/departments.js';
  * dates were understood.
  */
 
-const STATUSES = ['todo', 'doing', 'done'];
 const NOTIFY_KINDS = ['created', '7d', '24h', 'due'];
 const MAX_ROWS = 300;
 
@@ -32,6 +32,7 @@ const COLUMNS = {
   dueTime: ['due time', 'duetime', 'time', 'เวลา'],
   status: ['status', 'สถานะ'],
   notify: ['notify', 'reminders', 'แจ้งเตือน'],
+  priority: ['priority', 'ความสำคัญ', 'ระดับ'],
 };
 
 function columnIndexes(header) {
@@ -80,7 +81,17 @@ function parseTime(value) {
 const STATUS_WORDS = {
   todo: 'todo', 'to do': 'todo', 'ยังไม่เริ่ม': 'todo',
   doing: 'doing', 'in progress': 'doing', 'กำลังทำ': 'doing',
+  review: 'review', 'under review': 'review', 'รอตรวจ': 'review',
+  feedback: 'feedback', 'feedback provided': 'feedback', 'feedback given': 'feedback',
+  'ตรวจแล้ว': 'feedback', 'ให้ความเห็นแล้ว': 'feedback',
   done: 'done', 'เสร็จแล้ว': 'done', 'เสร็จ': 'done',
+};
+
+const PRIORITY_WORDS = {
+  low: 'low', 'ต่ำ': 'low',
+  medium: 'medium', normal: 'medium', 'ปานกลาง': 'medium', 'กลาง': 'medium',
+  high: 'high', 'สูง': 'high',
+  highest: 'highest', urgent: 'highest', 'สูงมาก': 'highest', 'ด่วน': 'highest', 'ด่วนมาก': 'highest',
 };
 
 /** Matches a written name to an account: username, display name or nickname. */
@@ -167,6 +178,10 @@ function buildRows(rows, people) {
     const status = STATUS_WORDS[statusWord] || 'todo';
     if (statusWord && !STATUS_WORDS[statusWord]) notes.push('STATUS_DEFAULTED');
 
+    const priorityWord = clean(col.priority === -1 ? '' : raw[col.priority], 30).toLowerCase();
+    const priority = PRIORITY_WORDS[priorityWord] || 'medium';
+    if (priorityWord && !PRIORITY_WORDS[priorityWord]) notes.push('PRIORITY_DEFAULTED');
+
     const notifyList = splitList(col.notify === -1 ? '' : raw[col.notify])
       .map((n) => n.toLowerCase())
       .filter((n) => NOTIFY_KINDS.includes(n));
@@ -180,6 +195,7 @@ function buildRows(rows, people) {
       dueDate: dateResult.date,
       dueTime: timeResult.time,
       status: STATUSES.includes(status) ? status : 'todo',
+      priority,
       notify: notifyList.length ? notifyList : NOTIFY_KINDS,
       unknownPeople,
       unknownDepts,
@@ -258,12 +274,18 @@ async function handler(request) {
         const notify = (Array.isArray(row.notify) ? row.notify : NOTIFY_KINDS)
           .filter((k) => NOTIFY_KINDS.includes(k)).join(',');
 
+        // Imported tasks land in the importer's own teamspace unless a row
+        // names a department, so nothing arrives somewhere invisible.
+        const home = (row.departments || []).find((d) => isDepartment(d.key));
         await sql`
-          INSERT INTO tasks (id, title, description, due_date, due_time, status, created_by, notify)
+          INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+                             department, created_by, notify)
           VALUES (${id}, ${title}, ${clean(row.description, 4000)},
                   ${/^\d{4}-\d{2}-\d{2}$/.test(row.dueDate || '') ? row.dueDate : null},
                   ${/^\d{2}:\d{2}$/.test(row.dueTime || '') ? row.dueTime : null},
-                  ${STATUSES.includes(row.status) ? row.status : 'todo'}, ${me.username}, ${notify})`;
+                  ${STATUSES.includes(row.status) ? row.status : 'todo'},
+                  ${isPriority(row.priority) ? row.priority : 'medium'},
+                  ${home ? home.key : (me.department || null)}, ${me.username}, ${notify})`;
 
         // Resolve department tags to people, exactly as the task form does.
         const set = new Set((row.assignees || []).map((a) => clean(a, 64)).filter(Boolean));
@@ -271,10 +293,13 @@ async function handler(request) {
           if (!isDepartment(d.key)) continue;
           const found =
             d.scope === 'heads'
-              ? await sql`SELECT username FROM users WHERE department = ${d.key} AND is_head = true AND active = true`
+              ? await sql`SELECT u.username FROM users u JOIN user_departments x ON x.username = u.username
+                          WHERE x.department = ${d.key} AND u.is_head = true AND u.active = true`
               : d.scope === 'members'
-                ? await sql`SELECT username FROM users WHERE department = ${d.key} AND is_head = false AND active = true`
-                : await sql`SELECT username FROM users WHERE department = ${d.key} AND active = true`;
+                ? await sql`SELECT u.username FROM users u JOIN user_departments x ON x.username = u.username
+                            WHERE x.department = ${d.key} AND u.is_head = false AND u.active = true`
+                : await sql`SELECT u.username FROM users u JOIN user_departments x ON x.username = u.username
+                            WHERE x.department = ${d.key} AND u.active = true`;
           for (const f of found) set.add(f.username);
           await sql`INSERT INTO task_departments (task_id, department, scope)
                     VALUES (${id}, ${d.key}, ${d.scope}) ON CONFLICT DO NOTHING`;

@@ -19,8 +19,12 @@
     lastSync: null,
     sheetId: null,
     page: 'mine',
-    filter: 'open',      // open | todo | doing | done | all
+    filter: 'open',
     who: '',
+    dept: '',            // teamspace filter; '' = everything I can see
+    prio: '',            // priority filter
+    seesEverything: false,
+    myDepartments: [],   // every teamspace I may work in
     calRange: 7,
     calMineOnly: false,
   };
@@ -56,6 +60,27 @@
     var key = window.ERROR_KEYS[code];
     return key ? t(key) : t('errGeneric');
   };
+
+  /* ---------- task vocabulary --------------------------------------------
+     Mirrors lib/scope.js. Listed in the order work actually moves, which is
+     also the order every menu and segmented control shows them in.
+     ---------------------------------------------------------------------- */
+  var STATUS_LIST = ['todo', 'doing', 'review', 'feedback', 'done'];
+  var PRIORITY_LIST = ['low', 'medium', 'high', 'highest'];
+
+  var STATUS_KEY = {
+    todo: 'statusTodo', doing: 'statusDoing', review: 'statusReview',
+    feedback: 'statusFeedback', done: 'statusDone',
+  };
+  var PRIORITY_KEY = {
+    low: 'prioLow', medium: 'prioMedium', high: 'prioHigh', highest: 'prioHighest',
+  };
+
+  /** A one-character mark for the round status button on each card. */
+  var MARK = { todo: '', doing: '\u25CF', review: '\u25D4', feedback: '\u25D1', done: '\u2713' };
+
+  function statusLabel(status) { return t(STATUS_KEY[status] || status); }
+  function prioLabel(priority) { return t(PRIORITY_KEY[priority] || priority); }
 
   /* ---------- tiny DOM helper ------------------------------------------- */
   function h(tag, props, kids) {
@@ -147,6 +172,84 @@
     if (u && u.avatar) return h('span', { class: cls, title: nameOf(username) }, [h('img', { src: u.avatar, alt: '' })]);
     return h('span', { class: cls, title: nameOf(username), text: initials(u ? u.displayName : username) });
   }
+  /**
+   * Groups a list of people by department, mine first.
+   *
+   * Each person appears exactly once, under their home department — grouping
+   * by every department they are granted would list the assistant head of
+   * Operations four times, which reads as a bug.
+   *
+   * My own departments come first because those are the people I work with
+   * daily; everyone else follows, so asking another department for something
+   * stays possible without scrolling past them every time.
+   */
+  function groupPeople(people) {
+    var ownKeys = myDepartments().map(function (d) { return d.key; });
+    var groups = [];
+
+    function collect(keys, prefix) {
+      keys.forEach(function (key) {
+        var d = null;
+        for (var i = 0; i < S.departments.length; i++) {
+          if (S.departments[i].key === key) d = S.departments[i];
+        }
+        if (!d) return;
+        var members = people.filter(function (u) { return u.department === key; });
+        if (members.length) groups.push({ label: prefix + (d[S.lang] || d.en), people: members });
+      });
+    }
+
+    collect(ownKeys, '');
+    collect(S.departments.map(function (d) { return d.key; }).filter(function (k) {
+      return ownKeys.indexOf(k) === -1;
+    }), S.seesEverything ? '' : t('otherDepartments') + ' \u00B7 ');
+
+    var orphans = people.filter(function (u) { return !u.department; });
+    if (orphans.length) groups.push({ label: t('noDepartment'), people: orphans });
+    return groups;
+  }
+
+  /** The same grouping as <optgroup>s, for a plain <select>. */
+  function groupedPeopleOptions(people) {
+    return groupPeople(people).map(function (g) {
+      return h('optgroup', { label: g.label }, g.people.map(function (u) {
+        return h('option', {
+          value: u.username,
+          text: (u.unit ? u.unit + ' \u00B7 ' : '') + u.displayName,
+          selected: S.who === u.username,
+        });
+      }));
+    });
+  }
+
+  /** Departments this person may file into, as objects, in org-chart order. */
+  function myDepartments() {
+    if (S.seesEverything) return S.departments;
+    return S.departments.filter(function (d) {
+      return S.myDepartments.indexOf(d.key) !== -1;
+    });
+  }
+
+  /** Everyone who has been granted this department. */
+  function peopleIn(key) {
+    return S.users.filter(function (u) {
+      return (u.departments || []).indexOf(key) !== -1;
+    });
+  }
+
+  /** Position in the org chart, so chips always list in the same order. */
+  function chartOrder(key) {
+    for (var i = 0; i < S.departments.length; i++) {
+      if (S.departments[i].key === key) return i;
+    }
+    return 999;
+  }
+
+  /** The label, indented one step for the Operations divisions. */
+  function deptOptionLabel(d) {
+    return (d.parent ? '\u2001' : '') + (d[S.lang] || d.en);
+  }
+
   function deptLabel(key) {
     for (var i = 0; i < S.departments.length; i++) {
       if (S.departments[i].key === key) return S.departments[i][S.lang] || S.departments[i].en;
@@ -411,6 +514,12 @@
       if (S.filter === 'open' && task.status === 'done') return false;
       if (['todo', 'doing', 'done'].indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
       if (S.who && task.assignees.indexOf(S.who) === -1) return false;
+      if (S.prio && task.priority !== S.prio) return false;
+      if (S.dept) {
+        var inDept = task.department === S.dept ||
+          (task.departments || []).some(function (d) { return d.key === S.dept; });
+        if (!inDept) return false;
+      }
       return true;
     });
   }
@@ -430,11 +539,14 @@
       open: pool.filter(function (x) { return x.status !== 'done'; }).length,
       todo: pool.filter(function (x) { return x.status === 'todo'; }).length,
       doing: pool.filter(function (x) { return x.status === 'doing'; }).length,
+      review: pool.filter(function (x) { return x.status === 'review'; }).length,
+      feedback: pool.filter(function (x) { return x.status === 'feedback'; }).length,
       done: pool.filter(function (x) { return x.status === 'done'; }).length,
     };
 
     var seg = h('div', { class: 'seg' }, [
-      ['open', t('all')], ['todo', t('statusTodo')], ['doing', t('statusDoing')], ['done', t('statusDone')],
+      ['open', t('all')], ['todo', statusLabel('todo')], ['doing', statusLabel('doing')],
+      ['review', statusLabel('review')], ['feedback', statusLabel('feedback')], ['done', statusLabel('done')],
     ].map(function (pair) {
       return h('button', {
         class: S.filter === pair[0] ? 'on' : '',
@@ -442,15 +554,51 @@
       }, [pair[1], h('span', { class: 'n', text: String(counts[pair[0]]) })]);
     }));
 
-    var whoSelect = h('select', {
-      onchange: function (e) { S.who = e.target.value; renderPage(); },
-    }, [h('option', { value: '', text: t('everyone') })].concat(
-      S.users.filter(function (u) { return u.active; }).map(function (u) {
-        return h('option', { value: u.username, text: u.displayName, selected: S.who === u.username });
+    /**
+     * Department first, person second.
+     *
+     * A flat list of every person stops working the moment the roster grows
+     * past the heads, which it is about to. Picking a department narrows the
+     * person list to that department, so the second dropdown stays short.
+     */
+    var deptSelect = h('select', {
+      onchange: function (e) { S.dept = e.target.value; S.who = ''; renderPage(); },
+    }, [h('option', { value: '', text: t('allDepartments') })].concat(
+      myDepartments().map(function (d) {
+        return h('option', { value: d.key, text: deptOptionLabel(d), selected: S.dept === d.key });
       })
     ));
 
-    main.appendChild(h('div', { class: 'filters' }, [seg, h('span', { class: 'grow' }), whoSelect]));
+    var peopleForPicker = S.users.filter(function (u) {
+      return u.active && (!S.dept || (u.departments || []).indexOf(S.dept) !== -1);
+    });
+    var whoSelect = h('select', {
+      onchange: function (e) { S.who = e.target.value; renderPage(); },
+    }, [h('option', { value: '', text: t('everyone') })].concat(
+      groupedPeopleOptions(peopleForPicker)
+    ));
+
+    var prioSelect = h('select', {
+      onchange: function (e) { S.prio = e.target.value; renderPage(); },
+    }, [h('option', { value: '', text: t('priority') })].concat(
+      PRIORITY_LIST.map(function (p) {
+        return h('option', { value: p, text: prioLabel(p), selected: S.prio === p });
+      })
+    ));
+
+    // The three dropdowns are one group, so they wrap together onto a second
+    // line rather than splitting up awkwardly on a narrow window.
+    main.appendChild(h('div', { class: 'filters' }, [
+      seg, h('span', { class: 'grow' }),
+      h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, whoSelect]),
+    ]));
+
+    if (!S.seesEverything) {
+      main.appendChild(h('p', {
+        style: 'margin:-6px 0 12px;font-size:12.5px;color:var(--ink-faint)',
+        text: t('deptOnlyNote'),
+      }));
+    }
 
     var rows = visibleTasks(mineOnly);
     if (!rows.length) {
@@ -463,11 +611,14 @@
     main.appendChild(h('ul', { class: 'tasks' }, rows.map(taskRow)));
   }
 
-  var NEXT = { todo: 'doing', doing: 'done', done: 'todo' };
-  var MARK = { todo: '', doing: '●', done: '✓' };
-
   function taskRow(task) {
     var meta = [];
+    var prio = task.priority || 'medium';
+    // Only show a chip when it is not the default — otherwise every card
+    // carries the same badge and the urgent ones stop standing out.
+    if (prio !== 'medium') {
+      meta.push(h('span', { class: 'chip prio prio-' + prio, text: prioLabel(prio) }));
+    }
     if (task.dueDate) {
       var rel = relativeDay(task.dueDate);
       meta.push(h('span', { class: 'chip' + (isOverdue(task) ? ' overdue' : '') }, [
@@ -483,18 +634,54 @@
     if (task.assignees.length > 4) stack.appendChild(h('span', { class: 'avatar sm', text: '+' + (task.assignees.length - 4) }));
 
     return h('li', {
-      class: 'task', dataset: { status: task.status },
+      class: 'task', dataset: { status: task.status, prio: task.priority || 'medium' },
       onclick: function () { openTask(task); },
     }, [
       h('button', {
-        class: 'status-btn', text: MARK[task.status],
-        title: t('status' + task.status.charAt(0).toUpperCase() + task.status.slice(1)),
-        onclick: function (e) { e.stopPropagation(); patchTask(task.id, { status: NEXT[task.status] }); },
+        class: 'status-btn', text: MARK[task.status], title: statusLabel(task.status),
+        onclick: function (e) { e.stopPropagation(); openStatusMenu(e.currentTarget, task); },
       }),
       h('div', { class: 't-title', text: task.title }),
       h('div', { class: 't-side' }, [stack]),
       meta.length ? h('div', { class: 't-meta' }, meta) : null,
     ]);
+  }
+
+  /**
+   * A small menu of the five states.
+   *
+   * Clicking through a five-step ladder to reach "done" would take four
+   * clicks; picking it takes one.
+   */
+  function openStatusMenu(anchor, task) {
+    var existing = document.getElementById('status-menu');
+    if (existing) existing.remove();
+
+    var menu = h('div', { class: 'pop', id: 'status-menu', style: 'width:12rem' },
+      [h('div', { class: 'items' }, STATUS_LIST.map(function (st) {
+        return h('div', {
+          class: 'item' + (task.status === st ? ' unread' : ''),
+          onclick: function (e) {
+            e.stopPropagation();
+            menu.remove();
+            if (st !== task.status) patchTask(task.id, { status: st });
+          },
+        }, [h('b', {}, [(MARK[st] || '\u00B7') + '  ' + statusLabel(st)])]);
+      }))]);
+
+    var box = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = (box.bottom + 6) + 'px';
+    menu.style.left = Math.min(box.left, window.innerWidth - 210) + 'px';
+    menu.style.right = 'auto';
+    document.body.appendChild(menu);
+
+    setTimeout(function () {
+      document.addEventListener('click', function close() {
+        menu.remove();
+        document.removeEventListener('click', close);
+      }, { once: true });
+    }, 0);
   }
 
   function patchTask(id, changes) {
@@ -512,6 +699,8 @@
       dueDate: task ? task.dueDate : '',
       dueTime: task ? task.dueTime : '',
       status: task ? task.status : 'todo',
+      priority: task ? (task.priority || 'medium') : 'medium',
+      department: task ? (task.department || null) : (S.user.department || null),
       assignees: task ? task.assignees.slice() : [S.user.username],
       departments: task ? task.departments.map(function (d) { return { key: d.key, scope: d.scope }; }) : [],
       notify: task ? task.notify.slice() : ['created', '7d', '24h', 'due'],
@@ -539,10 +728,9 @@
       return h('label', {}, [cb, t(pair[1])]);
     }));
 
-    var statusSeg = h('div', { class: 'seg' }, ['todo', 'doing', 'done'].map(function (st) {
+    var statusSeg = h('div', { class: 'seg wrap' }, STATUS_LIST.map(function (st) {
       var b = h('button', {
-        type: 'button', class: draft.status === st ? 'on' : '',
-        text: t('status' + st.charAt(0).toUpperCase() + st.slice(1)),
+        type: 'button', class: draft.status === st ? 'on' : '', text: statusLabel(st),
         onclick: function () {
           draft.status = st;
           statusSeg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
@@ -551,6 +739,35 @@
       });
       return b;
     }));
+
+    var prioSeg = h('div', { class: 'seg wrap' }, PRIORITY_LIST.slice().reverse().map(function (p) {
+      var b = h('button', {
+        type: 'button', class: 'prio-btn prio-' + p + (draft.priority === p ? ' on' : ''),
+        text: prioLabel(p),
+        onclick: function () {
+          draft.priority = p;
+          prioSeg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+          b.classList.add('on');
+        },
+      });
+      return b;
+    }));
+
+    /**
+     * Which teamspace the task lives in — this decides who can see it.
+     * Editors may only file into their own department, which is why the
+     * control is disabled for them rather than hidden: silently ignoring a
+     * choice is worse than showing it is not available.
+     */
+    var choices = myDepartments();
+    var deptSelect = h('select', {
+      disabled: !S.seesEverything && choices.length < 2,
+      onchange: function (e) { draft.department = e.target.value || null; },
+    }, [h('option', { value: '', text: t('noDepartment') })].concat(
+      choices.map(function (d) {
+        return h('option', { value: d.key, text: deptOptionLabel(d), selected: draft.department === d.key });
+      })
+    ));
 
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
     var modal = h('div', { class: 'modal' }, [
@@ -567,7 +784,14 @@
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('assignTo') }), peopleBox]),
         h('div', { class: 'field' }, [h('label', { text: t('departments') }), deptBox]),
-        h('div', { class: 'field' }, [h('label', { text: t('statusTodo') + ' / ' + t('statusDone') }), statusSeg]),
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('teamspace') }), deptSelect,
+            (!S.seesEverything && choices.length < 2)
+              ? h('small', { style: 'color:var(--ink-faint);font-size:11.5px', text: t('lockedToDept') })
+              : null]),
+          h('div', { class: 'field' }, [h('label', { text: t('priority') }), prioSeg]),
+        ]),
+        h('div', { class: 'field' }, [h('label', { text: statusLabel('todo') + ' \u2192 ' + statusLabel('done') }), statusSeg]),
         h('div', { class: 'field' }, [h('label', { text: t('notifyWhen') }), notifyBox]),
         task ? h('p', { class: 'hint', style: 'font-size:12.5px;color:var(--ink-faint);margin:0' },
           [t('createdBy') + ': ' + nameOf(task.createdBy)]) : null,
@@ -605,6 +829,8 @@
         dueDate: dateInput.value || null,
         dueTime: timeInput.value || null,
         status: draft.status,
+        priority: draft.priority,
+        department: draft.department,
         assignees: draft.assignees,
         departments: draft.departments,
         notify: draft.notify,
@@ -641,13 +867,20 @@
       function fill() {
         clear(options);
         var q = search.value.trim().toLowerCase();
-        S.users.filter(function (u) { return u.active; })
-          .filter(function (u) {
-            return !q || u.displayName.toLowerCase().indexOf(q) !== -1 ||
-              u.username.toLowerCase().indexOf(q) !== -1 ||
-              (u.nickname || '').toLowerCase().indexOf(q) !== -1;
-          })
-          .forEach(function (u) {
+        var matches = S.users.filter(function (u) { return u.active; }).filter(function (u) {
+          return !q || u.displayName.toLowerCase().indexOf(q) !== -1 ||
+            u.username.toLowerCase().indexOf(q) !== -1 ||
+            (u.nickname || '').toLowerCase().indexOf(q) !== -1 ||
+            (u.unit || '').toLowerCase().indexOf(q) !== -1;
+        });
+
+        // My departments first, everyone else after — see groupPeople. Keeps
+        // this usable when the roster grows from 18 heads to the whole committee.
+        var groups = groupPeople(matches);
+
+        groups.forEach(function (g) {
+          options.appendChild(h('div', { class: 'group-label', text: g.label }));
+          g.people.forEach(function (u) {
             var on = draft.assignees.indexOf(u.username) !== -1;
             options.appendChild(h('div', {
               class: 'opt' + (on ? ' on' : ''),
@@ -656,8 +889,10 @@
                 else draft.assignees.push(u.username);
                 redraw();
               },
-            }, [avatarNode(u.username, 'sm'), u.displayName, h('small', { text: u.position || u.username })]));
+            }, [avatarNode(u.username, 'sm'), (u.unit ? u.unit + ' \u00B7 ' : '') + u.displayName,
+                h('small', { text: u.position || u.username })]));
           });
+        });
       }
       search.addEventListener('input', fill);
       fill();
@@ -683,9 +918,10 @@
       redraw();
     }
     function everyone(scope) {
-      var full = S.departments.every(function (d) { return has(d.key, scope); });
+      var reachable = myDepartments();
+      var full = reachable.every(function (d) { return has(d.key, scope); });
       draft.departments = draft.departments.filter(function (d) { return d.scope !== scope; });
-      if (!full) S.departments.forEach(function (d) { draft.departments.push({ key: d.key, scope: scope }); });
+      if (!full) reachable.forEach(function (d) { draft.departments.push({ key: d.key, scope: scope }); });
       redraw();
     }
 
@@ -706,8 +942,8 @@
       ]));
 
       var options = h('div', { class: 'options' });
-      S.departments.forEach(function (d) {
-        options.appendChild(h('div', { class: 'group-label', text: d[S.lang] || d.en }));
+      myDepartments().forEach(function (d) {
+        options.appendChild(h('div', { class: 'group-label', text: deptOptionLabel(d) }));
         [['all', 'scopeAll'], ['heads', 'scopeHeads'], ['members', 'scopeMembers']].forEach(function (pair) {
           options.appendChild(h('div', {
             class: 'opt' + (has(d.key, pair[0]) ? ' on' : ''),
@@ -986,8 +1222,13 @@
           ]),
         ]),
         h('div', { class: 'field' }, [
-          h('label', { text: t('department') }),
-          h('input', { type: 'text', value: S.user.department ? deptLabel(S.user.department) : '—', disabled: true }),
+          h('label', { text: t('deptAccess') }),
+          h('input', {
+            type: 'text', disabled: true,
+            value: S.user.allDepartments
+              ? t('allDepartments')
+              : ((S.user.departments || []).map(deptLabel).join(', ') || '—'),
+          }),
         ]),
 
         h('div', { class: 'field' }, [
@@ -1122,9 +1363,15 @@
           e.target.disabled = true;
           api('/api/users?do=sync', { method: 'POST' }).then(function (data) {
             S.users = data.users;
-            notice.hidden = false; notice.className = 'notice ok';
-            notice.textContent = '+' + data.added + ' / ~' + data.updated +
-              (data.deactivated.length ? ' / -' + data.deactivated.length : '');
+            notice.hidden = false;
+            var parts = ['+' + data.added + ' / ~' + data.updated +
+              (data.deactivated.length ? ' / -' + data.deactivated.length : '')];
+            if (data.pinned) parts.push(data.pinned + ' ' + t('syncPinned'));
+            (data.unreadable || []).forEach(function (u) {
+              parts.push(u.username + ': ' + t('syncUnreadable') + ' \u2014 ' + u.cells.join(', '));
+            });
+            notice.className = 'notice ' + ((data.unreadable || []).length ? 'warn' : 'ok');
+            notice.textContent = parts.join('  \u00b7  ');
             renderPage();
           }).catch(function (err) {
             notice.hidden = false; notice.className = 'notice err';
@@ -1154,14 +1401,7 @@
       if (u.resetAllowed) status.push(h('span', { class: 'chip', text: t('pendingReset') }));
       if (!u.hasPassword && !u.resetAllowed) status.push(h('span', { class: 'chip', text: t('noPassword') }));
 
-      var deptSelect = h('select', {
-        disabled: !!blocked,
-        onchange: function (e) { manage(u, { department: e.target.value || null }); },
-      }, [h('option', { value: '', text: '—' })].concat(
-        S.departments.map(function (d) {
-          return h('option', { value: d.key, text: d[S.lang] || d.en, selected: u.department === d.key });
-        })
-      ));
+      var deptCell = accessCell(u, blocked);
 
       var headCb = h('input', { type: 'checkbox', checked: u.isHead, disabled: !!blocked });
       headCb.addEventListener('change', function () { manage(u, { isHead: headCb.checked }); });
@@ -1175,7 +1415,7 @@
         ])]),
         h('td', {}, [h('span', { class: 'badge ' + u.access, text: t('access' + u.access.charAt(0).toUpperCase() + u.access.slice(1)) })]),
         h('td', { text: u.position || '—' }),
-        h('td', {}, [deptSelect]),
+        h('td', {}, [deptCell]),
         h('td', { style: 'text-align:center' }, [headCb]),
         h('td', {}, [h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' }, status)]),
         h('td', {}, [h('div', { style: 'display:flex;gap:5px;flex-wrap:wrap' }, blocked
@@ -1197,13 +1437,88 @@
       h('table', {}, [
         h('thead', {}, [h('tr', {}, [
           h('th', { text: t('displayName') }), h('th', { text: t('accessLevel') }),
-          h('th', { text: t('position') }), h('th', { text: t('setDepartment') }),
+          h('th', { text: t('position') }), h('th', { text: t('deptAccess') }),
           h('th', { text: t('isHead'), style: 'text-align:center' }),
           h('th', { text: '' }), h('th', { text: '' }),
         ])]),
         h('tbody', {}, rows),
       ]),
     ]));
+
+    /**
+     * Department access for one person.
+     *
+     * Each granted department is a chip that removes itself when clicked, and
+     * the dropdown beside them adds one. Both send the whole list the person
+     * should end up with, so adding, removing and clearing are the same call
+     * and two admins editing at once cannot leave a half-applied state.
+     */
+    function accessCell(u, blocked) {
+      var box = h('div', { class: 'access-cell' });
+      var granted = (u.departments || []).slice().sort(function (a, b) {
+        return chartOrder(a) - chartOrder(b);
+      });
+
+      function send(changes) { manage(u, changes); }
+
+      if (u.allDepartments) {
+        box.appendChild(h('span', {
+          class: 'chip dept all' + (blocked ? '' : ' x'),
+          title: blocked ? '' : t('removeAccess'),
+          onclick: blocked ? null : function () { send({ allDepartments: false, departments: [] }); },
+        }, [t('allDepartments') + (blocked ? '' : ' \u2715')]));
+      } else if (granted.length) {
+        granted.forEach(function (key) {
+          var home = key === u.department;
+          box.appendChild(h('span', {
+            class: 'chip dept' + (home ? ' home' : '') + (blocked ? '' : ' x'),
+            title: home ? t('homeIs') : (blocked ? '' : t('removeAccess')),
+            onclick: blocked ? null : function () {
+              send({ departments: granted.filter(function (k) { return k !== key; }) });
+            },
+          }, [(home ? '\u2605 ' : '') + deptLabel(key) + (blocked ? '' : ' \u2715')]));
+        });
+      } else {
+        box.appendChild(h('span', { class: 'chip', text: t('noAccess') }));
+      }
+
+      if (blocked) return box;
+
+      var choices = S.departments.filter(function (d) {
+        return !u.allDepartments && granted.indexOf(d.key) === -1;
+      });
+
+      var add = h('select', {
+        class: 'add-dept',
+        onchange: function (e) {
+          var key = e.target.value;
+          e.target.value = '';
+          if (!key) return;
+          if (key === '*') send({ allDepartments: true, departments: [] });
+          else send({ departments: granted.concat([key]) });
+        },
+      }, [h('option', { value: '', text: '+ ' + t('addAccess') })]
+        .concat(choices.map(function (d) {
+          return h('option', { value: d.key, text: deptOptionLabel(d) });
+        }))
+        .concat(u.allDepartments ? [] : [h('option', { value: '*', text: t('allDepartments') })]));
+      box.appendChild(add);
+
+      /**
+       * Where this person's access came from. Once it has been set here the
+       * sheet stops overriding it — which has to be visible, or an admin would
+       * edit the sheet, see nothing change, and have no way to find out why.
+       */
+      box.appendChild(u.deptsPinned
+        ? h('button', {
+            class: 'btn sm ghost pin', text: t('pinnedHere') + ' \u21ba',
+            title: t('pinnedHint'),
+            onclick: function () { send({ followSheet: true }); },
+          })
+        : h('small', { class: 'from-sheet', text: t('fromSheet') }));
+
+      return box;
+    }
 
     function manage(target, changes) {
       api('/api/users?do=manage', { method: 'PATCH', body: Object.assign({ username: target.username }, changes) })
@@ -1257,6 +1572,8 @@
       S.lastSync = res[1].lastSync;
       S.sheetId = res[1].sheetId;
       S.tasks = res[2].tasks;
+      S.seesEverything = Boolean(res[2].seesEverything);
+      S.myDepartments = res[2].myDepartments || [];
       S.notifs = res[3].notifications;
       S.unread = res[3].unread;
       routeFromHash();

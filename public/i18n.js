@@ -187,6 +187,44 @@ window.STRINGS = {
     errSheetPrivate: 'ชีตนี้ยังไม่ได้แชร์ ตั้งเป็น "ทุกคนที่มีลิงก์ → ผู้อ่าน" ก่อน',
     errNoTitleColumn: 'ไม่พบคอลัมน์ title',
     errEmptyImport: 'ไม่มีข้อมูล',
+
+    // status ladder
+    statusReview: 'รอตรวจ',
+    statusFeedback: 'ตรวจแล้ว',
+
+    // priority
+    priority: 'ความสำคัญ',
+    prioLow: 'ต่ำ',
+    prioMedium: 'ปานกลาง',
+    prioHigh: 'สูง',
+    prioHighest: 'สูงมาก',
+
+    // teamspace
+    teamspace: 'ฝ่าย',
+    allDepartments: 'ทุกฝ่าย',
+    myDepartment: 'ฝ่ายของฉัน',
+    noDepartment: 'ไม่มีฝ่าย',
+    unit: 'กล่อง/หน่วยงาน',
+    deptOnlyNote: 'คุณเห็นงานของฝ่ายตัวเอง งานที่คุณถูกแท็ก และงานที่คุณสร้าง',
+    lockedToDept: 'จำกัดเฉพาะฝ่ายของคุณ',
+
+    // department access (admin)
+    otherDepartments: 'ฝ่ายอื่น',
+    deptAccess: 'สิทธิ์เข้าถึงฝ่าย',
+    addAccess: 'เพิ่มฝ่าย',
+    removeAccess: 'เอาฝ่ายนี้ออก',
+    noAccess: 'ยังไม่มีฝ่าย',
+    homeIs: 'ฝ่ายหลัก (งานใหม่จะไปอยู่ที่นี่)',
+    followSheet: 'ใช้ตามชีต',
+    pinnedHere: 'ตั้งในเว็บ',
+    pinnedHint: 'สิทธิ์ของคนนี้ถูกตั้งในเว็บ การซิงก์ชีตจะไม่เปลี่ยนให้ กดเพื่อกลับไปใช้ตามชีต',
+    fromSheet: 'ตามชีต',
+    syncPinned: 'ข้ามเพราะตั้งในเว็บ',
+    syncUnreadable: 'อ่านช่อง Department ไม่ออก',
+
+    errNotYourDepartment: 'งานนี้ไม่ได้อยู่ในฝ่ายของคุณ',
+    errHomeNotGranted: 'ต้องให้สิทธิ์ฝ่ายนั้นก่อน',
+    errBadDepartment: 'ไม่รู้จักฝ่ายนี้',
     noDatabase: 'ยังไม่ได้เชื่อมต่อฐานข้อมูล',
   },
 
@@ -359,11 +397,47 @@ window.STRINGS = {
     errSheetPrivate: 'That sheet is not shared. Set it to "Anyone with the link \u2192 Viewer".',
     errNoTitleColumn: 'No "title" column found.',
     errEmptyImport: 'Nothing to import.',
+
+    statusReview: 'Under review',
+    statusFeedback: 'Feedback given',
+
+    priority: 'Priority',
+    prioLow: 'Low',
+    prioMedium: 'Medium',
+    prioHigh: 'High',
+    prioHighest: 'Highest',
+
+    teamspace: 'Department',
+    allDepartments: 'All departments',
+    myDepartment: 'My department',
+    noDepartment: 'No department',
+    unit: 'Unit',
+    deptOnlyNote: "You see your department's tasks, tasks you're tagged in, and tasks you created.",
+    lockedToDept: 'Limited to your department',
+
+    // department access (admin)
+    otherDepartments: 'Other',
+    deptAccess: 'Department access',
+    addAccess: 'Add department',
+    removeAccess: 'Remove this department',
+    noAccess: 'No department yet',
+    homeIs: 'Home department — new tasks land here',
+    followSheet: 'Follow the sheet',
+    pinnedHere: 'set here',
+    pinnedHint: 'Access for this person was set in the app, so a sheet sync will not change it. Click to follow the sheet again.',
+    fromSheet: 'from sheet',
+    syncPinned: 'skipped (set in the app)',
+    syncUnreadable: 'unreadable Department cell',
+
+    errNotYourDepartment: 'That task is not in your department.',
+    errHomeNotGranted: 'Give them that department first.',
+    errBadDepartment: 'That is not a department I know.',
     noDatabase: 'No database connected yet.',
   },
 };
 
 window.ERROR_KEYS = {
+  NOT_YOUR_DEPARTMENT: 'errNotYourDepartment',
   SHEET_PRIVATE: 'errSheetPrivate',
   NO_TITLE_COLUMN: 'errNoTitleColumn',
   EMPTY: 'errEmptyImport',
@@ -380,6 +454,8 @@ window.ERROR_KEYS = {
   COADMIN_CANNOT_TOUCH_COADMIN: 'errCoadminCoadmin',
   EDITORS_CANNOT_MANAGE_ACCOUNTS: 'errEditor',
   ACCESS_FROM_SHEET: 'errAccessFromSheet',
+  HOME_NOT_GRANTED: 'errHomeNotGranted',
+  BAD_DEPARTMENT: 'errBadDepartment',
   IMAGE_TOO_BIG: 'errImageTooBig',
   NO_DATABASE: 'noDatabase',
 };

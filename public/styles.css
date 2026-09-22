@@ -183,6 +183,25 @@ main { max-width: 68rem; margin: 0 auto; padding: 22px 20px 5rem; }
 .seg button .n { color: var(--ink-faint); margin-left: 5px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .grow { flex: 1; }
 
+/**
+ * The three filter dropdowns sit on one line beside the status tabs. Without
+ * a width cap a select stretches to the whole row, which pushed the task list
+ * a screenful down once priority and department joined the person filter.
+ */
+.filter-selects { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filters select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 7.5rem;
+  max-width: 12rem;
+  font-size: 13px;
+  padding: 6px 9px;
+}
+@media (max-width: 620px) {
+  .filter-selects { width: 100%; }
+  .filters select { flex: 1 1 45%; max-width: none; }
+}
+
 /* ---------- task list ---------- */
 ul.tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 li.task {
@@ -324,3 +343,53 @@ td .who-cell { display: flex; align-items: center; gap: 8px; }
 .imp-warn { color: var(--doing); font-size: 11.5px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
 .cal-box { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+
+/* ---------- priority ---------- */
+.seg.wrap { flex-wrap: wrap; }
+.chip.prio { font-weight: 600; }
+.chip.prio-low     { border-color: var(--line);   color: var(--ink-faint); }
+.chip.prio-high    { border-color: var(--doing);  color: var(--doing);  background: var(--doing-soft); }
+.chip.prio-highest { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.prio-btn.on.prio-high    { background: var(--doing-soft);  color: var(--doing); }
+.prio-btn.on.prio-highest { background: var(--danger-soft); color: var(--danger); }
+
+/* A left edge carries urgency without adding another badge to every card. */
+li.task[data-prio="high"]    { border-left: 3px solid var(--doing); }
+li.task[data-prio="highest"] { border-left: 3px solid var(--danger); }
+
+/* ---------- extra statuses ---------- */
+li.task[data-status="review"]   .status-btn { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+li.task[data-status="feedback"] .status-btn { border-color: var(--done);   background: var(--done-soft);   color: var(--done); }
+optgroup { font-size: 12px; color: var(--ink-faint); }
+
+/* ---- department access editor (admin page) ------------------------------ */
+.access-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 220px;
+  max-width: 320px;
+}
+/* The home department — where this person's new tasks land by default. */
+.chip.dept.home { border-color: var(--accent); color: var(--accent); }
+.chip.dept.all  { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.access-cell .add-dept {
+  font-size: 12px;
+  padding: 2px 4px;
+  max-width: 10.5rem;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-faint);
+}
+.access-cell .from-sheet {
+  font-size: 11px;
+  color: var(--ink-faint);
+  opacity: .75;
+}
+.access-cell .btn.pin {
+  font-size: 11px;
+  padding: 1px 6px;
+  color: var(--accent);
+}
