@@ -2,7 +2,7 @@ import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js'
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
 import { parseCsv } from '../lib/sheet.js';
-import { DEPARTMENTS, isDepartment } from '../lib/departments.js';
+import { DEPARTMENTS, isDepartment, matchUnit } from '../lib/departments.js';
 import {
   STATUSES, PRIORITIES, isPriority, isColour, COLOUR_KEYS, safeUrl, linkKind,
 } from '../lib/scope.js';
@@ -31,6 +31,7 @@ const COLUMNS = {
   assignees: ['assignees', 'assignee', 'who', "who's on it", 'ผู้รับผิดชอบ', 'คนทำ'],
   departments: ['departments', 'department', 'ฝ่าย', 'tag departments', 'แท็กฝ่าย'],
   teamspace: ['teamspace', 'home', 'ฝ่ายหลัก', 'ฝ่ายเจ้าของ'],
+  unit: ['unit', 'section', 'sub', 'subdepartment', 'sub-department', 'ส่วนงาน', 'หน่วยงาน', 'สายงาน'],
   dueDate: ['due date', 'duedate', 'due', 'กำหนดส่ง', 'วันที่'],
   dueTime: ['due time', 'duetime', 'time', 'เวลา'],
   status: ['status', 'สถานะ'],
@@ -247,6 +248,7 @@ function buildRows(rows, people) {
 
     const departments = [];
     const unknownDepts = [];
+    const unknownUnits = [];
     for (const name of splitList(col.departments === -1 ? '' : raw[col.departments])) {
       const dept = matchDepartment(name);
       if (dept && isDepartment(dept.key)) {
@@ -276,6 +278,18 @@ function buildRows(rows, people) {
       ? named.key
       : (departments.find((d) => isDepartment(d.key))?.key || null);
 
+    /**
+     * The section inside that teamspace — สถานที่ inside อำนวยการ 2.
+     *
+     * Only sections the org chart lists for THAT department are accepted, so
+     * a row cannot file itself into เนื้อหา's Stage while claiming to be an
+     * อำนวยการ task. A name nobody recognises is reported in the preview next
+     * to the row rather than silently thrown away.
+     */
+    const unitText = col.unit === -1 ? '' : clean(raw[col.unit], 80);
+    const unit = teamspace && unitText ? matchUnit(teamspace, unitText) : null;
+    if (unitText && !unit) unknownUnits.push(unitText);
+
     const partResult = parseParts(col.parts === -1 ? '' : raw[col.parts], people);
     unknownPeople.push(...partResult.unknown);
 
@@ -289,6 +303,7 @@ function buildRows(rows, people) {
       assignees,
       departments,
       teamspace,
+      unit,
       dueDate: dateResult.date,
       dueTime: timeResult.time,
       status: STATUSES.includes(status) ? status : 'todo',
@@ -298,6 +313,7 @@ function buildRows(rows, people) {
       notify: notifyList.length ? notifyList : NOTIFY_KINDS,
       unknownPeople,
       unknownDepts,
+      unknownUnits,
       problems,
       notes,
     });
@@ -530,15 +546,17 @@ async function handler(request) {
         const home = isDepartment(row.teamspace)
           ? { key: row.teamspace }
           : (row.departments || []).find((d) => isDepartment(d.key));
+        const homeKey = home ? home.key : (me.department || null);
+        const unit = homeKey ? matchUnit(homeKey, row.unit) : null;
         await sql`
           INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
-                             department, created_by, notify)
+                             department, unit, created_by, notify)
           VALUES (${id}, ${title}, ${clean(row.description, 4000)},
                   ${/^\d{4}-\d{2}-\d{2}$/.test(row.dueDate || '') ? row.dueDate : null},
                   ${/^\d{2}:\d{2}$/.test(row.dueTime || '') ? row.dueTime : null},
                   ${STATUSES.includes(row.status) ? row.status : 'todo'},
                   ${isPriority(row.priority) ? row.priority : 'medium'},
-                  ${home ? home.key : (me.department || null)}, ${me.username}, ${notify})`;
+                  ${homeKey}, ${unit}, ${me.username}, ${notify})`;
 
         // Resolve department tags to people, exactly as the task form does.
         const set = new Set((row.assignees || []).map((a) => clean(a, 64)).filter(Boolean));

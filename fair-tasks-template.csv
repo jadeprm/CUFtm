@@ -1,5 +1,5 @@
-﻿title,description,assignees,departments,teamspace,due date,due time,priority,status,parts,links,notify
-จองเวทีกลาง,ติดต่อฝ่ายอาคารขอใช้พื้นที่,Jade_Pres;Kaew_VP,content:heads,content,2026-10-05,18:30,high,todo,"ทำหนังสือขอใช้สถานที่@Jade_Pres; ยืนยันผังเวที@Kaew_VP","ผังเวที|https://drive.google.com/file/d/xxx/view","created,7d,24h,due"
-Confirm sponsor banners,,Yam_HeadSpon,sponsor,sponsor,2026-10-12,,highest,doing,,,"created,24h"
-ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,oper1:all,oper1,2026-10-20,14:00,medium,todo,,,
-ส่งไฟล์โปสเตอร์ให้ตรวจ,,Kungking_HeadCon,pr,pr,2026-11-01,,medium,review,,,"created,due"
+﻿title,description,assignees,departments,teamspace,unit,due date,due time,priority,status,parts,links,notify
+จองเวทีกลาง,ติดต่อฝ่ายอาคารขอใช้พื้นที่,Jade_Pres;Kaew_VP,content:heads,content,Stage,2026-10-05,18:30,high,todo,"ทำหนังสือขอใช้สถานที่@Jade_Pres; ยืนยันผังเวที@Kaew_VP","ผังเวที|https://drive.google.com/file/d/xxx/view","created,7d,24h,due"
+Confirm sponsor banners,,Yam_HeadSpon,sponsor,sponsor,,2026-10-12,,highest,doing,,,"created,24h"
+ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,oper1:all,oper1,VR,2026-10-20,14:00,medium,todo,,,
+ส่งไฟล์โปสเตอร์ให้ตรวจ,,Kungking_HeadCon,pr,pr,Graphic Design,2026-11-01,,medium,review,,,"created,due"

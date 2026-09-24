@@ -893,3 +893,10 @@ li.task[data-urgency="done"]  { border-left-color: var(--line); background: var(
 .event-card { background: color-mix(in srgb, var(--c, var(--accent)) 9%, var(--surface)); }
 .event-card .ec-where { color: var(--ink-soft); }
 .cal-chip.event { background: color-mix(in srgb, var(--cc, var(--accent)) 12%, var(--surface)); }
+
+/* A section inside a department: finer than a department tag, so it reads
+   as a quieter version of one rather than competing with it. */
+.chip.unit {
+  border-color: var(--accent-soft); background: var(--accent-soft);
+  color: var(--accent); font-weight: 500;
+}

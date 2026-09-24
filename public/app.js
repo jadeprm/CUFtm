@@ -23,6 +23,7 @@
     filter: 'open',
     who: '',
     dept: '',            // teamspace filter; '' = everything I can see
+    unit: '',            // section-within-a-department filter
     prio: '',            // priority filter
     seesEverything: false,
     myDepartments: [],   // every teamspace I may work in
@@ -345,6 +346,32 @@
   }
 
   /**
+   * The sections inside a department — สถานที่ within อำนวยการ 2.
+   *
+   * These come from the org chart, not from the database, so the list is the
+   * same everywhere and a section cannot be invented by typing one. They are
+   * a level of FILING, not of permission: putting a task in สถานที่ changes
+   * nothing about who may see or edit it.
+   */
+  function unitsOf(key) {
+    for (var i = 0; i < S.departments.length; i++) {
+      if (S.departments[i].key === key) return S.departments[i].units || [];
+    }
+    return [];
+  }
+
+  /** Every section across the departments this person can see, for filtering. */
+  function myUnits() {
+    var out = [];
+    myDepartments().forEach(function (d) {
+      (d.units || []).forEach(function (u) {
+        out.push({ dept: d.key, unit: u });
+      });
+    });
+    return out;
+  }
+
+  /**
    * Builds the one-click "Add to Google Calendar" URL.
    * Bangkok never observes daylight saving, so the offset is a constant.
    */
@@ -627,6 +654,7 @@
       if (['todo', 'doing', 'done'].indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
       if (S.who && task.assignees.indexOf(S.who) === -1) return false;
       if (S.prio && task.priority !== S.prio) return false;
+      if (S.unit && task.unit !== S.unit) return false;
       if (S.dept) {
         var inDept = task.department === S.dept ||
           (task.departments || []).some(function (d) { return d.key === S.dept; });
@@ -716,12 +744,32 @@
      * person list to that department, so the second dropdown stays short.
      */
     var deptSelect = h('select', {
-      onchange: function (e) { S.dept = e.target.value; S.who = ''; renderPage(); },
+      onchange: function (e) { S.dept = e.target.value; S.who = ''; S.unit = ''; renderPage(); },
     }, [h('option', { value: '', text: t('allDepartments') })].concat(
       myDepartments().map(function (d) {
         return h('option', { value: d.key, text: deptOptionLabel(d), selected: S.dept === d.key });
       })
     ));
+
+    /**
+     * Sections, narrowed to the chosen department when there is one.
+     *
+     * With no department picked this lists every section on offer, prefixed by
+     * its department so two called "Stage" could never be confused. It hides
+     * itself when there is nothing to choose between.
+     */
+    var unitChoices = S.dept
+      ? unitsOf(S.dept).map(function (u) { return { dept: S.dept, unit: u, label: u }; })
+      : myUnits().map(function (x) { return { dept: x.dept, unit: x.unit, label: deptLabel(x.dept) + ' · ' + x.unit }; });
+    var unitSelect = unitChoices.length
+      ? h('select', {
+          onchange: function (e) { S.unit = e.target.value; renderPage(); },
+        }, [h('option', { value: '', text: t('allUnits') })].concat(
+          unitChoices.map(function (x) {
+            return h('option', { value: x.unit, text: x.label, selected: S.unit === x.unit });
+          })
+        ))
+      : null;
 
     var peopleForPicker = S.users.filter(function (u) {
       return u.active && (!S.dept || (u.departments || []).indexOf(S.dept) !== -1);
@@ -744,7 +792,7 @@
     // line rather than splitting up awkwardly on a narrow window.
     main.appendChild(h('div', { class: 'filters' }, [
       seg, h('span', { class: 'grow' }),
-      h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, whoSelect]),
+      h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
     ]));
 
     if (!S.seesEverything) {
@@ -831,6 +879,11 @@
         (isOverdue(task) ? t('overdue') + ' · ' : '') + (rel || fmtDate(task.dueDate)) +
         (task.dueTime ? ' ' + task.dueTime : ''),
       ]));
+    }
+    // The section it is filed under, which is finer-grained than the tags and
+    // therefore worth more than they are on a crowded card.
+    if (task.unit) {
+      meta.push(h('span', { class: 'chip unit', text: task.unit }));
     }
     task.departments.forEach(function (d) {
       meta.push(h('span', { class: 'chip dept', text: deptLabel(d.key) + (d.scope === 'heads' ? ' · ' + t('scopeHeads') : d.scope === 'members' ? ' · ' + t('scopeMembers') : '') }));
@@ -926,6 +979,7 @@
       status: task ? task.status : 'todo',
       priority: task ? (task.priority || 'medium') : 'medium',
       department: task ? (task.department || null) : (S.user.department || null),
+      unit: task ? (task.unit || null) : null,
       assignees: task ? task.assignees.slice() : [S.user.username],
       departments: task ? task.departments.map(function (d) { return { key: d.key, scope: d.scope }; }) : [],
       notify: task ? task.notify.slice() : ['created', '7d', '24h', 'due'],
@@ -1031,12 +1085,44 @@
     var choices = myDepartments();
     var deptSelect = h('select', {
       disabled: !mayEdit || (!S.seesEverything && choices.length < 2),
-      onchange: function (e) { draft.department = e.target.value || null; },
+      onchange: function (e) {
+        draft.department = e.target.value || null;
+        // The sections belong to the department, so changing one empties the
+        // other rather than leaving a task filed under a section its new
+        // department does not have.
+        draft.unit = null;
+        drawUnits();
+      },
     }, [h('option', { value: '', text: t('noDepartment') })].concat(
       choices.map(function (d) {
         return h('option', { value: d.key, text: deptOptionLabel(d), selected: draft.department === d.key });
       })
     ));
+
+    /**
+     * The section within that teamspace.
+     *
+     * Hidden entirely when the department has no sections — an empty dropdown
+     * is a question with no answers. Filing here is optional: plenty of work
+     * belongs to a department as a whole.
+     */
+    var unitBox = h('div', { class: 'field' });
+    function drawUnits() {
+      clear(unitBox);
+      var units = draft.department ? unitsOf(draft.department) : [];
+      unitBox.hidden = units.length === 0;
+      if (!units.length) return;
+      unitBox.appendChild(h('label', { text: t('unit') }));
+      unitBox.appendChild(h('select', {
+        disabled: !mayEdit,
+        onchange: function (e) { draft.unit = e.target.value || null; },
+      }, [h('option', { value: '', text: t('wholeDepartment') })].concat(
+        units.map(function (u) {
+          return h('option', { value: u, text: u, selected: draft.unit === u });
+        })
+      )));
+    }
+    drawUnits();
 
     /**
      * Three tabs rather than one long scroll.
@@ -1144,7 +1230,12 @@
               return h('span', { class: 'chip dept', text: deptLabel(d.key) });
             }))
           : vMuted('—')),
-        vRow(t('viewTeamspace'), task.department ? h('span', { text: deptLabel(task.department) }) : vMuted('—')),
+        vRow(t('viewTeamspace'), task.department
+          ? h('span', {}, [
+              deptLabel(task.department),
+              task.unit ? h('span', { class: 'chip unit', style: 'margin-left:6px', text: task.unit }) : null,
+            ])
+          : vMuted('—')),
       ];
 
       // Sub-tasks and attachments, each a line that takes you to its tab.
@@ -1230,8 +1321,9 @@
             (!S.seesEverything && choices.length < 2)
               ? h('small', { style: 'color:var(--ink-faint);font-size:11.5px', text: t('lockedToDept') })
               : null]),
-          h('div', { class: 'field' }, [h('label', { text: t('priority') }), prioSeg]),
+          unitBox,
         ]),
+        h('div', { class: 'field' }, [h('label', { text: t('priority') }), prioSeg]),
         h('div', { class: 'field' }, [h('label', { text: statusLabel('todo') + ' \u2192 ' + statusLabel('done') }), statusSeg]),
         h('div', { class: 'field' }, [h('label', { text: t('notifyWhen') }), notifyBox]),
         task ? h('p', { class: 'hint', style: 'font-size:12.5px;color:var(--ink-faint);margin:0' },
@@ -1479,6 +1571,7 @@
         status: draft.status,
         priority: draft.priority,
         department: draft.department,
+        unit: draft.unit,
         assignees: draft.assignees,
         departments: draft.departments,
         notify: draft.notify,
@@ -1649,13 +1742,13 @@
    * worse than one slightly dense column.
    */
   var TEMPLATE_CSV =
-    'title,description,assignees,departments,teamspace,due date,due time,priority,status,parts,links,notify\n' +
-    'จองเวทีกลาง,ติดต่อฝ่ายอาคารขอใช้พื้นที่,Jade_Pres;Kaew_VP,content:heads,content,2026-10-05,18:30,high,todo,' +
+    'title,description,assignees,departments,teamspace,unit,due date,due time,priority,status,parts,links,notify\n' +
+    'จองเวทีกลาง,ติดต่อฝ่ายอาคารขอใช้พื้นที่,Jade_Pres;Kaew_VP,content:heads,content,Stage,2026-10-05,18:30,high,todo,' +
       '"ทำหนังสือขอใช้สถานที่@Jade_Pres; ยืนยันผังเวที@Kaew_VP","ผังเวที|https://drive.google.com/file/d/xxx/view",' +
       '"created,7d,24h,due"\n' +
-    'Confirm sponsor banners,,Yam_HeadSpon,sponsor,sponsor,2026-10-12,,highest,doing,,,"created,24h"\n' +
-    'ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,oper1:all,oper1,2026-10-20,14:00,medium,todo,,,\n' +
-    'ส่งไฟล์โปสเตอร์ให้ตรวจ,,Kungking_HeadCon,pr,pr,2026-11-01,,medium,review,,,"created,due"\n';
+    'Confirm sponsor banners,,Yam_HeadSpon,sponsor,sponsor,,2026-10-12,,highest,doing,,,"created,24h"\n' +
+    'ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,oper1:all,oper1,VR,2026-10-20,14:00,medium,todo,,,\n' +
+    'ส่งไฟล์โปสเตอร์ให้ตรวจ,,Kungking_HeadCon,pr,pr,Graphic Design,2026-11-01,,medium,review,,,"created,due"\n';
 
   /**
    * The event template.

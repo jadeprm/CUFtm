@@ -1437,5 +1437,93 @@ r = await call(importApi, '/api/import?do=preview', {
 ok('a sheet with no title column is refused', r.status === 400 && r.data.error === 'NO_TITLE_COLUMN');
 
 
+head('28. Sections inside a department');
+
+// A section is a level of FILING. It must belong to the department it claims.
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ตรวจผังเต็นท์', department: 'oper2', unit: 'สถานที่',
+          departments: [{ key: 'oper2', scope: 'heads' }], notify: [] },
+});
+ok('a task can be filed into a section of its department', r.status === 201 && r.data.task.unit === 'สถานที่',
+  JSON.stringify({ dept: r.data.task?.department, unit: r.data.task?.unit }));
+const filed = r.data.task;
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ส่วนงานของฝ่ายอื่น', department: 'oper2', unit: 'Stage', notify: [] },
+});
+ok("...but not into another department's section", r.status === 201 && r.data.task.unit === null,
+  JSON.stringify(r.data.task?.unit));
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ส่วนงานที่ไม่มีอยู่', department: 'content', unit: 'ไม่มีส่วนงานนี้', notify: [] },
+});
+ok('a section nobody has is dropped, not stored', r.status === 201 && r.data.task.unit === null);
+
+// Spelling it the way a person would still lands in the right place.
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'รอบยาน', department: 'oper2', unit: 'ยานพาหนะและประสาน ป.อ.พ.', notify: [] },
+});
+ok('dots and spacing do not stop a section matching', r.data.task.unit === 'ยานพาหนะและประสาน ปอ.พ.',
+  JSON.stringify(r.data.task?.unit));
+
+// Moving a task out of the department must not leave a stale section behind.
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'admin', body: { id: filed.id, department: 'content' },
+});
+ok('moving to another department clears a section it does not have',
+  r.status === 200 && r.data.task.unit === null, JSON.stringify(r.data.task?.unit));
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'admin', body: { id: filed.id, unit: 'Stage' },
+});
+ok('...and the new department\'s own sections work', r.data.task.unit === 'Stage');
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'admin', body: { id: filed.id, status: 'doing' },
+});
+ok('an unrelated edit leaves the section alone', r.data.task.unit === 'Stage');
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'admin', body: { id: filed.id, unit: null },
+});
+ok('and it can be cleared on purpose', r.data.task.unit === null);
+
+// The org chart is what the client reads to build the picker.
+r = await call(metaApi, '/api/meta');
+const oper2 = r.data.departments.find((d) => d.key === 'oper2');
+ok('the org chart hands over the sections', (oper2.units || []).includes('สถานที่') &&
+  (oper2.units || []).includes('Green Guide'), (oper2.units || []).join(', '));
+
+// Importing, which is how the timeline arrives.
+const unitCsv = [
+  'title,departments,teamspace,unit,due date,notify',
+  'ติดต่อสถานที่,oper2:heads,oper2,สถานที่,2026-11-27,due',
+  'ทำระบบรอบยาน,oper2:heads,oper2,ยานพาหนะและประสาน ป.อ.พ.,2026-11-20,due',
+  'ของฝ่ายอื่น,oper2:heads,oper2,Stage,2026-11-20,due',
+  'ไม่ระบุส่วนงาน,oper2:heads,oper2,,2026-11-20,due',
+].join('\n');
+r = await call(importApi, '/api/import?do=preview', { method: 'POST', as: 'admin', body: { csv: unitCsv } });
+ok('the importer reads a section column', r.data.rows[0].unit === 'สถานที่', JSON.stringify(r.data.rows[0].unit));
+ok('...forgiving the spelling', r.data.rows[1].unit === 'ยานพาหนะและประสาน ปอ.พ.');
+ok('...and reports one that does not belong rather than dropping it quietly',
+  r.data.rows[2].unit === null && r.data.rows[2].unknownUnits.includes('Stage'),
+  JSON.stringify(r.data.rows[2].unknownUnits));
+ok('a blank section is simply blank', r.data.rows[3].unit === null && !r.data.rows[3].unknownUnits.length);
+
+r = await call(importApi, '/api/import?do=commit', {
+  method: 'POST', as: 'admin', body: { rows: r.data.rows },
+});
+ok('they import', r.data.created === 4, JSON.stringify(r.data));
+
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+const placed = r.data.tasks.find((t) => t.title === 'ติดต่อสถานที่' && t.department === 'oper2');
+ok('and land in the section they named', placed.unit === 'สถานที่', JSON.stringify(placed.unit));
+ok('a section belonging to another department did not survive the trip',
+  r.data.tasks.find((t) => t.title === 'ของฝ่ายอื่น').unit === null);
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

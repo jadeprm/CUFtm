@@ -158,6 +158,18 @@ Sub-tasks work the same way: the owner breaks a task into parts and gives each p
 
 ---
 
+## Sections inside a department
+
+อำนวยการ is three real departments — อำนวยการ 1, 2 and 3 — because each has its own head and your roster sheet files people that way. Everywhere else the org chart's sub-groups are **sections**: สถานที่, พัสดุ, ยานพาหนะและประสาน ปอ.พ., CSO and Green Guide inside อำนวยการ 2; Stage and กิจกรรม inside เนื้อหา; Admin, Graphic Design, Photo & Video and Content Creative inside ประชาสัมพันธ์.
+
+A section is a level of **filing, not of authority**. Putting a task in สถานที่ changes nothing about who can see or edit it — that is still decided by the department. What it gives you is a shorter list: a chip on the card, a line in the read view, and a filter next to the department one, so the head of อำนวยการ 2 can look at สถานที่ alone instead of all thirty-odd tasks at once.
+
+The picker in the task form only offers the sections belonging to the teamspace you chose, and it disappears entirely for a department that has none. Moving a task to a different department clears a section that department does not have, rather than carrying a stale one forward. The sections themselves live in the org chart in `lib/departments.js`, so they are the same everywhere and cannot be invented by typing one.
+
+The CSV importer takes them in a **`unit`** column (`section` also works). A name that does not belong to that row's teamspace is reported in the preview beside the row rather than quietly dropped, and spelling is forgiven — "ยานพาหนะและประสาน ป.อ.พ." finds "ยานพาหนะและประสาน ปอ.พ.".
+
+---
+
 ## Opening a task or an event
 
 Both open as something to **read**, not a form. The top band carries the two facts people came for — how it stands, and when it is due, said the way a person would say it ("20 พฤศจิกายน 2569 · อีก 11 วัน", "เลยกำหนด"). Underneath is the description, then who is on it, which departments it concerns, how many sub-tasks are done and how much work has been handed in. The sub-task and work counts are links: pressing one takes you to that tab.
@@ -188,7 +200,7 @@ The "นำเข้าจากไฟล์" button takes a pasted CSV, a Googl
 
 Nothing is ever saved from the preview alone. Every row is shown back to you first with what it parsed, and rows with a problem are greyed out and left behind; only the sound ones are created.
 
-**Tasks** — `title, description, assignees, departments, teamspace, due date, due time, priority, status, parts, links, notify`
+**Tasks** — `title, description, assignees, departments, teamspace, unit, due date, due time, priority, status, parts, links, notify`
 
 Only `title` is required. Two columns hold more than one thing each:
 

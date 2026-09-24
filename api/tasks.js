@@ -1,6 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
-import { isDepartment } from '../lib/departments.js';
+import { isDepartment, matchUnit } from '../lib/departments.js';
 import {
   isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet,
   canEditTask, canSetStatus, canDeleteTask,
@@ -93,6 +93,7 @@ async function assembled(sql) {
     status: t.status,
     priority: t.priority || 'medium',
     department: t.department || null,
+    unit: t.unit || null,
     createdBy: t.created_by,
     notify: String(t.notify || '').split(',').filter(Boolean),
     createdAt: t.created_at,
@@ -466,14 +467,22 @@ async function handler(request) {
         return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
       }
 
+      /**
+       * The section inside that teamspace. Only a name the org chart lists for
+       * this very department is kept — a section belonging to another
+       * department, or one that does not exist, is dropped rather than stored,
+       * so a task can never claim to live somewhere it does not.
+       */
+      const unit = department ? matchUnit(department, body.unit) : null;
+
       await sql`
         INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
-                           department, created_by, notify)
+                           department, unit, created_by, notify)
         VALUES (${id}, ${title}, ${clean(body.description, 4000)},
                 ${cleanDate(body.dueDate)}, ${cleanTime(body.dueTime)},
                 ${isStatus(body.status) ? body.status : 'todo'},
                 ${isPriority(body.priority) ? body.priority : 'medium'},
-                ${department}, ${me.username}, ${notify})`;
+                ${department}, ${unit}, ${me.username}, ${notify})`;
 
       const { assignees, departments } = readTags(body);
       const expanded = await writeTags(sql, id, assignees, departments);
@@ -524,6 +533,25 @@ async function handler(request) {
         return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
       }
 
+      /**
+       * The section has to be re-checked whenever either half changes.
+       *
+       * Moving a task from อำนวยการ 2 to เนื้อหา would otherwise leave it
+       * filed under สถานที่, a section เนื้อหา does not have — so a move that
+       * invalidates the section clears it rather than carrying a lie forward.
+       * `undefined` means leave it alone, which is why the check below is
+       * against `undefined` and not against falsiness.
+       */
+      const nextDepartment = body.department === undefined
+        ? existing.department
+        : (isDepartment(body.department) ? body.department : null);
+      let nextUnit;
+      if (body.unit !== undefined) {
+        nextUnit = nextDepartment ? matchUnit(nextDepartment, body.unit) : null;
+      } else if (body.department !== undefined) {
+        nextUnit = nextDepartment ? matchUnit(nextDepartment, existing.unit) : null;
+      }
+
       // COALESCE keeps every field the caller left out, so two people editing
       // different fields of one task cannot overwrite each other.
       await sql`
@@ -536,6 +564,7 @@ async function handler(request) {
           priority    = COALESCE(${isPriority(body.priority) ? body.priority : null}, priority),
           department  = CASE WHEN ${body.department === undefined} THEN department
                              ELSE ${isDepartment(body.department) ? body.department : null} END,
+          unit        = CASE WHEN ${nextUnit === undefined} THEN unit ELSE ${nextUnit ?? null} END,
           notify      = COALESCE(${
             Array.isArray(body.notify)
               ? body.notify.filter((k) => NOTIFY_KINDS.includes(k)).join(',')
