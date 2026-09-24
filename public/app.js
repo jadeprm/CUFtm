@@ -18,7 +18,8 @@
     canManage: false,
     lastSync: null,
     sheetId: null,
-    page: 'mine',
+    page: 'work',
+    scope: 'mine',      // 'mine' | 'all' — which half of the one work page
     filter: 'open',
     who: '',
     dept: '',            // teamspace filter; '' = everything I can see
@@ -523,8 +524,15 @@
     }
 
     var page = raw;
-    if (['mine', 'all', 'events', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'mine';
-    if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'mine';
+
+    // The old addresses still work: they pick the scope and land on the one
+    // page, so a bookmark or a link someone shared does not break.
+    if (page === 'all') { S.scope = 'all'; page = 'work'; }
+    else if (page === 'mine') { S.scope = 'mine'; page = 'work'; }
+    else if (page === 'events') page = 'work';
+
+    if (['work', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
+    if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     S.page = page;
   }
 
@@ -533,9 +541,7 @@
      ====================================================================== */
   function renderPage() {
     var main = clear($('main'));
-    if (S.page === 'mine') return pageTasks(main, true);
-    if (S.page === 'all') return pageTasks(main, false);
-    if (S.page === 'events') return pageEvents(main);
+    if (S.page === 'work') return pageTasks(main);
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'profile') return pageProfile(main);
     if (S.page === 'admin') return pageAdmin(main);
@@ -559,12 +565,33 @@
     });
   }
 
-  function pageTasks(main, mineOnly) {
+  /**
+   * One page for everything that has a date on it.
+   *
+   * Mine, everyone's, and the events used to be three tabs, which meant
+   * checking three places to know what was going on — and the same task
+   * appeared in two of them. Now it is one page with a switch at the top, and
+   * the events sit above the work because that is the order they matter in:
+   * a rehearsal on Friday changes what you do about Friday's deadlines.
+   */
+  function pageTasks(main) {
+    var mineOnly = S.scope !== 'all';
+
     main.appendChild(h('div', { class: 'page-head' }, [
-      h('h1', { text: mineOnly ? t('navMine') : t('navAll') }),
-      mineOnly ? null : h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }),
+      h('div', { class: 'seg scope-seg' }, [['mine', 'scopeMine'], ['all', 'scopeAll']].map(function (pair) {
+        return h('button', {
+          class: S.scope === pair[0] ? 'on' : '',
+          text: t(pair[1]),
+          onclick: function () { S.scope = pair[0]; renderPage(); },
+        });
+      })),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }),
+      h('button', { class: 'btn', text: t('newEvent'), onclick: function () { openEvent(null); } }),
       h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }),
     ]));
+
+    eventStrip(main, mineOnly);
 
     var pool = S.tasks.filter(function (x) {
       return !mineOnly || x.assignees.indexOf(S.user.username) !== -1;
@@ -646,6 +673,45 @@
     main.appendChild(h('ul', { class: 'tasks' }, rows.map(taskRow)));
   }
 
+  /**
+   * The next few events, as a band across the top.
+   *
+   * Only the ones still ahead, and only a handful — this is a reminder of
+   * what is coming, not the events page it replaced. Everything is still
+   * there, in the calendar and behind "see all".
+   */
+  function eventStrip(main, mineOnly) {
+    var today = todayIso();
+    var coming = S.events.filter(function (e) {
+      if ((e.endsOn || e.startsOn) < today) return false;
+      if (mineOnly && (e.people || []).length && e.people.indexOf(S.user.username) === -1) return false;
+      return true;
+    });
+
+    if (!coming.length) return;
+
+    var shown = coming.slice(0, 6);
+    main.appendChild(h('div', { class: 'event-strip' }, [
+      h('div', { class: 'strip-head' }, [
+        h('b', { text: t('upcoming') }),
+        coming.length > shown.length
+          ? h('small', { text: '+' + (coming.length - shown.length) })
+          : null,
+      ]),
+      h('div', { class: 'strip-rail' }, shown.map(function (event) {
+        return h('button', {
+          class: 'event-card' + (event.pending ? ' pending' : ''),
+          style: '--c:' + colourHex(event.colour),
+          onclick: function () { openEvent(event); },
+        }, [
+          h('div', { class: 'ec-when', text: eventWhen(event) }),
+          h('div', { class: 'ec-title', text: event.title }),
+          event.place ? h('div', { class: 'ec-where', text: event.place }) : null,
+        ]);
+      })),
+    ]));
+  }
+
   function taskRow(task) {
     var meta = [];
     var prio = task.priority || 'medium';
@@ -682,7 +748,8 @@
     if (task.assignees.length > 4) stack.appendChild(h('span', { class: 'avatar sm', text: '+' + (task.assignees.length - 4) }));
 
     return h('li', {
-      class: 'task', dataset: { status: task.status, prio: task.priority || 'medium' },
+      class: 'task' + (task.pending ? ' pending' : ''),
+      dataset: { status: task.status, prio: task.priority || 'medium' },
       onclick: function () { openTask(task); },
     }, [
       h('button', {
@@ -1170,12 +1237,45 @@
       };
       if (!body.title) { titleInput.focus(); return; }
 
+      /**
+       * Show it immediately, confirm afterwards.
+       *
+       * The server has to write the task, work out who to tell, and push a
+       * notification to several phones — a second or so, all of it after the
+       * only decision the person cares about has been made. So the list is
+       * updated from what they typed, the form closes, and the real answer
+       * replaces the stand-in when it arrives. If the save fails the
+       * stand-in is removed and they are told, which is the one case where
+       * this is worse than waiting, and it is rare.
+       */
+      var optimistic = Object.assign({}, task || {}, body, {
+        id: isNew ? 'pending_' + Date.now().toString(36) : task.id,
+        createdBy: isNew ? S.user.username : task.createdBy,
+        parts: task ? task.parts : [],
+        links: task ? task.links : [],
+        mayEdit: true,
+        maySetStatus: true,
+        mayAttach: true,
+        pending: true,
+      });
+
+      var previous = S.tasks;
+      S.tasks = isNew
+        ? [optimistic].concat(S.tasks)
+        : S.tasks.map(function (x) { return x.id === task.id ? optimistic : x; });
+      close();
+      renderPage();
+
       var call = isNew
         ? api('/api/tasks', { method: 'POST', body: body })
         : api('/api/tasks', { method: 'PATCH', body: Object.assign({ id: task.id }, body) });
 
-      call.then(function (data) { S.tasks = data.tasks; close(); renderPage(); refreshNotifications(); })
-        .catch(function (err) { alert(errText(err.code)); });
+      call.then(function (data) { S.tasks = data.tasks; renderPage(); refreshNotifications(); })
+        .catch(function (err) {
+          S.tasks = previous;   // put the list back exactly as it was
+          renderPage();
+          alert(errText(err.code));
+        });
     }
   }
 
@@ -1446,58 +1546,6 @@
    * question "what is happening next week" is not the question "what do I owe
    * anyone" — and mixing them is how a rehearsal ends up with a status.
    */
-  function pageEvents(main) {
-    main.appendChild(h('div', { class: 'page-head' }, [
-      h('h1', { text: t('navEvents') }),
-      h('button', { class: 'btn primary', text: t('newEvent'), onclick: function () { openEvent(null); } }),
-    ]));
-
-    var today = todayIso();
-    var upcoming = S.events.filter(function (e) { return (e.endsOn || e.startsOn) >= today; });
-    var past = S.events.filter(function (e) { return (e.endsOn || e.startsOn) < today; });
-
-    if (!S.events.length) {
-      main.appendChild(h('div', { class: 'empty' }, [
-        h('strong', { text: t('eventsEmpty') }), t('eventsEmptySub'),
-      ]));
-      return;
-    }
-
-    if (upcoming.length) {
-      main.appendChild(h('h2', { class: 'section-head', text: t('upcoming') }));
-      main.appendChild(h('ul', { class: 'events' }, upcoming.map(eventRow)));
-    }
-    if (past.length) {
-      main.appendChild(h('h2', { class: 'section-head faded', text: t('past') }));
-      main.appendChild(h('ul', { class: 'events past' }, past.slice().reverse().map(eventRow)));
-    }
-  }
-
-  function eventRow(event) {
-    var when = eventWhen(event);
-    return h('li', {
-      class: 'event-row',
-      style: '--c:' + colourHex(event.colour),
-      onclick: function () { openEvent(event); },
-    }, [
-      h('div', { class: 'e-date' }, [
-        h('b', { text: String(Number(event.startsOn.slice(8, 10))) }),
-        h('small', { text: fmtDate(event.startsOn, { month: 'short' }) }),
-      ]),
-      h('div', { class: 'grow' }, [
-        h('div', { class: 'e-title', text: event.title }),
-        h('div', { class: 'e-meta' }, [
-          when,
-          event.place ? ' \u00b7 ' + event.place : '',
-          event.department ? h('span', { class: 'chip dept', text: deptLabel(event.department) }) : null,
-        ]),
-      ]),
-      h('span', { class: 'stack' }, (event.people || []).slice(0, 3).map(function (u) {
-        return avatarNode(u, 'sm');
-      })),
-    ]);
-  }
-
   /** "20 Nov" · "20–25 Nov" · "20 Nov 14:00–17:00" — whichever fits. */
   function eventWhen(event) {
     var from = fmtDate(event.startsOn, { day: 'numeric', month: 'short' });
@@ -1680,12 +1728,31 @@
       if (!body.title) { titleIn.focus(); return; }
       if (!body.startsOn) { startOn.focus(); return; }
 
+      // Same as tasks: show it now, reconcile when the server answers.
+      var optimistic = Object.assign({}, event || {}, body, {
+        id: isNew ? 'pending_' + Date.now().toString(36) : event.id,
+        createdBy: isNew ? S.user.username : event.createdBy,
+        mayEdit: true,
+        pending: true,
+      });
+
+      var previous = S.events;
+      S.events = isNew
+        ? S.events.concat([optimistic])
+        : S.events.map(function (x) { return x.id === event.id ? optimistic : x; });
+      close();
+      renderPage();
+
       var call = isNew
         ? api('/api/events', { method: 'POST', body: body })
         : api('/api/events', { method: 'PATCH', body: Object.assign({ id: event.id }, body) });
 
-      call.then(function (d) { S.events = d.events; close(); renderPage(); })
-        .catch(function (err) { alert(errText(err.code)); });
+      call.then(function (d) { S.events = d.events; renderPage(); })
+        .catch(function (err) {
+          S.events = previous;
+          renderPage();
+          alert(errText(err.code));
+        });
     }
   }
 

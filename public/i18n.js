@@ -267,6 +267,9 @@ window.STRINGS = {
 
     // events
     navEvents: 'กิจกรรม',
+    navWork: 'งานและกิจกรรม',
+    scopeMine: 'ของฉัน',
+    scopeAll: 'ทั้งหมด',
     newEvent: 'เพิ่มกิจกรรม',
     addEvent: 'เพิ่มกิจกรรม',
     deleteEvent: 'ลบกิจกรรม',
@@ -636,6 +639,9 @@ window.STRINGS = {
 
     // events
     navEvents: 'Events',
+    navWork: 'Work & events',
+    scopeMine: 'Mine',
+    scopeAll: 'Everyone',
     newEvent: 'Add an event',
     addEvent: 'Add event',
     deleteEvent: 'Delete event',

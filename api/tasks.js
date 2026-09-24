@@ -42,46 +42,49 @@ function toIsoDate(value) {
   ].join('-');
 }
 
+/**
+ * Every task, with everything hanging off it, in ONE round trip.
+ *
+ * This used to be five separate queries — tasks, people, department tags,
+ * sub-tasks, attachments — stitched together in JavaScript. Against a
+ * serverless database that is five HTTPS calls every time anybody saves
+ * anything. Postgres can assemble the same shape itself, and does it faster
+ * than the network can carry five questions.
+ */
 async function assembled(sql) {
-  const tasks = await sql`
-    SELECT * FROM tasks
+  const rows = await sql`
+    SELECT
+      t.*,
+      COALESCE((SELECT json_agg(p.username ORDER BY p.username)
+                FROM task_people p WHERE p.task_id = t.id), '[]') AS people,
+      COALESCE((SELECT json_agg(json_build_object('key', d.department, 'scope', d.scope))
+                FROM task_departments d WHERE d.task_id = t.id), '[]') AS depts,
+      COALESCE((SELECT json_agg(json_build_object(
+                  'id', x.id, 'title', x.title, 'assignee', x.assignee,
+                  'done', x.done, 'doneAt', x.done_at, 'doneBy', x.done_by)
+                  ORDER BY x.position, x.created_at)
+                FROM task_parts x WHERE x.task_id = t.id), '[]') AS parts,
+      COALESCE((SELECT json_agg(json_build_object(
+                  'id', l.id, 'partId', l.part_id, 'url', l.url, 'label', l.label,
+                  'kind', l.kind, 'addedBy', l.added_by, 'createdAt', l.created_at)
+                  ORDER BY l.created_at)
+                FROM task_links l WHERE l.task_id = t.id), '[]') AS links
+    FROM tasks t
     ORDER BY
-      CASE status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'feedback' THEN 2
-                  WHEN 'todo' THEN 3 ELSE 4 END,
-      CASE priority WHEN 'highest' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-      due_date NULLS LAST, due_time NULLS LAST, created_at`;
-  const people = await sql`SELECT * FROM task_people`;
-  const depts = await sql`SELECT * FROM task_departments`;
-  const parts = await sql`SELECT * FROM task_parts ORDER BY position, created_at`;
-  const links = await sql`SELECT * FROM task_links ORDER BY created_at`;
+      CASE t.status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'feedback' THEN 2
+                    WHEN 'todo' THEN 3 ELSE 4 END,
+      CASE t.priority WHEN 'highest' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+      t.due_date NULLS LAST, t.due_time NULLS LAST, t.created_at`;
 
-  const byTask = new Map();
-  for (const t of tasks) byTask.set(t.id, { people: [], departments: [], parts: [], links: [] });
-  for (const p of people) byTask.get(p.task_id)?.people.push(p.username);
-  for (const d of depts) byTask.get(d.task_id)?.departments.push({ key: d.department, scope: d.scope });
-  for (const p of parts) {
-    byTask.get(p.task_id)?.parts.push({
-      id: p.id,
-      title: p.title,
-      assignee: p.assignee,
-      done: p.done,
-      doneAt: p.done_at,
-      doneBy: p.done_by,
-    });
-  }
-  for (const l of links) {
-    byTask.get(l.task_id)?.links.push({
-      id: l.id,
-      partId: l.part_id,
-      url: l.url,
-      label: l.label,
-      kind: l.kind,
-      addedBy: l.added_by,
-      createdAt: l.created_at,
-    });
-  }
+  // json_agg returns parsed JSON through the driver, but a string through some
+  // configurations — accept either rather than trusting one.
+  const asArray = (value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') { try { return JSON.parse(value); } catch { return []; } }
+    return [];
+  };
 
-  return tasks.map((t) => ({
+  return rows.map((t) => ({
     id: t.id,
     title: t.title,
     description: t.description,
@@ -94,10 +97,10 @@ async function assembled(sql) {
     notify: String(t.notify || '').split(',').filter(Boolean),
     createdAt: t.created_at,
     updatedAt: t.updated_at,
-    assignees: byTask.get(t.id)?.people ?? [],
-    departments: byTask.get(t.id)?.departments ?? [],
-    parts: byTask.get(t.id)?.parts ?? [],
-    links: byTask.get(t.id)?.links ?? [],
+    assignees: asArray(t.people),
+    departments: asArray(t.depts),
+    parts: asArray(t.parts),
+    links: asArray(t.links),
   }));
 }
 
@@ -121,21 +124,30 @@ const withRights = (me, tasks) =>
 async function expandPeople(sql, assignees, departments) {
   const set = new Set(assignees);
 
-  for (const { key, scope } of departments) {
-    // Membership comes from the grants table, so someone who works across two
-    // departments is reached by a tag on either of them. People whose access
-    // is "all departments" are deliberately not swept in: tagging Content
-    // should not notify the project director.
-    const rows =
-      scope === 'heads'
-        ? await sql`SELECT u.username FROM users u JOIN user_departments d ON d.username = u.username
-                    WHERE d.department = ${key} AND u.is_head = true AND u.active = true`
-        : scope === 'members'
-          ? await sql`SELECT u.username FROM users u JOIN user_departments d ON d.username = u.username
-                      WHERE d.department = ${key} AND u.is_head = false AND u.active = true`
-          : await sql`SELECT u.username FROM users u JOIN user_departments d ON d.username = u.username
-                      WHERE d.department = ${key} AND u.active = true`;
-    for (const r of rows) set.add(r.username);
+  /**
+   * Membership comes from the grants table, so someone who works across two
+   * departments is reached by a tag on either of them. People whose access is
+   * "all departments" are deliberately not swept in: tagging Content should
+   * not notify the project director.
+   *
+   * All the tags are resolved in one query rather than one per tag — three
+   * department tags used to mean three round trips before anything was saved.
+   */
+  if (departments.length) {
+    const keys = departments.map((d) => d.key);
+    const rows = await sql`
+      SELECT DISTINCT u.username, u.is_head, d.department
+      FROM users u JOIN user_departments d ON d.username = u.username
+      WHERE d.department = ANY(${keys}) AND u.active = true`;
+
+    for (const { key, scope } of departments) {
+      for (const row of rows) {
+        if (row.department !== key) continue;
+        if (scope === 'heads' && !row.is_head) continue;
+        if (scope === 'members' && row.is_head) continue;
+        set.add(row.username);
+      }
+    }
   }
   return [...set];
 }
@@ -145,13 +157,27 @@ async function writeTags(sql, taskId, assignees, departments) {
   await sql`DELETE FROM task_departments WHERE task_id = ${taskId}`;
 
   const expanded = await expandPeople(sql, assignees, departments);
-  for (const username of expanded) {
-    await sql`INSERT INTO task_people (task_id, username) VALUES (${taskId}, ${username})
-              ON CONFLICT DO NOTHING`;
+
+  /**
+   * One statement per table, however many people are on the task.
+   *
+   * UNNEST turns two arrays into rows, so twenty assignees cost one round trip
+   * instead of twenty. With a serverless database every statement is its own
+   * HTTPS call, and that is most of what "saving is slow" actually was.
+   */
+  if (expanded.length) {
+    await sql`
+      INSERT INTO task_people (task_id, username)
+      SELECT ${taskId}, u FROM unnest(${expanded}::text[]) AS u
+      ON CONFLICT DO NOTHING`;
   }
-  for (const { key, scope } of departments) {
-    await sql`INSERT INTO task_departments (task_id, department, scope)
-              VALUES (${taskId}, ${key}, ${scope}) ON CONFLICT DO NOTHING`;
+  if (departments.length) {
+    await sql`
+      INSERT INTO task_departments (task_id, department, scope)
+      SELECT ${taskId}, d, s
+      FROM unnest(${departments.map((d) => d.key)}::text[],
+                  ${departments.map((d) => d.scope)}::text[]) AS t(d, s)
+      ON CONFLICT DO NOTHING`;
   }
   return expanded;
 }
@@ -170,22 +196,25 @@ function readTags(body) {
 
 async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
   const targets = usernames.filter((u) => u !== actor); // nobody needs telling what they just did
-  const idFor = {};
+  if (!targets.length) return;
 
+  const idFor = {};
   for (const username of targets) {
-    const id = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    idFor[username] = id;
-    await sql`
-      INSERT INTO notifications (id, username, task_id, kind, title, body)
-      VALUES (${id}, ${username}, ${task.id}, ${kind}, ${title}, ${body})`;
+    idFor[username] = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   }
+
+  // One insert for the whole list, for the same reason as the tags above.
+  await sql`
+    INSERT INTO notifications (id, username, task_id, kind, title, body)
+    SELECT i, u, ${task.id}, ${kind}, ${title}, ${body}
+    FROM unnest(${targets.map((u) => idFor[u])}::text[], ${targets}::text[]) AS t(i, u)`;
 
   /**
    * The bell row is written first and the push is attempted after, so a push
    * service being slow or unreachable costs a lock-screen alert and nothing
    * more — the notification is still waiting in the app either way.
    */
-  if (targets.length) {
+  {
     try {
       await sendToMany(sql, targets, (username) => ({
         id: idFor[username],
