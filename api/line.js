@@ -5,12 +5,18 @@ import { assembled } from './tasks.js';
 import { assembledEvents, canSeeEvent } from './events.js';
 import {
   lineConfigured, verifySignature, reply, text, newLinkCode,
+  installRichMenu, removeRichMenu,
 } from '../lib/line.js';
+import { RICH_MENU_PNG_BASE64 } from '../lib/richmenu-image.js';
 import {
   readCommand, parseTaskLine, todayIso, addDays,
   sayTask, sayEvent, sayDate, HELP, MENU,
   canSeeTask, canSetStatus, canDeleteTask, canPostTo,
 } from '../lib/linecmd.js';
+import {
+  ask, answer, nextStep, FIRST_STEP, isCancel,
+  MENU_ADD, MENU_VIEW, MENU_MANAGE,
+} from '../lib/lineflow.js';
 
 /**
  * The LINE Official Account.
@@ -48,12 +54,15 @@ async function handler(request) {
     const rows = await sql`
       SELECT line_user_id, display_name, digest, linked_at
       FROM line_links WHERE username = ${me.username}`;
+    const [menu] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu'`;
     return json({
       configured: lineConfigured(),
       linked: rows.length > 0,
       displayName: rows[0]?.display_name || null,
       digest: rows[0]?.digest !== false,
       linkedAt: rows[0]?.linked_at || null,
+      canManageMenu: me.access === 'admin' || me.access === 'coadmin',
+      menuInstalled: Boolean(menu?.value),
     });
   }
 
@@ -67,6 +76,40 @@ async function handler(request) {
     await sql`INSERT INTO line_codes (code, username, expires_at)
               VALUES (${code}, ${me.username}, ${expires})`;
     return json({ code, expiresAt: expires, minutes: CODE_MINUTES });
+  }
+
+  /**
+   * Installing the three-button menu. Admins only: it changes what every
+   * member of the committee sees at the bottom of their chat.
+   */
+  if (action === 'richmenu') {
+    if (me.access !== 'admin' && me.access !== 'coadmin') {
+      return json({ error: 'NOT_ALLOWED' }, 403);
+    }
+    if (!lineConfigured()) return json({ error: 'LINE_NOT_SET_UP' }, 400);
+
+    if (request.method === 'DELETE') {
+      const [row] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu'`;
+      await removeRichMenu(row?.value || null);
+      await sql`DELETE FROM meta WHERE key = 'line_richmenu'`;
+      return json({ ok: true, installed: false });
+    }
+
+    if (request.method === 'POST') {
+      try {
+        const png = Buffer.from(RICH_MENU_PNG_BASE64, 'base64');
+        // Replace rather than stack: installing twice would otherwise leave an
+        // orphaned menu behind on the account every time.
+        const [old] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu'`;
+        if (old?.value) await removeRichMenu(old.value).catch(() => {});
+        const id = await installRichMenu(png);
+        await sql`INSERT INTO meta (key, value) VALUES ('line_richmenu', ${id})
+                  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
+        return json({ ok: true, installed: true, richMenuId: id });
+      } catch (error) {
+        return json({ error: 'LINE_REFUSED', message: String(error?.message || error).slice(0, 300) }, 502);
+      }
+    }
   }
 
   if (request.method === 'DELETE' && action === 'link') {
@@ -152,6 +195,17 @@ async function handleEvent(sql, event) {
     return reply(token, text('บัญชีนี้ถูกปิดหรือถูกลบไปแล้ว จึงเลิกเชื่อมต่อให้อัตโนมัติ'));
   }
 
+  /**
+   * A conversation in progress takes priority over everything else.
+   *
+   * Someone half-way through adding a task who types "งาน" means it as the
+   * answer to the question they were just asked, not as a command. The only
+   * words that break out are the ones that end the conversation, which the
+   * flow handles itself.
+   */
+  const flow = await activeFlow(sql, lineUserId);
+  if (flow) return reply(token, await step(sql, me, lineUserId, flow, body));
+
   return reply(token, await run(sql, me, lineUserId, body));
 }
 
@@ -223,6 +277,19 @@ async function personFor(sql, username) {
 async function run(sql, me, lineUserId, body) {
   const command = readCommand(body);
   const today = todayIso();
+  const typed = String(body || '').trim();
+
+  // The three rich-menu buttons, and the sub-menus they open.
+  if (MENU_ADD.includes(typed)) return startAdd(sql, me, lineUserId);
+  if (MENU_VIEW.includes(typed)) {
+    return text('ตรวจสอบงาน — ต้องการดูอะไรคะ',
+      ['งานของฉัน', 'วันนี้', 'สัปดาห์นี้', 'เลยกำหนด', 'กิจกรรม', 'จบ']);
+  }
+  if (MENU_MANAGE.includes(typed)) return startManage(sql, me, lineUserId, today);
+  if (['จบ', 'จบการทำงาน', 'ปิดเมนู', 'done', 'exit'].includes(typed.toLowerCase())) {
+    await sql`DELETE FROM line_flows WHERE line_user_id = ${lineUserId}`;
+    return text('เรียบร้อยค่ะ 👋\nกดปุ่มด้านล่างจอเมื่อต้องการเริ่มใหม่', []);
+  }
 
   switch (command.name) {
     case 'help':
@@ -520,6 +587,255 @@ async function removeTask(sql, me, lineUserId, rest) {
   }
   await sql`DELETE FROM tasks WHERE id = ${task.id}`;
   return text(`ลบงาน "${task.title}" แล้วค่ะ`, MENU);
+}
+
+
+// ---------------------------------------------------------------------------
+// The guided flows
+// ---------------------------------------------------------------------------
+
+/** A conversation is abandoned after a day rather than waiting forever. */
+async function activeFlow(sql, lineUserId) {
+  await sql`DELETE FROM line_flows WHERE updated_at < now() - interval '1 day'`;
+  const [row] = await sql`SELECT * FROM line_flows WHERE line_user_id = ${lineUserId}`;
+  if (!row) return null;
+  let draft = {};
+  try { draft = JSON.parse(row.draft); } catch { draft = {}; }
+  return { flow: row.flow, step: row.step, draft };
+}
+
+const saveFlow = (sql, lineUserId, flow, step, draft) => sql`
+  INSERT INTO line_flows (line_user_id, flow, step, draft, updated_at)
+  VALUES (${lineUserId}, ${flow}, ${step}, ${JSON.stringify(draft)}, now())
+  ON CONFLICT (line_user_id) DO UPDATE
+    SET flow = EXCLUDED.flow, step = EXCLUDED.step,
+        draft = EXCLUDED.draft, updated_at = now()`;
+
+const clearFlow = (sql, lineUserId) =>
+  sql`DELETE FROM line_flows WHERE line_user_id = ${lineUserId}`;
+
+/** Everyone the asker could put on a task. */
+const roster = (sql) => sql`
+  SELECT u.username, u.display_name, u.nickname, u.department,
+         COALESCE((SELECT json_agg(d.department) FROM user_departments d
+                   WHERE d.username = u.username), '[]') AS depts
+  FROM users u WHERE u.active = true AND u.suspended = false
+  ORDER BY u.display_name`;
+
+const asPeople = (rows) => rows.map((r) => ({
+  ...r,
+  departments: Array.isArray(r.depts)
+    ? r.depts
+    : (() => { try { return JSON.parse(r.depts); } catch { return []; } })(),
+}));
+
+async function startAdd(sql, me, lineUserId) {
+  const draft = {};
+  await saveFlow(sql, lineUserId, 'add', FIRST_STEP, draft);
+  const people = asPeople(await roster(sql));
+  const q = ask(FIRST_STEP, draft, { me, people });
+  return text(q.text, q.labels);
+}
+
+/**
+ * One turn of a guided conversation.
+ *
+ * Reads the answer, decides where to go, saves, and asks the next question.
+ * The flow row is written before the reply is built, so a person who answers
+ * twice quickly cannot end up two questions apart from what the bot thinks.
+ */
+async function step(sql, me, lineUserId, state, body) {
+  const people = asPeople(await roster(sql));
+  const context = { me, people };
+
+  if (state.flow === 'manage') return manageStep(sql, me, lineUserId, state, body);
+
+  const result = answer(state.step, state.draft, body, context);
+
+  if (result.cancel) {
+    await clearFlow(sql, lineUserId);
+    return text('ยกเลิกแล้วค่ะ ไม่ได้บันทึกอะไร\\nกดปุ่มด้านล่างจอเมื่อต้องการเริ่มใหม่', []);
+  }
+
+  if (result.restart) {
+    await saveFlow(sql, lineUserId, 'add', FIRST_STEP, {});
+    const q = ask(FIRST_STEP, {}, context);
+    return text(q.text, q.labels);
+  }
+
+  if (result.save) return saveDraft(sql, me, lineUserId, state.draft, people);
+
+  if (result.stay) {
+    const draft = result.draft || state.draft;
+    await saveFlow(sql, lineUserId, 'add', state.step, draft);
+    const q = ask(state.step, draft, context);
+    return text((result.note ? `${result.note}\\n\\n` : '') + q.text, q.labels);
+  }
+
+  const draft = result.draft;
+  const to = nextStep(state.step, draft, context);
+  await saveFlow(sql, lineUserId, 'add', to, draft);
+  const q = ask(to, draft, context);
+  return text(q.text, q.labels);
+}
+
+/** Writes the finished task, using exactly the same rules as the website. */
+async function saveDraft(sql, me, lineUserId, draft, people) {
+  if (!draft.title) {
+    await clearFlow(sql, lineUserId);
+    return text('ไม่มีชื่องาน จึงบันทึกไม่ได้ค่ะ', []);
+  }
+
+  const department = draft.scope === 'none' ? (me.department || null) : (draft.department || me.department || null);
+  if (department && !canPostTo(me, department)) {
+    await clearFlow(sql, lineUserId);
+    return text(`ไม่มีสิทธิ์สร้างงานในฝ่ายนี้ค่ะ`, []);
+  }
+
+  const id = `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const notify = draft.notify === undefined ? '7d,24h,due' : draft.notify;
+
+  await sql`
+    INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+                       department, unit, created_by, notify)
+    VALUES (${id}, ${draft.title.slice(0, 200)}, ${draft.description || ''},
+            ${draft.dueDate || null}, ${draft.dueTime || null},
+            ${draft.status || 'todo'}, ${draft.priority || 'medium'},
+            ${department}, ${draft.unit || null}, ${me.username}, ${notify})`;
+
+  // Named people, plus everyone the department tag reaches.
+  const set = new Set(draft.assignees || []);
+  if (draft.scope && draft.scope !== 'none' && draft.department) {
+    const found = draft.scope === 'heads'
+      ? await sql`SELECT u.username FROM users u JOIN user_departments x ON x.username = u.username
+                  WHERE x.department = ${draft.department} AND u.is_head = true AND u.active = true`
+      : draft.scope === 'members'
+        ? await sql`SELECT u.username FROM users u JOIN user_departments x ON x.username = u.username
+                    WHERE x.department = ${draft.department} AND u.is_head = false AND u.active = true`
+        : await sql`SELECT u.username FROM users u JOIN user_departments x ON x.username = u.username
+                    WHERE x.department = ${draft.department} AND u.active = true`;
+    for (const row of found) set.add(row.username);
+    await sql`INSERT INTO task_departments (task_id, department, scope)
+              VALUES (${id}, ${draft.department}, ${draft.scope}) ON CONFLICT DO NOTHING`;
+  }
+  if (!set.size) set.add(me.username);
+
+  const names = [...set];
+  await sql`INSERT INTO task_people (task_id, username)
+            SELECT ${id}, u FROM unnest(${names}::text[]) AS u ON CONFLICT DO NOTHING`;
+
+  await clearFlow(sql, lineUserId);
+
+  const who = (draft.assignees || []).map((u) => {
+    const p = people.find((x) => x.username === u);
+    return p ? (p.nickname || p.display_name || u) : u;
+  });
+  return text([
+    '✓ บันทึกงานแล้วค่ะ',
+    '',
+    draft.title,
+    draft.dueDate ? `กำหนดส่ง ${sayDate(draft.dueDate)}${draft.dueTime ? ` ${draft.dueTime} น.` : ''}` : 'ไม่มีกำหนดส่ง',
+    `แจ้งเตือน ${names.length} คน`,
+    who.length ? `ผู้รับผิดชอบ: ${who.join(', ')}` : '',
+  ].filter(Boolean).join('\\n'), ['เพิ่มงานอีก', 'ตรวจสอบงาน', 'จบ']);
+}
+
+/**
+ * Managing: show the list, pick a number, then choose what to do to it.
+ *
+ * Two steps rather than one so nobody has to remember a number from an earlier
+ * message, and so the task being changed is named back before it changes.
+ */
+async function startManage(sql, me, lineUserId, today) {
+  const all = (await assembled(sql)).filter((t) => canSeeTask(me, t));
+  const mine = all
+    .filter((t) => (t.assignees || []).includes(me.username) || t.createdBy === me.username)
+    .filter((t) => t.status !== 'done')
+    .sort(byUrgency(today))
+    .slice(0, 9);
+
+  if (!mine.length) {
+    await clearFlow(sql, lineUserId);
+    return text('ไม่มีงานที่ต้องจัดการค่ะ 🎉', ['เพิ่มงาน', 'ตรวจสอบงาน', 'จบ']);
+  }
+
+  const lines = ['จัดการงาน — เลือกงานที่ต้องการแก้'];
+  lines.push('');
+  mine.forEach((t, i) => lines.push(sayTask(t, i + 1, today)));
+
+  await remember(sql, lineUserId, mine.map((t) => ({ kind: 'task', id: t.id })));
+  await saveFlow(sql, lineUserId, 'manage', 'pick', {});
+  return text(lines.join('\\n'), [...mine.map((_, i) => String(i + 1)), 'จบ']);
+}
+
+async function manageStep(sql, me, lineUserId, state, body) {
+  const typed = String(body || '').trim();
+  const today = todayIso();
+
+  if (isCancel(typed)) {
+    await clearFlow(sql, lineUserId);
+    return text('ปิดเมนูจัดการงานแล้วค่ะ', []);
+  }
+
+  if (state.step === 'pick') {
+    const position = Number(typed.replace(/[^\d]/g, ''));
+    const found = position ? await recall(sql, lineUserId, position) : null;
+    if (!found) return text('กรุณากดเลือกหมายเลขงานจากปุ่มด้านล่างค่ะ', ['จบ']);
+
+    const task = (await assembled(sql)).find((t) => t.id === found.ref_id);
+    if (!task) {
+      await clearFlow(sql, lineUserId);
+      return text('ไม่พบงานนี้แล้วค่ะ', ['จบ']);
+    }
+
+    await saveFlow(sql, lineUserId, 'manage', 'act', { id: task.id, position });
+    const labels = [];
+    if (canSetStatus(me, task)) labels.push('เสร็จแล้ว', 'กำลังทำ', 'รอตรวจ');
+    if (canDeleteTask(me, task)) labels.push('ลบงานนี้');
+    labels.push('เลือกงานอื่น', 'จบ');
+    return text([
+      task.title,
+      `กำหนดส่ง ${sayDate(task.dueDate, today)}${task.dueTime ? ` ${task.dueTime} น.` : ''}`,
+      '',
+      labels.length > 2 ? 'ต้องการทำอะไรกับงานนี้คะ' : 'ไม่มีสิทธิ์แก้งานนี้ค่ะ',
+    ].join('\\n'), labels);
+  }
+
+  // state.step === 'act'
+  if (typed === 'เลือกงานอื่น') return startManage(sql, me, lineUserId, today);
+
+  const task = (await assembled(sql)).find((t) => t.id === state.draft.id);
+  if (!task) {
+    await clearFlow(sql, lineUserId);
+    return text('ไม่พบงานนี้แล้วค่ะ', ['จบ']);
+  }
+
+  const statusFor = { 'เสร็จแล้ว': 'done', 'กำลังทำ': 'doing', 'รอตรวจ': 'review' }[typed];
+  if (statusFor) {
+    if (!canSetStatus(me, task)) return text('ไม่มีสิทธิ์เปลี่ยนสถานะงานนี้ค่ะ', ['จบ']);
+    await sql`UPDATE tasks SET status = ${statusFor}, updated_at = now() WHERE id = ${task.id}`;
+    await clearFlow(sql, lineUserId);
+    return text(`${task.title}\\n→ ${typed}`, ['จัดการงาน', 'ตรวจสอบงาน', 'จบ']);
+  }
+
+  if (typed === 'ลบงานนี้') {
+    if (!canDeleteTask(me, task)) return text('ไม่มีสิทธิ์ลบงานนี้ค่ะ', ['จบ']);
+    await saveFlow(sql, lineUserId, 'manage', 'confirmDelete', state.draft);
+    return text(`จะลบงาน "${task.title}" ใช่ไหมคะ\\nลบแล้วกู้คืนไม่ได้`, ['ยืนยันลบ', 'ไม่ลบ', 'จบ']);
+  }
+
+  if (state.step === 'confirmDelete') {
+    if (typed === 'ยืนยันลบ') {
+      if (!canDeleteTask(me, task)) return text('ไม่มีสิทธิ์ลบงานนี้ค่ะ', ['จบ']);
+      await sql`DELETE FROM tasks WHERE id = ${task.id}`;
+      await clearFlow(sql, lineUserId);
+      return text(`ลบงาน "${task.title}" แล้วค่ะ`, ['จัดการงาน', 'จบ']);
+    }
+    await clearFlow(sql, lineUserId);
+    return text('ไม่ได้ลบค่ะ', ['จัดการงาน', 'จบ']);
+  }
+
+  return text('กรุณากดเลือกจากปุ่มด้านล่างค่ะ', ['เลือกงานอื่น', 'จบ']);
 }
 
 export default withNode(handler);

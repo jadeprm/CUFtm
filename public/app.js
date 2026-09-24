@@ -2640,6 +2640,27 @@
         box.appendChild(h('label', { class: 'inline-check' }, [toggle, t('lineDigestOn')]));
         box.appendChild(h('p', { class: 'hint', text: t('lineDigestHelp') }));
 
+        // Admins also get the one-click menu install. It changes what every
+        // member sees, so it is deliberately not offered to everyone.
+        if (state.canManageMenu) {
+          box.appendChild(h('p', { class: 'hint', text: t('lineMenuHelp') }));
+          box.appendChild(h('button', {
+            class: 'btn sm', text: state.menuInstalled ? t('lineMenuReinstall') : t('lineMenuInstall'),
+            onclick: function (e) {
+              var btn = e.target;
+              btn.disabled = true;
+              btn.textContent = t('lineMenuWorking');
+              api('/api/line?do=richmenu', { method: 'POST' })
+                .then(function () { state.menuInstalled = true; draw(state); })
+                .catch(function (err) {
+                  btn.disabled = false;
+                  alert(err.data && err.data.message ? err.data.message : errText(err.code));
+                  draw(state);
+                });
+            },
+          }));
+        }
+
         box.appendChild(h('button', {
           class: 'btn sm', text: t('lineDisconnect'),
           onclick: function () {

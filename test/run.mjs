@@ -31,13 +31,31 @@ globalThis.fetch = async (url, init) => {
     if (sheetCsv === null) return new Response('<html>sign in</html>', { status: 200 });
     return new Response(sheetCsv, { status: 200 });
   }
+  if (String(url).includes('api-data.line.me')) {
+    lineSent.push({ kind: 'image', bytes: init.body?.length || 0,
+                    type: (init.headers || {})['content-type'] });
+    return new Response('{}', { status: 200 });
+  }
   if (String(url).includes('api.line.me')) {
+    if (String(url).includes('/richmenu') && init.method === 'POST' && !String(url).includes('/user/all/')) {
+      const body = JSON.parse(init.body);
+      lineSent.push({ kind: 'richmenu', size: body.size, areas: body.areas, chatBarText: body.chatBarText });
+      return new Response(JSON.stringify({ richMenuId: 'richmenu-test-1' }), { status: 200 });
+    }
+    if (String(url).includes('/user/all/richmenu')) {
+      lineSent.push({ kind: 'richmenu-default', method: init.method || 'POST' });
+      return new Response('{}', { status: 200 });
+    }
     const body = JSON.parse(init.body);
     lineSent.push({
       kind: String(url).includes('/reply') ? 'reply' : 'push',
       to: body.to || null,
       token: body.replyToken || null,
       text: (body.messages || []).map((m) => m.text).join('\n'),
+      // The tappable buttons are a separate field; a test that only reads the
+      // body would miss half of what the person actually sees.
+      labels: (body.messages || []).flatMap((m) =>
+        (m.quickReply?.items || []).map((i) => i.action.label)),
       auth: (init.headers || {}).authorization,
     });
     if (lineFails) return new Response('{"message":"refused"}', { status: lineFails });
@@ -83,6 +101,7 @@ const sayToBot = (userId, textBody, token = 'rt_' + Math.random().toString(36).s
   message: { type: 'text', id: 'm1', text: textBody },
 }]);
 const lastReply = () => lineSent.filter((m) => m.kind === 'reply').slice(-1)[0]?.text || '';
+const lastButtons = () => lineSent.filter((m) => m.kind === 'reply').slice(-1)[0]?.labels || [];
 
 let failed = 0;
 let section = '';
@@ -1801,6 +1820,207 @@ ok('blocking the account unlinks it', unfollowed.length === 0);
 
 r = await call(lineApi, '/api/line?do=status');
 ok('the website endpoints need a sign-in', r.status === 401);
+
+head('35. LINE: the guided step-by-step flow');
+
+lineSent.length = 0;      // the digest section above sent real pushes
+
+// Link a fresh account for the wizard.
+r = await call(lineApi, '/api/line?do=code', { method: 'POST', as: 'admin' });
+await lineApi(lineHook(sayToBot('Uwiz', r.data.code)));
+
+const say = async (t) => { await lineApi(lineHook(sayToBot('Uwiz', t))); return lastReply(); };
+
+let out = await say('เพิ่มงาน');
+ok('the menu button starts the wizard', out.includes('ขั้นที่ 1/11') && out.includes('ชื่องาน'), out.split('\n')[0]);
+
+out = await say('เตรียมเวทีกลาง');
+ok('...then asks for details', out.includes('ขั้นที่ 2/11'), out.split('\n')[0]);
+ok('...quoting the title back', out.includes('เตรียมเวทีกลาง'));
+
+out = await say('ข้าม');
+ok('optional steps can be skipped', out.includes('ขั้นที่ 3/11') && out.includes('กำหนดส่ง'), out.split('\n')[0]);
+
+out = await say('วันที่มั่วซั่ว');
+ok('a date it cannot read is explained, not swallowed',
+  out.includes('ไม่เข้าใจวันที่') && out.includes('ขั้นที่ 3/11'), out.split('\n')[0]);
+
+out = await say('20/11');
+ok('...and a good one moves on', out.includes('ขั้นที่ 4/11') && out.includes('เวลา'), out.split('\n')[0]);
+
+out = await say('18:00');
+ok('the time step leads to people', out.includes('ขั้นที่ 5/11') && out.includes('ผู้รับผิดชอบ'), out.split('\n')[0]);
+ok('...offering real names to tap as buttons',
+  lastButtons().some((l) => /Kungking|Kaew|Gorn|กุ๊งกิ๊ง|แก้ว|กร|ต๊อดติ/.test(l)),
+  lastButtons().join(' / '));
+
+out = await say('ฉันเอง');
+ok('picking myself keeps the list open for more', out.includes('เลือกแล้ว'), out.split('\n')[2] || '');
+
+out = await say('กุ๊งกิ๊ง');
+ok('...and a typed nickname is found too', out.includes('เลือกแล้ว') && /กุ๊งกิ๊ง|Kungking/.test(out));
+
+out = await say('✓ เลือกเสร็จแล้ว');
+ok('finishing the people step asks about departments', out.includes('ขั้นที่ 6/11'), out.split('\n')[0]);
+
+out = await say('เฉพาะหัวหน้าฝ่าย');
+ok('...then which department', out.includes('ขั้นที่ 7/11'), out.split('\n')[0]);
+
+out = await say('ฝ่ายเนื้อหา');
+ok('...then the section inside it', out.includes('ขั้นที่ 8/11') && out.includes('หน่วยย่อย'), out.split('\n')[0]);
+ok('...listing that department\'s own sections as buttons',
+  lastButtons().includes('Stage'), lastButtons().join(' / '));
+
+out = await say('Stage');
+ok('then priority', out.includes('ขั้นที่ 9/11'), out.split('\n')[0]);
+out = await say('ด่วน');
+ok('then status', out.includes('ขั้นที่ 10/11'), out.split('\n')[0]);
+out = await say('กำลังทำ');
+ok('then reminders', out.includes('ขั้นที่ 11/11'), out.split('\n')[0]);
+out = await say('7 วัน + 1 วัน + วันครบกำหนด');
+ok('then a summary before anything is saved', out.includes('ตรวจสอบก่อนบันทึก'), out.split('\n')[0]);
+ok('...showing every answer back',
+  out.includes('เตรียมเวทีกลาง') && out.includes('ด่วน') && out.includes('Stage') && out.includes('พ.ย.'),
+  out.replace(/\n/g, ' | ').slice(0, 200));
+
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('nothing is written until it is confirmed',
+  !r.data.tasks.find((t) => t.title === 'เตรียมเวทีกลาง'));
+
+out = await say('✓ บันทึกงาน');
+ok('confirming saves it', out.includes('บันทึกงานแล้ว'), out.split('\n')[0]);
+
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+const wiz = r.data.tasks.find((t) => t.title === 'เตรียมเวทีกลาง');
+ok('the task really exists', Boolean(wiz));
+ok('...with the date from step 3', wiz?.dueDate?.endsWith('-11-20'), wiz?.dueDate);
+ok('...the time from step 4', wiz?.dueTime === '18:00', wiz?.dueTime);
+ok('...the people from step 5', (wiz?.assignees || []).includes('Jade_Pres') &&
+  (wiz?.assignees || []).includes('Kungking_HeadCon'), (wiz?.assignees || []).join(','));
+ok('...the department from step 7', wiz?.department === 'content', wiz?.department);
+ok('...the section from step 8', wiz?.unit === 'Stage', wiz?.unit);
+ok('...the priority from step 9', wiz?.priority === 'high', wiz?.priority);
+ok('...the status from step 10', wiz?.status === 'doing', wiz?.status);
+ok('...and the reminders from step 11', (wiz?.notify || []).join(',') === '7d,24h,due',
+  (wiz?.notify || []).join(','));
+
+head('36. LINE: no path loops, every path ends');
+
+// ยกเลิก works at any step, and leaves nothing behind.
+await say('เพิ่มงาน');
+await say('งานที่จะถูกยกเลิก');
+out = await say('ยกเลิก');
+ok('cancelling mid-flow ends it', out.includes('ยกเลิกแล้ว'), out.split('\n')[0]);
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('...and saves nothing', !r.data.tasks.find((t) => t.title === 'งานที่จะถูกยกเลิก'));
+
+out = await say('งาน');
+ok('...and the next message is a normal command again, not an answer',
+  out.includes('งานของฉัน') || out.includes('ไม่มีรายการ'), out.split('\n')[0]);
+
+// Cancelling at the very first question works too.
+await say('เพิ่มงาน');
+out = await say('ยกเลิก');
+ok('cancelling at the first question works', out.includes('ยกเลิกแล้ว'));
+
+// While in a flow, a command word is treated as the answer, not a command.
+await say('เพิ่มงาน');
+out = await say('วันนี้');
+ok('a command word typed mid-flow is taken as the answer', out.includes('ขั้นที่ 2/11'), out.split('\n')[0]);
+await say('ยกเลิก');
+
+// จบ always closes down, from anywhere.
+out = await say('จบ');
+ok('จบ ends the conversation from the top level', out.includes('เรียบร้อย'), out.split('\n')[0]);
+
+head('37. LINE: ตรวจสอบงาน and จัดการงาน');
+
+out = await say('ตรวจสอบงาน');
+ok('viewing offers the choices', out.includes('ต้องการดูอะไร'), out.split('\n')[0]);
+out = await say('งานของฉัน');
+ok('...and a choice shows the list', out.includes('งานของฉัน'), out.split('\n')[0]);
+
+out = await say('จัดการงาน');
+ok('managing lists tasks to pick from', out.includes('เลือกงานที่ต้องการแก้'), out.split('\n')[0]);
+ok('...numbered', /1\. /.test(out));
+
+out = await say('1');
+ok('picking a number names the task and offers actions',
+  out.includes('ต้องการทำอะไรกับงานนี้'), out.split('\n')[0]);
+
+out = await say('เสร็จแล้ว');
+ok('...and the action is applied', out.includes('เสร็จแล้ว'), out.split('\n')[0]);
+
+// Deleting through the menu still asks first.
+await say('จัดการงาน');
+await say('1');
+out = await say('ลบงานนี้');
+ok('deleting through the menu asks first', out.includes('ใช่ไหม'), out.split('\n')[0]);
+out = await say('ไม่ลบ');
+ok('...and declining keeps it', out.includes('ไม่ได้ลบ'), out.split('\n')[0]);
+
+// Every conversational message so far has been free.
+ok('the whole wizard used only free replies, never a paid push',
+  lineSent.filter((m) => m.kind === 'push').length === 0,
+  String(lineSent.filter((m) => m.kind === 'push').length));
+
+head('38. LINE: the three-button rich menu');
+
+lineSent.length = 0;
+r = await call(lineApi, '/api/line?do=richmenu', { method: 'POST', as: 'content' });
+ok('an ordinary editor cannot change what everyone sees', r.status === 403, String(r.status));
+
+r = await call(lineApi, '/api/line?do=richmenu', { method: 'POST', as: 'admin' });
+ok('an admin can install it', r.status === 200 && r.data.installed === true, JSON.stringify(r.data));
+
+const menuMade = lineSent.find((m) => m.kind === 'richmenu');
+ok('...at a size LINE accepts', menuMade.size.width === 2500 && menuMade.size.height === 843,
+  JSON.stringify(menuMade.size));
+ok('...with exactly three buttons', menuMade.areas.length === 3, String(menuMade.areas.length));
+ok('...labelled as asked',
+  menuMade.areas.map((a) => a.action.text).join(' / ') === 'เพิ่มงาน / ตรวจสอบงาน / จัดการงาน',
+  menuMade.areas.map((a) => a.action.text).join(' / '));
+
+// The regions must tile the whole width with no gap and no overlap.
+const xs = menuMade.areas.map((a) => a.bounds);
+ok('...the buttons tile the full width, no gaps',
+  xs[0].x === 0 && xs[0].x + xs[0].width === xs[1].x &&
+  xs[1].x + xs[1].width === xs[2].x && xs[2].x + xs[2].width === 2500,
+  xs.map((b) => `${b.x}+${b.width}`).join(' '));
+ok('...and the full height', xs.every((b) => b.y === 0 && b.height === 843));
+
+const menuPicture = lineSent.find((m) => m.kind === 'image');
+ok('the picture was uploaded, as a PNG', menuPicture && menuPicture.type === 'image/png', JSON.stringify(menuPicture?.type));
+ok('...and is a real image, not an empty buffer', menuPicture.bytes > 10000, String(menuPicture.bytes));
+ok('it was made the default for everyone', lineSent.some((m) => m.kind === 'richmenu-default'));
+
+r = await call(lineApi, '/api/line?do=status', { as: 'admin' });
+ok('the website remembers it is installed', r.data.menuInstalled === true);
+ok('...and only offers the button to admins', r.data.canManageMenu === true);
+r = await call(lineApi, '/api/line?do=status', { as: 'content' });
+ok('...not to editors', r.data.canManageMenu === false);
+
+// Installing twice replaces rather than stacks.
+lineSent.length = 0;
+await call(lineApi, '/api/line?do=richmenu', { method: 'POST', as: 'admin' });
+ok('installing again removes the old one first',
+  lineSent.some((m) => m.kind === 'richmenu-default' && m.method === 'DELETE') ||
+  lineSent.filter((m) => m.kind === 'richmenu').length === 1,
+  JSON.stringify(lineSent.map((m) => m.kind)));
+
+// And the buttons it sends really do drive the flows.
+const menuWords = menuMade.areas.map((a) => a.action.text);
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Uwiz', menuWords[0])));
+ok('tapping the first button starts the wizard', lastReply().includes('ขั้นที่ 1/11'), lastReply().split('\n')[0]);
+await lineApi(lineHook(sayToBot('Uwiz', 'ยกเลิก')));
+await lineApi(lineHook(sayToBot('Uwiz', menuWords[1])));
+ok('the second opens the view menu', lastReply().includes('ต้องการดูอะไร'), lastReply().split('\n')[0]);
+await lineApi(lineHook(sayToBot('Uwiz', menuWords[2])));
+ok('the third opens managing',
+  lastReply().includes('เลือกงานที่ต้องการแก้') || lastReply().includes('ไม่มีงานที่ต้องจัดการ'),
+  lastReply().split('\n')[0]);
+await lineApi(lineHook(sayToBot('Uwiz', 'จบ')));
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

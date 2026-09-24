@@ -214,6 +214,32 @@ Then redeploy, using the **top** row of the Deployments list.
 
 Website → โปรไฟล์ → แจ้งเตือนทาง LINE → **ขอรหัสเชื่อมต่อ**. They add the OA as a friend and send it the six-character code. The code lasts fifteen minutes, works once, and only ever binds the account that asked for it — which is what makes it safe to read off a screen. Unlinking works from either side, and blocking the account unlinks it automatically.
 
+### The three-button menu
+
+There is a panel under the keyboard in the LINE chat with **เพิ่มงาน · ตรวจสอบงาน · จัดการงาน**. To put it there: website → โปรไฟล์ → แจ้งเตือนทาง LINE → **ติดตั้งเมนูใน LINE**. Admins and co-admins only, because it changes what everyone sees. One press uploads the picture, sets the tap regions and makes it the default for every member — no dragging boxes over an image in the Official Account Manager.
+
+Each button simply sends its own word, so the menu and typing are the same single path through the code.
+
+### Adding a task by answering questions
+
+**เพิ่มงาน** starts a conversation that asks one thing at a time, eleven steps, with buttons at every one:
+
+ชื่องาน → รายละเอียด → กำหนดส่ง → เวลา → ผู้รับผิดชอบ → แท็กหัวหน้า/สมาชิกฝ่าย → ฝ่าย → หน่วยย่อย → ความสำคัญ → สถานะ → แจ้งเตือน → ตรวจสอบแล้วบันทึก
+
+Only the title has to be typed. The people step offers **real names as buttons**, the asker's own departments first, with ▸ คนอื่น ๆ for the rest and free typing to search the whole roster — and several people can be picked before moving on. The section step offers only the sections that actually belong to the department just chosen. A date can be tapped (วันนี้ / พรุ่งนี้ / ศุกร์นี้) or typed in any of the forms the importer understands.
+
+**Nothing is written until the summary is confirmed.** The last step shows every answer back and waits.
+
+**Every step accepts ยกเลิก**, which ends the conversation and saves nothing. Optional steps offer ข้าม. After saving, the reply offers เพิ่มงานอีก / ตรวจสอบงาน / จบ — so there is always an end, never a loop. A conversation nobody finishes is forgotten after a day rather than waiting for an answer forever.
+
+While a conversation is in progress, what you type is taken as the answer to the question on screen, not as a command — so a task can be called "วันนี้" without the bot mistaking it for a request to list today's work.
+
+### ตรวจสอบงาน and จัดการงาน
+
+**ตรวจสอบงาน** opens a row of choices: งานของฉัน, วันนี้, สัปดาห์นี้, เลยกำหนด, กิจกรรม.
+
+**จัดการงาน** lists your open work numbered, you tap a number, and it names the task back before offering เสร็จแล้ว / กำลังทำ / รอตรวจ / ลบงานนี้ / เลือกงานอื่น / จบ. Only the actions you are actually allowed to take are shown, and deleting always asks a second time.
+
 ### What they can type
 
 Reading — free, instant: `งาน`, `วันนี้`, `สัปดาห์นี้`, `เลยกำหนด`, `กิจกรรม`, `หา <คำ>`, `ช่วยเหลือ`.
