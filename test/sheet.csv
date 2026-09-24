@@ -1,0 +1,11 @@
+ลำดับ,ชื่อเล่น,Username,Display Name,ตำแหน่ง,Access,Department
+1,เจตน์,Jade_Pres,Jade - Project Director,ประธานโครงการ,Admin,All
+2,แก้ว,Kaew_VP,Keaw - Deputy Project Director,รองประธานโครงการ,Co-Admin,All
+3,ต๊อดติ,Totti_HeadOp,Totti - Head Operation,ประธานฝ่ายอำนวยการใหญ่,Co-Admin,OperAll
+4,เฟอร์รี่,Ferrari_AP,Ferrari - Assistant Project Director,ผู้ช่วยประธานโครงการ,Editor,All
+5,กุ๊งกิ๊ง,Kungking_HeadCon,Kungking - Head Content,ประธานฝ่ายเนื้อหา,Editor,"Content, PR"
+6,กล้วยหอม,Kluayhom_HeadMerchant,Kluayhom - Head Merchant,ประธานฝ่ายร้านค้า,Editor,Merchant
+7,อิคคิว,Ikkew_HeadOper1,Ikkew - Head Operation 1,ประธานฝ่ายอำนวยการ 1,Editor,Oper 1
+8,นอร์ท,North_HeadOper2,North - Head Operation 2,ประธานฝ่ายอำนวยการ 2,Editor,Oper 2
+9,บีมบีม,BeamBeam_AsOper,Beam Beam - Assistant Head Operation,ผู้ช่วยประธานฝ่ายอำนวยการใหญ่,Editor,"OperAll, Oper1, Oper 2, Oper 3"
+10,แยม,Yam_HeadSpon,Yam - Head Sponsor,ประธานฝ่ายหาทุน,Editor,Sponsorship

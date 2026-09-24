@@ -3,13 +3,15 @@ import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
 import { parseCsv } from '../lib/sheet.js';
 import { DEPARTMENTS, isDepartment } from '../lib/departments.js';
-import { STATUSES, PRIORITIES, isPriority } from '../lib/scope.js';
+import {
+  STATUSES, PRIORITIES, isPriority, isColour, COLOUR_KEYS, safeUrl, linkKind,
+} from '../lib/scope.js';
 
 /**
  * Bulk import of tasks from a spreadsheet.
  *
- *   POST /api/import?do=preview   { csv } or { sheetUrl }
- *   POST /api/import?do=commit    { rows: [...] }
+ *   POST /api/import?do=preview   { csv } or { sheetUrl }, optional { kind: 'events' }
+ *   POST /api/import?do=commit    { rows: [...] }, optional { kind: 'events' }
  *
  * Preview and commit are deliberately separate. Importing forty tasks is not
  * undoable in one click, so nothing is written until the person has seen
@@ -27,21 +29,83 @@ const COLUMNS = {
   title: ['title', 'task', 'ชื่องาน', 'งาน'],
   description: ['description', 'details', 'detail', 'รายละเอียด'],
   assignees: ['assignees', 'assignee', 'who', "who's on it", 'ผู้รับผิดชอบ', 'คนทำ'],
-  departments: ['departments', 'department', 'ฝ่าย'],
+  departments: ['departments', 'department', 'ฝ่าย', 'tag departments', 'แท็กฝ่าย'],
+  teamspace: ['teamspace', 'home', 'ฝ่ายหลัก', 'ฝ่ายเจ้าของ'],
   dueDate: ['due date', 'duedate', 'due', 'กำหนดส่ง', 'วันที่'],
   dueTime: ['due time', 'duetime', 'time', 'เวลา'],
   status: ['status', 'สถานะ'],
   notify: ['notify', 'reminders', 'แจ้งเตือน'],
   priority: ['priority', 'ความสำคัญ', 'ระดับ'],
+  parts: ['parts', 'subtasks', 'sub-tasks', 'งานย่อย'],
+  links: ['links', 'link', 'work', 'ไฟล์งาน', 'ลิงก์'],
 };
 
-function columnIndexes(header) {
+/** The same idea for events, which have a start and an end rather than a deadline. */
+const EVENT_COLUMNS = {
+  title: ['title', 'event', 'ชื่อกิจกรรม', 'กิจกรรม'],
+  description: ['description', 'details', 'detail', 'รายละเอียด'],
+  startsOn: ['starts on', 'start date', 'date', 'starts', 'วันที่', 'วันที่เริ่ม'],
+  startsAt: ['starts at', 'start time', 'from', 'time', 'เวลาเริ่ม', 'เวลา'],
+  endsOn: ['ends on', 'end date', 'until', 'ถึงวันที่', 'วันที่จบ'],
+  endsAt: ['ends at', 'end time', 'to', 'เวลาจบ'],
+  allDay: ['all day', 'allday', 'ทั้งวัน'],
+  place: ['place', 'where', 'location', 'venue', 'สถานที่'],
+  people: ['who', 'people', 'attendees', 'เกี่ยวข้องกับใคร', 'ผู้เกี่ยวข้อง'],
+  departments: ['departments', 'department', 'ฝ่าย'],
+  colour: ['colour', 'color', 'สี'],
+  notify: ['notify', 'remind', 'reminders', 'แจ้งเตือน'],
+};
+
+function columnIndexes(header, map = COLUMNS) {
   const lower = header.map((h) => clean(h, 60).toLowerCase());
   const found = {};
-  for (const [key, names] of Object.entries(COLUMNS)) {
+  for (const [key, names] of Object.entries(map)) {
     found[key] = lower.findIndex((h) => names.includes(h));
   }
   return found;
+}
+
+/** "yes", "ใช่", "true", "1" — the ways people write a tick in a spreadsheet. */
+const isYes = (value) => {
+  const v = clean(value, 20).toLowerCase();
+  if (!v) return null;
+  return ['yes', 'y', 'true', '1', 'ใช่', 'ทั้งวัน', 'x'].includes(v);
+};
+
+/**
+ * Sub-tasks written in one cell: "ออกแบบบูธ@กุ๊งกิ๊ง; ประสานวิทยากร@North".
+ *
+ * The name after @ is optional — a part with nobody on it is a perfectly
+ * reasonable thing to import and hand out later.
+ */
+function parseParts(text, people) {
+  const out = [];
+  const unknown = [];
+  for (const piece of splitItems(text)) {
+    const at = piece.lastIndexOf('@');
+    const title = clean(at === -1 ? piece : piece.slice(0, at), 200).trim();
+    if (!title) continue;
+    const who = at === -1 ? '' : piece.slice(at + 1).trim();
+    const person = who ? matchPerson(who, people) : null;
+    if (who && !person) unknown.push(who);
+    out.push({ title, assignee: person ? person.username : null });
+  }
+  return { parts: out, unknown };
+}
+
+/** Links written in one cell: "แบบร่าง|https://…; https://…" — label optional. */
+function parseLinks(text) {
+  const out = [];
+  const bad = [];
+  for (const piece of splitItems(text)) {
+    const bar = piece.indexOf('|');
+    const label = bar === -1 ? '' : clean(piece.slice(0, bar), 120).trim();
+    const raw = bar === -1 ? piece : piece.slice(bar + 1);
+    const url = safeUrl(raw);
+    if (!url) { bad.push(piece.slice(0, 60)); continue; }
+    out.push({ url, label, kind: linkKind(url) });
+  }
+  return { links: out, bad };
 }
 
 /**
@@ -133,6 +197,22 @@ const splitList = (text) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+/**
+ * The splitter for cells whose items have structure of their own.
+ *
+ * Sub-tasks and links use `|` and `,` inside a single item — a label may
+ * contain a comma, and `แบบร่าง|https://…` puts the bar between label and
+ * address — so those two characters cannot also be separators. Semicolons and
+ * line breaks are what divide one item from the next, and the cap is larger
+ * because three full URLs in one cell run well past the length a list of
+ * names ever reaches.
+ */
+const splitItems = (text) =>
+  clean(text, 2000)
+    .split(/[;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 function buildRows(rows, people) {
   if (!rows.length) return { error: 'EMPTY' };
 
@@ -186,17 +266,127 @@ function buildRows(rows, people) {
       .map((n) => n.toLowerCase())
       .filter((n) => NOTIFY_KINDS.includes(n));
 
+    // The teamspace the task lives in. Named explicitly when the column is
+    // there; otherwise the first department tag, as before.
+    const named = matchDepartment(col.teamspace === -1 ? '' : raw[col.teamspace]);
+    if (col.teamspace !== -1 && clean(raw[col.teamspace], 60) && !named) {
+      unknownDepts.push(clean(raw[col.teamspace], 60));
+    }
+    const teamspace = named && isDepartment(named.key)
+      ? named.key
+      : (departments.find((d) => isDepartment(d.key))?.key || null);
+
+    const partResult = parseParts(col.parts === -1 ? '' : raw[col.parts], people);
+    unknownPeople.push(...partResult.unknown);
+
+    const linkResult = parseLinks(col.links === -1 ? '' : raw[col.links]);
+    if (linkResult.bad.length) notes.push('BAD_LINK');
+
     out.push({
       line: i + 1,
       title,
       description: clean(col.description === -1 ? '' : raw[col.description], 4000),
       assignees,
       departments,
+      teamspace,
       dueDate: dateResult.date,
       dueTime: timeResult.time,
       status: STATUSES.includes(status) ? status : 'todo',
       priority,
+      parts: partResult.parts,
+      links: linkResult.links,
       notify: notifyList.length ? notifyList : NOTIFY_KINDS,
+      unknownPeople,
+      unknownDepts,
+      problems,
+      notes,
+    });
+  }
+
+  return { rows: out, truncated: rows.length - headerAt - 1 > MAX_ROWS };
+}
+
+/**
+ * The same job for events.
+ *
+ * Kept separate from the task builder rather than bolted onto it with flags:
+ * they share almost no columns, and one function trying to be both is how a
+ * date ends up in the wrong field.
+ */
+function buildEventRows(rows, people) {
+  if (!rows.length) return { error: 'EMPTY' };
+
+  const headerAt = rows.findIndex((r) => columnIndexes(r, EVENT_COLUMNS).title !== -1);
+  if (headerAt === -1) return { error: 'NO_TITLE_COLUMN' };
+
+  const col = columnIndexes(rows[headerAt], EVENT_COLUMNS);
+  const out = [];
+  const at = (raw, key) => (col[key] === -1 ? '' : raw[col[key]]);
+
+  for (let i = headerAt + 1; i < rows.length && out.length < MAX_ROWS; i++) {
+    const raw = rows[i];
+    const title = clean(at(raw, 'title'), 200);
+    if (!title) continue;
+
+    const problems = [];
+    const notes = [];
+
+    const start = parseDate(at(raw, 'startsOn'));
+    if (start.error || !start.date) problems.push('BAD_DATE');
+    if (start.note) notes.push(start.note);
+
+    const end = parseDate(at(raw, 'endsOn'));
+    if (end.error) problems.push('BAD_DATE');
+    if (end.date && start.date && end.date < start.date) problems.push('ENDS_BEFORE_START');
+
+    const from = parseTime(at(raw, 'startsAt'));
+    const to = parseTime(at(raw, 'endsAt'));
+    if (from.error || to.error) problems.push('BAD_TIME');
+
+    // All day unless a start time says otherwise — the common case for a
+    // committee calendar is a whole day, and a blank column should mean that.
+    const said = isYes(at(raw, 'allDay'));
+    const allDay = said === null ? !from.time : said;
+
+    const people_ = [];
+    const unknownPeople = [];
+    for (const name of splitList(at(raw, 'people'))) {
+      const person = matchPerson(name, people);
+      if (person) { if (!people_.includes(person.username)) people_.push(person.username); }
+      else unknownPeople.push(name);
+    }
+
+    const departments = [];
+    const unknownDepts = [];
+    for (const name of splitList(at(raw, 'departments'))) {
+      const dept = matchDepartment(name);
+      if (dept && isDepartment(dept.key)) {
+        if (!departments.includes(dept.key)) departments.push(dept.key);
+      } else unknownDepts.push(name);
+    }
+
+    const colourWord = clean(at(raw, 'colour'), 20).toLowerCase();
+    const colour = isColour(colourWord) ? colourWord : 'plum';
+    if (colourWord && !isColour(colourWord)) notes.push('COLOUR_DEFAULTED');
+
+    const notifyList = splitList(at(raw, 'notify'))
+      .map((n) => n.toLowerCase())
+      .filter((n) => ['7d', '24h', 'due'].includes(n));
+
+    out.push({
+      line: i + 1,
+      title,
+      description: clean(at(raw, 'description'), 4000),
+      startsOn: start.date,
+      startsAt: allDay ? null : from.time,
+      endsOn: end.date,
+      endsAt: allDay ? null : to.time,
+      allDay,
+      place: clean(at(raw, 'place'), 200),
+      people: people_,
+      departments,
+      colour,
+      notify: notifyList.length ? notifyList : ['7d', '24h', 'due'],
       unknownPeople,
       unknownDepts,
       problems,
@@ -252,10 +442,18 @@ async function handler(request) {
     if (!csv) return json({ error: 'EMPTY' }, 400);
 
     const people = await sql`SELECT username, display_name, sheet_name, nickname FROM users WHERE active = true`;
-    const result = buildRows(parseCsv(csv), people);
+    const parsed = parseCsv(csv);
+    const result = body.kind === 'events'
+      ? buildEventRows(parsed, people)
+      : buildRows(parsed, people);
     if (result.error) return json({ error: result.error }, 400);
 
-    return json({ rows: result.rows, truncated: result.truncated, max: MAX_ROWS });
+    return json({
+      kind: body.kind === 'events' ? 'events' : 'tasks',
+      rows: result.rows,
+      truncated: result.truncated,
+      max: MAX_ROWS,
+    });
   }
 
   if (action === 'commit') {
@@ -264,6 +462,59 @@ async function handler(request) {
 
     let created = 0;
     const failed = [];
+
+    // ---- events -----------------------------------------------------------
+    if (body.kind === 'events') {
+      for (const row of rows) {
+        const title = clean(row.title, 200);
+        const startsOn = /^\d{4}-\d{2}-\d{2}$/.test(row.startsOn || '') ? row.startsOn : null;
+        if (!title) { failed.push({ line: row.line, reason: 'NO_TITLE' }); continue; }
+        if (!startsOn) { failed.push({ line: row.line, reason: 'NO_DATE' }); continue; }
+
+        const endsOn = /^\d{4}-\d{2}-\d{2}$/.test(row.endsOn || '') ? row.endsOn : null;
+        if (endsOn && endsOn < startsOn) {
+          failed.push({ line: row.line, reason: 'ENDS_BEFORE_START' });
+          continue;
+        }
+
+        try {
+          const id = `e_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+          const allDay = row.allDay !== false;
+          const notify = (Array.isArray(row.notify) ? row.notify : ['7d', '24h', 'due'])
+            .filter((k) => ['7d', '24h', 'due'].includes(k)).join(',');
+
+          await sql`
+            INSERT INTO events (id, title, description, starts_on, starts_at, ends_on, ends_at,
+                                all_day, place, department, colour, notify, created_by)
+            VALUES (${id}, ${title}, ${clean(row.description, 4000)},
+                    ${startsOn},
+                    ${allDay ? null : (/^\d{2}:\d{2}$/.test(row.startsAt || '') ? row.startsAt : null)},
+                    ${endsOn},
+                    ${allDay ? null : (/^\d{2}:\d{2}$/.test(row.endsAt || '') ? row.endsAt : null)},
+                    ${allDay}, ${clean(row.place, 200)},
+                    ${(row.departments || []).find(isDepartment) || me.department || null},
+                    ${isColour(row.colour) ? row.colour : 'plum'},
+                    ${notify}, ${me.username})`;
+
+          const named = (row.people || []).map((x) => clean(x, 64)).filter(Boolean);
+          if (named.length) {
+            await sql`
+              INSERT INTO event_people (event_id, username)
+              SELECT ${id}, u FROM unnest(${named}::text[]) AS u ON CONFLICT DO NOTHING`;
+          }
+          const keys = (row.departments || []).filter(isDepartment);
+          if (keys.length) {
+            await sql`
+              INSERT INTO event_departments (event_id, department)
+              SELECT ${id}, d FROM unnest(${keys}::text[]) AS d ON CONFLICT DO NOTHING`;
+          }
+          created++;
+        } catch (error) {
+          failed.push({ line: row.line, reason: String(error.message || error).slice(0, 120) });
+        }
+      }
+      return json({ kind: 'events', created, failed });
+    }
 
     for (const row of rows) {
       const title = clean(row.title, 200);
@@ -274,9 +525,11 @@ async function handler(request) {
         const notify = (Array.isArray(row.notify) ? row.notify : NOTIFY_KINDS)
           .filter((k) => NOTIFY_KINDS.includes(k)).join(',');
 
-        // Imported tasks land in the importer's own teamspace unless a row
-        // names a department, so nothing arrives somewhere invisible.
-        const home = (row.departments || []).find((d) => isDepartment(d.key));
+        // Imported tasks land in the importer's own teamspace unless the row
+        // says otherwise, so nothing arrives somewhere nobody can see.
+        const home = isDepartment(row.teamspace)
+          ? { key: row.teamspace }
+          : (row.departments || []).find((d) => isDepartment(d.key));
         await sql`
           INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
                              department, created_by, notify)
@@ -315,6 +568,32 @@ async function handler(request) {
                       ${`${me.display_name || me.username} added you to this task.`})`;
           }
         }
+        // Sub-tasks and attached work, if the row carried any.
+        const parts = Array.isArray(row.parts) ? row.parts.slice(0, 50) : [];
+        let position = 0;
+        for (const part of parts) {
+          const partTitle = clean(part?.title, 200);
+          if (!partTitle) continue;
+          const who = part?.assignee ? clean(part.assignee, 64) : null;
+          await sql`
+            INSERT INTO task_parts (id, task_id, title, assignee, position, created_by)
+            VALUES (${`p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`},
+                    ${id}, ${partTitle}, ${who}, ${position++}, ${me.username})`;
+          if (who) {
+            await sql`INSERT INTO task_people (task_id, username) VALUES (${id}, ${who})
+                      ON CONFLICT DO NOTHING`;
+          }
+        }
+
+        for (const link of (Array.isArray(row.links) ? row.links.slice(0, 20) : [])) {
+          const href = safeUrl(link?.url);
+          if (!href) continue;
+          await sql`
+            INSERT INTO task_links (id, task_id, url, label, kind, added_by)
+            VALUES (${`l_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`},
+                    ${id}, ${href}, ${clean(link?.label, 120)}, ${linkKind(href)}, ${me.username})`;
+        }
+
         created++;
       } catch (error) {
         failed.push({ line: row.line, reason: String(error.message || error).slice(0, 120) });

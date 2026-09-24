@@ -1390,14 +1390,44 @@
   }
 
   /* ---------- bulk import ----------------------------------------------- */
+  /**
+   * The task template.
+   *
+   * Every column the importer understands, in the order they make sense to
+   * fill in. Only `title` is required; leave anything else blank and a
+   * sensible default is used. Sub-tasks and links live in one cell each —
+   * "what@who" and "label|url" — separated by semicolons, because a
+   * spreadsheet cannot nest and asking people to keep two files in step is
+   * worse than one slightly dense column.
+   */
   var TEMPLATE_CSV =
-    'title,description,assignees,departments,due date,due time,status,notify\n' +
-    'จองเวทีกลาง,ติดต่อฝ่ายอาคาร,Jade_Pres;Kaew_VP,content:heads,2026-10-05,18:30,todo,"created,7d,24h,due"\n' +
-    'Confirm sponsor banners,,Yam_HeadSpon,sponsor,2026-10-12,,doing,"created,24h"\n' +
-    'ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,operations:all,2026-10-20,14:00,todo,\n';
+    'title,description,assignees,departments,teamspace,due date,due time,priority,status,parts,links,notify\n' +
+    'จองเวทีกลาง,ติดต่อฝ่ายอาคารขอใช้พื้นที่,Jade_Pres;Kaew_VP,content:heads,content,2026-10-05,18:30,high,todo,' +
+      '"ทำหนังสือขอใช้สถานที่@Jade_Pres; ยืนยันผังเวที@Kaew_VP","ผังเวที|https://drive.google.com/file/d/xxx/view",' +
+      '"created,7d,24h,due"\n' +
+    'Confirm sponsor banners,,Yam_HeadSpon,sponsor,sponsor,2026-10-12,,highest,doing,,,"created,24h"\n' +
+    'ประชุมใหญ่คณะกรรมการ,วาระ: สรุปงบประมาณ,,oper1:all,oper1,2026-10-20,14:00,medium,todo,,,\n' +
+    'ส่งไฟล์โปสเตอร์ให้ตรวจ,,Kungking_HeadCon,pr,pr,2026-11-01,,medium,review,,,"created,due"\n';
 
-  function openImport() {
+  /**
+   * The event template.
+   *
+   * An event has a start and an end rather than a deadline, and nobody owes
+   * anything on it — so no status, no priority, no sub-tasks. "who" and
+   * "departments" narrow who it concerns; leave both blank and it is for the
+   * whole committee.
+   */
+  var EVENT_TEMPLATE_CSV =
+    'title,description,starts on,starts at,ends on,ends at,all day,place,who,departments,colour,notify\n' +
+    'ซ้อมใหญ่บนเวที,ซ้อมคิวพิธีกรและลำดับการแสดง,2026-11-20,14:00,,17:00,no,หอประชุมจุฬาฯ,,content,blue,"7d,24h,due"\n' +
+    'งานจุฬาฯแฟร์ 2569,,2026-11-25,,2026-11-29,,yes,สนามหน้าพระบรมรูปสองรัชกาล,,,amber,"7d,24h,due"\n' +
+    'ประชุมหัวหน้าฝ่าย,สรุปความคืบหน้าทุกฝ่าย,2026-10-15,17:00,,19:00,no,ห้องประชุมชั้น 4,Jade_Pres;Kaew_VP,,plum,"24h,due"\n';
+
+  function openImport(startKind) {
     var mode = 'paste';
+    // Which of the two things is being imported. They share the whole dialog
+    // because the steps are identical — only the columns differ.
+    var kind = startKind === 'events' ? 'events' : 'tasks';
     var rows = null;
     var notice = h('div', { class: 'notice err', hidden: true });
 
@@ -1439,6 +1469,7 @@
       notice.hidden = true;
       var payload = mode === 'sheet' ? { sheetUrl: sheetInput.value.trim() } : { csv: textarea.value };
       if (!payload.csv && !payload.sheetUrl) { showError('EMPTY'); return; }
+      payload.kind = kind;
 
       api('/api/import?do=preview', { method: 'POST', body: payload })
         .then(function (data) { rows = data.rows; paintPreview(data); })
@@ -1455,16 +1486,36 @@
 
       var body = rows.map(function (r) {
         var flags = [];
-        r.unknownPeople.forEach(function (n) { flags.push(h('div', { class: 'imp-warn', text: t('nameNotFound') + ': ' + n })); });
-        r.unknownDepts.forEach(function (n) { flags.push(h('div', { class: 'imp-warn', text: t('deptNotFound') + ': ' + n })); });
+        (r.unknownPeople || []).forEach(function (n) { flags.push(h('div', { class: 'imp-warn', text: t('nameNotFound') + ': ' + n })); });
+        (r.unknownDepts || []).forEach(function (n) { flags.push(h('div', { class: 'imp-warn', text: t('deptNotFound') + ': ' + n })); });
         if (r.problems.indexOf('BAD_DATE') !== -1) flags.push(h('div', { class: 'imp-bad', text: t('badDate') }));
         if (r.problems.indexOf('BAD_TIME') !== -1) flags.push(h('div', { class: 'imp-bad', text: t('badTime') }));
+        if (r.problems.indexOf('ENDS_BEFORE_START') !== -1) flags.push(h('div', { class: 'imp-bad', text: t('errEndsBeforeStart') }));
         if (r.notes.indexOf('DAY_FIRST_ASSUMED') !== -1) flags.push(h('div', { class: 'imp-warn', text: t('dayFirstNote') }));
+        if (r.notes.indexOf('BAD_LINK') !== -1) flags.push(h('div', { class: 'imp-warn', text: t('errBadLink') }));
+
+        if (kind === 'events') {
+          return h('tr', { class: r.problems.length ? 'off' : '' }, [
+            h('td', {}, [
+              h('span', { class: 'chip dept', style: 'background:' + colourHex(r.colour) + ';color:#fff;border:none', text: ' ' }),
+              ' ' + r.title,
+            ]),
+            h('td', { text: (r.startsOn || '\u2014') + (r.startsAt ? ' ' + r.startsAt : '') +
+              (r.endsOn && r.endsOn !== r.startsOn ? ' \u2013 ' + r.endsOn : '') }),
+            h('td', { text: r.place || '\u2014' }),
+            h('td', {}, (r.departments || []).map(function (k) { return h('span', { class: 'chip dept', text: deptLabel(k) }); })),
+            h('td', {}, flags),
+          ]);
+        }
 
         return h('tr', { class: r.problems.length ? 'off' : '' }, [
-          h('td', { text: r.title }),
-          h('td', {}, [h('span', { class: 'stack' }, r.assignees.map(function (u) { return avatarNode(u, 'sm'); }))]),
-          h('td', {}, r.departments.map(function (d) { return h('span', { class: 'chip dept', text: deptLabel(d.key) }); })),
+          h('td', {}, [
+            r.title,
+            (r.parts || []).length ? h('div', { class: 'imp-sub', text: '\u2713 ' + r.parts.length + ' ' + t('tabParts') }) : null,
+            (r.links || []).length ? h('div', { class: 'imp-sub', text: '\u2197 ' + r.links.length + ' ' + t('tabWork') }) : null,
+          ]),
+          h('td', {}, [h('span', { class: 'stack' }, (r.assignees || []).map(function (u) { return avatarNode(u, 'sm'); }))]),
+          h('td', {}, (r.departments || []).map(function (d) { return h('span', { class: 'chip dept', text: deptLabel(d.key) }); })),
           h('td', { text: (r.dueDate || '\u2014') + (r.dueTime ? ' ' + r.dueTime : '') }),
           h('td', {}, flags),
         ]);
@@ -1472,10 +1523,11 @@
 
       previewBox.appendChild(h('div', { class: 'imp-rows' }, [
         h('table', {}, [
-          h('thead', {}, [h('tr', {}, [
-            h('th', { text: t('taskTitle') }), h('th', { text: t('assignTo') }),
-            h('th', { text: t('departments') }), h('th', { text: t('dueDate') }), h('th', { text: '' }),
-          ])]),
+          h('thead', {}, [h('tr', {}, kind === 'events'
+            ? [h('th', { text: t('eventTitle') }), h('th', { text: t('startsOn') }),
+               h('th', { text: t('place') }), h('th', { text: t('departments') }), h('th', { text: '' })]
+            : [h('th', { text: t('taskTitle') }), h('th', { text: t('assignTo') }),
+               h('th', { text: t('departments') }), h('th', { text: t('dueDate') }), h('th', { text: '' })])]),
           h('tbody', {}, body),
         ]),
       ]));
@@ -1490,10 +1542,12 @@
       onclick: function () {
         var good = rows.filter(function (r) { return !r.problems.length; });
         importBtn.disabled = true;
-        api('/api/import?do=commit', { method: 'POST', body: { rows: good } })
+        api('/api/import?do=commit', { method: 'POST', body: { rows: good, kind: kind } })
           .then(function (data) {
-            return api('/api/tasks').then(function (fresh) {
-              S.tasks = fresh.tasks;
+            var reload = kind === 'events'
+              ? api('/api/events').then(function (fresh) { S.events = fresh.events; })
+              : api('/api/tasks').then(function (fresh) { S.tasks = fresh.tasks; });
+            return reload.then(function () {
               notice.hidden = false; notice.className = 'notice ok';
               notice.textContent = t('importedOk') + ': ' + data.created + ' ' + t('rowsUnit');
               clear(previewBox); footer.hidden = true;
@@ -1505,24 +1559,52 @@
     });
     var footer = h('div', { style: 'display:flex;gap:8px;align-items:center', hidden: true }, [importBtn]);
 
+    // The column list belongs to whichever kind is selected — a person reading
+    // "due date" while importing events is being told the wrong thing.
+    var columnHelp = h('p', {
+      style: 'margin:0;font-size:12.5px;color:var(--ink-faint)',
+      text: t(kind === 'events' ? 'templateHelpEvents' : 'templateHelp'),
+    });
+
+    // Switching kind throws away any preview: the columns mean different things.
+    var kindSeg = h('div', { class: 'seg' }, [['tasks', 'importTasksKind'], ['events', 'importEventsKind']]
+      .map(function (pair) {
+        return h('button', {
+          type: 'button', class: kind === pair[0] ? 'on' : '', text: t(pair[1]),
+          onclick: function () {
+            kind = pair[0];
+            rows = null;
+            clear(previewBox);
+            footer.hidden = true;
+            notice.hidden = true;
+            columnHelp.textContent = t(kind === 'events' ? 'templateHelpEvents' : 'templateHelp');
+            kindSeg.querySelectorAll('button').forEach(function (b, i) {
+              b.classList.toggle('on', ['tasks', 'events'][i] === kind);
+            });
+          },
+        });
+      }));
+
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
     veil.appendChild(h('div', { class: 'modal' }, [
       h('header', {}, [
-        h('h2', { text: t('importTasks') }),
+        h('h2', { text: t('importTitle') }),
         h('button', { class: 'btn ghost sm', text: '\u2715', onclick: function () { veil.remove(); } }),
       ]),
       h('div', { class: 'body' }, [
         notice,
+        kindSeg,
         h('p', { style: 'margin:0;font-size:13.5px;color:var(--ink-soft)', text: t('importHelp') }),
-        h('p', { style: 'margin:0;font-size:12.5px;color:var(--ink-faint)', text: t('templateHelp') }),
+        columnHelp,
         h('button', {
           class: 'btn sm', style: 'align-self:flex-start', text: '\u2193 ' + t('downloadTemplate'),
           onclick: function () {
             // A BOM makes Excel open Thai text correctly instead of as mojibake.
-            var blob = new Blob(['\uFEFF' + TEMPLATE_CSV], { type: 'text/csv;charset=utf-8' });
+            var text = kind === 'events' ? EVENT_TEMPLATE_CSV : TEMPLATE_CSV;
+            var blob = new Blob(['\uFEFF' + text], { type: 'text/csv;charset=utf-8' });
             var a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'fair-tasks-template.csv';
+            a.download = kind === 'events' ? 'fair-events-template.csv' : 'fair-tasks-template.csv';
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
           },

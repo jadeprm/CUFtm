@@ -728,3 +728,5 @@ ul.events.past { opacity: .6; }
 /* Something saved but not yet confirmed by the server. Faint, not broken —
    it is almost always about to become real. */
 li.task.pending, .event-card.pending { opacity: .6; }
+/* A count of sub-tasks or links found in an imported row. */
+.imp-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
