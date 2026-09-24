@@ -2562,6 +2562,7 @@
         ]),
 
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
+        h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
       ]),
       h('footer', {}, [
@@ -2600,6 +2601,85 @@
    * tab there is no permission to grant — showing a dead "allow" button there
    * would just look broken.
    */
+  /**
+   * Connecting a personal LINE account.
+   *
+   * The code is the whole security of this: it lives for fifteen minutes, is
+   * used once, and only ever binds the account that asked for it — so it can
+   * be read off a screen and typed into a chat without being a password.
+   *
+   * What arrives afterwards is one message a morning, addressed to that person
+   * alone and listing only their own work. Never a broadcast, and the switch
+   * below belongs to them, not to an admin.
+   */
+  function lineBox() {
+    var box = h('div', { class: 'push-box' });
+
+    function draw(state) {
+      clear(box);
+
+      if (state && state.configured === false) {
+        box.appendChild(h('p', { class: 'hint', text: t('lineNotSetUp') }));
+        return;
+      }
+
+      if (!state) {
+        box.appendChild(h('p', { class: 'hint', text: '…' }));
+        return;
+      }
+
+      if (state.linked) {
+        box.appendChild(h('p', { class: 'ok-line', text: '\u2713 ' + t('lineConnected') }));
+
+        var toggle = h('input', { type: 'checkbox', checked: state.digest !== false });
+        toggle.addEventListener('change', function () {
+          api('/api/line?do=digest', { method: 'PATCH', body: { digest: toggle.checked } })
+            .then(function (d) { state.digest = d.digest; })
+            .catch(function (err) { toggle.checked = !toggle.checked; alert(errText(err.code)); });
+        });
+        box.appendChild(h('label', { class: 'inline-check' }, [toggle, t('lineDigestOn')]));
+        box.appendChild(h('p', { class: 'hint', text: t('lineDigestHelp') }));
+
+        box.appendChild(h('button', {
+          class: 'btn sm', text: t('lineDisconnect'),
+          onclick: function () {
+            if (!confirm(t('lineDisconnectSure'))) return;
+            api('/api/line?do=link', { method: 'DELETE' })
+              .then(function () { draw({ configured: true, linked: false }); })
+              .catch(function (err) { alert(errText(err.code)); });
+          },
+        }));
+        return;
+      }
+
+      box.appendChild(h('p', { class: 'hint', text: t('lineHowTo') }));
+      box.appendChild(h('button', {
+        class: 'btn sm primary', text: t('lineGetCode'),
+        onclick: function () {
+          api('/api/line?do=code', { method: 'POST' })
+            .then(function (d) { showCode(d); })
+            .catch(function (err) { alert(errText(err.code)); });
+        },
+      }));
+    }
+
+    function showCode(d) {
+      clear(box);
+      box.appendChild(h('p', { class: 'hint', text: t('lineCodeSteps') }));
+      box.appendChild(h('div', { class: 'line-code', text: d.code }));
+      box.appendChild(h('p', { class: 'hint', text: t('lineCodeExpires').replace('{n}', String(d.minutes)) }));
+      box.appendChild(h('button', {
+        class: 'btn sm', text: t('lineCheckAgain'),
+        onclick: function () { api('/api/line?do=status').then(draw); },
+      }));
+    }
+
+    api('/api/line?do=status').then(draw).catch(function () {
+      draw({ configured: false });
+    });
+    return box;
+  }
+
   function pushBox() {
     var box = h('div', { class: 'push-box' });
 

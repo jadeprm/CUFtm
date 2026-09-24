@@ -24,13 +24,34 @@ const SHEET_CSV = `ลำดับ,ชื่อเล่น,Username,Display Nam
 
 let sheetCsv = SHEET_CSV;
 const realFetch = globalThis.fetch;
+const lineSent = [];
+let lineFails = null;         // set to a status code to make LINE refuse
 globalThis.fetch = async (url, init) => {
   if (String(url).includes('docs.google.com')) {
     if (sheetCsv === null) return new Response('<html>sign in</html>', { status: 200 });
     return new Response(sheetCsv, { status: 200 });
   }
+  if (String(url).includes('api.line.me')) {
+    const body = JSON.parse(init.body);
+    lineSent.push({
+      kind: String(url).includes('/reply') ? 'reply' : 'push',
+      to: body.to || null,
+      token: body.replyToken || null,
+      text: (body.messages || []).map((m) => m.text).join('\n'),
+      auth: (init.headers || {}).authorization,
+    });
+    if (lineFails) return new Response('{"message":"refused"}', { status: lineFails });
+    return new Response('{}', { status: 200 });
+  }
   return realFetch(url, init);
 };
+
+// LINE, stubbed: real credentials so the signature code runs for real, but
+// every call to api.line.me is caught below and recorded instead of sent.
+process.env.LINE_CHANNEL_SECRET = 'test_channel_secret_0123456789';
+process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test_access_token';
+process.env.LINE_DIGEST_HOUR = String(new Date().getUTCHours() + 7 >= 24
+  ? new Date().getUTCHours() + 7 - 24 : new Date().getUTCHours() + 7);
 
 const { default: authApi } = await import('../api/auth.js');
 const { default: usersApi } = await import('../api/users.js');
@@ -40,7 +61,28 @@ const { default: pushApi } = await import('../api/push.js');
 const { default: eventsApi } = await import('../api/events.js');
 const { default: calApi } = await import('../api/calendar.js');
 const { default: notifApi } = await import('../api/notifications.js');
+const { default: lineApi } = await import('../api/line.js');
 const { getSql } = await import('../lib/db.js');
+const { createHmac } = await import('node:crypto');
+
+/** A webhook call signed exactly the way LINE signs one. */
+function lineHook(events, { secret = process.env.LINE_CHANNEL_SECRET, breakIt = false } = {}) {
+  const raw = JSON.stringify({ destination: 'U0', events });
+  const signature = createHmac('SHA256', secret).update(raw, 'utf8').digest('base64');
+  return new Request('https://app.test/api/line', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-line-signature': breakIt ? 'AAAA' + signature.slice(4) : signature,
+    },
+    body: raw,
+  });
+}
+const sayToBot = (userId, textBody, token = 'rt_' + Math.random().toString(36).slice(2)) => ([{
+  type: 'message', replyToken: token, source: { type: 'user', userId },
+  message: { type: 'text', id: 'm1', text: textBody },
+}]);
+const lastReply = () => lineSent.filter((m) => m.kind === 'reply').slice(-1)[0]?.text || '';
 
 let failed = 0;
 let section = '';
@@ -76,6 +118,11 @@ async function call(fn, path, opts = {}) {
 
 // ---- reset -----------------------------------------------------------------
 const { sql, ready } = getSql();
+
+/** Today in Bangkok, which is what every deadline in this app is measured in. */
+const todayIsoForTest = () => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(new Date());
 await ready;
 await sql`DELETE FROM reminders_sent`;
 await sql`DELETE FROM notifications`;
@@ -1524,6 +1571,236 @@ const placed = r.data.tasks.find((t) => t.title === 'ติดต่อสถา
 ok('and land in the section they named', placed.unit === 'สถานที่', JSON.stringify(placed.unit));
 ok('a section belonging to another department did not survive the trip',
   r.data.tasks.find((t) => t.title === 'ของฝ่ายอื่น').unit === null);
+
+head('29. LINE: the webhook is a public URL, so it is signed');
+
+// Nothing at all happens without a valid signature. This is the whole defence
+// — the address is guessable and the bot can create and delete work.
+let res = await lineApi(lineHook(sayToBot('Uattacker', 'งาน'), { breakIt: true }));
+ok('a tampered signature is refused', res.status === 403, String(res.status));
+
+res = await lineApi(new Request('https://app.test/api/line', {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ events: sayToBot('Uattacker', 'ลบ 1 ยืนยัน') }),
+}));
+ok('no signature at all is refused', res.status === 403, String(res.status));
+
+res = await lineApi(lineHook(sayToBot('Uattacker', 'งาน'), { secret: 'the-wrong-secret' }));
+ok('a signature from the wrong secret is refused', res.status === 403, String(res.status));
+ok('...and none of that sent a single message', lineSent.length === 0, String(lineSent.length));
+
+head('30. LINE: linking an account');
+
+// A stranger gets told how to link, and nothing else.
+lineSent.length = 0;
+res = await lineApi(lineHook(sayToBot('Ustranger', 'งาน')));
+ok('an unlinked person is answered, not served', res.status === 200 &&
+  lastReply().includes('ยังไม่ได้ผูก'), lastReply().slice(0, 40));
+
+res = await lineApi(lineHook(sayToBot('Ustranger', 'ZZZZZZ')));
+ok('a made-up code is refused', lastReply().includes('ไม่ถูกต้องหรือหมดอายุ'));
+
+// The real flow: the person asks for a code on the website.
+r = await call(lineApi, '/api/line?do=code', { method: 'POST', as: 'admin' });
+ok('the website issues a code', r.status === 200 && /^[A-Z0-9]{6}$/.test(r.data.code || ''), r.data.code);
+const linkCode = r.data.code;
+
+r = await call(lineApi, '/api/line?do=status', { as: 'admin' });
+ok('...and says the account is not linked yet', r.data.linked === false);
+
+res = await lineApi(lineHook(sayToBot('Uadmin', linkCode.toLowerCase())));
+ok('the code links the account, in either case', lastReply().includes('เชื่อมต่อเรียบร้อย'), lastReply().slice(0, 30));
+
+res = await lineApi(lineHook(sayToBot('Uother', linkCode)));
+ok('the same code cannot be used twice', lastReply().includes('ไม่ถูกต้องหรือหมดอายุ'));
+
+r = await call(lineApi, '/api/line?do=status', { as: 'admin' });
+ok('the website now shows it linked', r.data.linked === true && r.data.digest === true,
+  JSON.stringify({ linked: r.data.linked, digest: r.data.digest }));
+
+head('31. LINE: reading and writing through the chat');
+
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Uadmin', 'เพิ่มงาน ทดสอบผ่านไลน์ 20/11 18:00 !ด่วน')));
+ok('a task can be created from a message', lastReply().includes('สร้างงานแล้ว'), lastReply().slice(0, 40));
+ok('...with the date it was given', lastReply().includes('พ.ย.'), lastReply());
+
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+const fromLine = r.data.tasks.find((t) => t.title === 'ทดสอบผ่านไลน์');
+ok('...and it really exists', Boolean(fromLine));
+ok('...with the priority asked for', fromLine?.priority === 'high', fromLine?.priority);
+ok('...due on the right day', fromLine?.dueDate?.endsWith('-11-20'), fromLine?.dueDate);
+ok('...at the right time', fromLine?.dueTime === '18:00', fromLine?.dueTime);
+ok('...owned by the person who sent the message', fromLine?.createdBy === 'Jade_Pres', fromLine?.createdBy);
+
+await lineApi(lineHook(sayToBot('Uadmin', 'งาน')));
+ok('the list comes back numbered', /1\. /.test(lastReply()), lastReply().split('\n').slice(0, 4).join(' | '));
+
+// Nothing the bot says in conversation is ever a push — that is what keeps it free.
+ok('every conversational message was a free reply, never a push',
+  lineSent.every((m) => m.kind === 'reply'), JSON.stringify(lineSent.map((m) => m.kind)));
+
+// The numbered list is what "เสร็จ 1" refers to.
+await lineApi(lineHook(sayToBot('Uadmin', 'หา ทดสอบผ่านไลน์')));
+await lineApi(lineHook(sayToBot('Uadmin', 'เสร็จ 1')));
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('a numbered task can be closed from the chat',
+  r.data.tasks.find((t) => t.id === fromLine.id)?.status === 'done',
+  r.data.tasks.find((t) => t.id === fromLine.id)?.status);
+
+// Deleting always costs a second message.
+await lineApi(lineHook(sayToBot('Uadmin', 'หา ทดสอบผ่านไลน์')));
+await lineApi(lineHook(sayToBot('Uadmin', 'ลบ 1')));
+ok('deleting asks first', lastReply().includes('ยืนยัน'), lastReply().slice(0, 50));
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('...and has not deleted anything yet', Boolean(r.data.tasks.find((t) => t.id === fromLine.id)));
+
+await lineApi(lineHook(sayToBot('Uadmin', 'ลบ 1 ยืนยัน')));
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('...then deletes when confirmed', !r.data.tasks.find((t) => t.id === fromLine.id));
+
+await lineApi(lineHook(sayToBot('Uadmin', 'อะไรก็ไม่รู้')));
+ok('an unknown command explains rather than failing', lastReply().includes('ไม่เข้าใจคำสั่ง'));
+
+head('32. LINE: the chat obeys the same permissions as the website');
+
+// Link an editor, then have them try to touch somebody else's task.
+r = await call(lineApi, '/api/line?do=code', { method: 'POST', as: 'content' });
+ok('an editor can get a code too', r.status === 200 && Boolean(r.data.code), JSON.stringify(r.data));
+await lineApi(lineHook(sayToBot('Umember', r.data.code)));
+ok('...and link with it', lastReply().includes('เชื่อมต่อเรียบร้อย'), lastReply().slice(0, 40));
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานของแอดมินเท่านั้น', dueDate: '2026-12-01', assignees: ['Jade_Pres'],
+          departments: [{ key: 'exec', scope: 'all' }], notify: [] },
+});
+ok('the admin-only task exists', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+
+// The member cannot see it, so it never reaches their numbered list.
+await lineApi(lineHook(sayToBot('Umember', 'หา งานของแอดมินเท่านั้น')));
+ok('a task they cannot see does not appear in their list',
+  lastReply().includes('ไม่มีรายการ'), lastReply().slice(0, 60));
+
+// A task they CAN see but do not own.
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานที่เห็นได้แต่ลบไม่ได้', dueDate: '2026-12-02',
+          assignees: ['Kungking_HeadCon'], departments: [{ key: 'content', scope: 'all' }], notify: [] },
+});
+await lineApi(lineHook(sayToBot('Umember', 'หา งานที่เห็นได้แต่ลบไม่ได้')));
+ok('they can see it', lastReply().includes('งานที่เห็นได้แต่ลบไม่ได้'), lastReply().slice(0, 60));
+
+await lineApi(lineHook(sayToBot('Umember', 'ลบ 1 ยืนยัน')));
+ok('...but cannot delete it', lastReply().includes('ไม่มีสิทธิ์ลบ'), lastReply().slice(0, 50));
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('...and it is still there', Boolean(r.data.tasks.find((t) => t.title === 'งานที่เห็นได้แต่ลบไม่ได้')));
+
+// Being tagged is enough to move the status, exactly as on the website.
+await lineApi(lineHook(sayToBot('Umember', 'เสร็จ 1')));
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('someone tagged in it can still close it',
+  r.data.tasks.find((t) => t.title === 'งานที่เห็นได้แต่ลบไม่ได้')?.status === 'done',
+  r.data.tasks.find((t) => t.title === 'งานที่เห็นได้แต่ลบไม่ได้')?.status);
+
+// Filing into a department they have no access to is refused.
+await lineApi(lineHook(sayToBot('Umember', 'เพิ่มงาน ลองแอบสร้าง 20/12 #exec')));
+ok('they cannot file a task into a department they have no access to',
+  lastReply().includes('ไม่มีสิทธิ์สร้างงาน'), lastReply().slice(0, 60));
+
+head('33. LINE: the daily digest is personal, not a broadcast');
+
+// Give the two linked people something each.
+await sql`DELETE FROM line_digests_sent`;
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานสรุปของแอดมิน', dueDate: todayIsoForTest(), assignees: ['Jade_Pres'], notify: [] },
+});
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานสรุปของสมาชิก', dueDate: todayIsoForTest(), assignees: ['Kungking_HeadCon'], notify: [] },
+});
+ok('both linked people have something due', r.status === 201);
+
+lineSent.length = 0;
+r = await call(cronApi, '/api/cron');
+const digests = lineSent.filter((m) => m.kind === 'push');
+ok('the digest went out', digests.length === 2, JSON.stringify(r.data.line));
+ok('...addressed to each person individually, never broadcast',
+  digests.every((m) => m.to && m.to.startsWith('U')), JSON.stringify(digests.map((m) => m.to)));
+
+const adminDigest = digests.find((m) => m.to === 'Uadmin');
+const memberDigest = digests.find((m) => m.to === 'Umember');
+ok('each person is told only about their own work',
+  adminDigest.text.includes('งานสรุปของแอดมิน') && !adminDigest.text.includes('งานสรุปของสมาชิก'),
+  adminDigest.text.slice(0, 80));
+ok('...and the same is true the other way round',
+  memberDigest.text.includes('งานสรุปของสมาชิก') && !memberDigest.text.includes('งานสรุปของแอดมิน'));
+ok('one message each, not one per task', digests.length === 2);
+
+// Running the cron again must not send a second copy.
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+ok('a second run the same day sends nothing',
+  lineSent.filter((m) => m.kind === 'push').length === 0);
+
+// Somebody who switched it off hears nothing.
+await sql`DELETE FROM line_digests_sent`;
+await lineApi(lineHook(sayToBot('Umember', 'ปิดแจ้งเตือน')));
+ok('a person can switch their own digest off from the chat',
+  lastReply().includes('ปิดสรุปงานประจำวัน'), lastReply().slice(0, 40));
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+const afterOff = lineSent.filter((m) => m.kind === 'push');
+ok('...and then gets nothing', afterOff.length === 1 && afterOff[0].to === 'Uadmin',
+  JSON.stringify(afterOff.map((m) => m.to)));
+
+// Nobody with an empty list is messaged at all.
+await sql`DELETE FROM line_digests_sent`;
+await sql`DELETE FROM task_people WHERE username = 'Jade_Pres'`;
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+ok('somebody with nothing due is left alone',
+  lineSent.filter((m) => m.kind === 'push').length === 0);
+
+// A blocked account is dropped rather than retried every morning.
+await sql`DELETE FROM line_digests_sent`;
+await sql`UPDATE line_links SET digest = true`;
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานหลังบล็อก', dueDate: todayIsoForTest(), assignees: ['Jade_Pres'], notify: [] },
+});
+lineFails = 403;
+await call(cronApi, '/api/cron');
+lineFails = null;
+const stillLinked = await sql`SELECT line_user_id FROM line_links WHERE line_user_id = 'Uadmin'`;
+ok('a blocked account is unlinked instead of retried forever', stillLinked.length === 0);
+
+head('34. LINE: unlinking, from either side');
+
+r = await call(lineApi, '/api/line?do=code', { method: 'POST', as: 'admin' });
+await lineApi(lineHook(sayToBot('Uadmin2', r.data.code)));
+await lineApi(lineHook(sayToBot('Uadmin2', 'เลิกเชื่อมต่อ')));
+ok('unlinking from the chat works', lastReply().includes('เลิกเชื่อมต่อแล้ว'));
+r = await call(lineApi, '/api/line?do=status', { as: 'admin' });
+ok('...and the website agrees', r.data.linked === false);
+
+r = await call(lineApi, '/api/line?do=code', { method: 'POST', as: 'admin' });
+await lineApi(lineHook(sayToBot('Uadmin3', r.data.code)));
+r = await call(lineApi, '/api/line?do=link', { method: 'DELETE', as: 'admin' });
+ok('unlinking from the website works', r.status === 200);
+await lineApi(lineHook(sayToBot('Uadmin3', 'งาน')));
+ok('...and the chat no longer recognises them', lastReply().includes('ยังไม่ได้ผูก'));
+
+// Blocking the account from LINE's side removes the binding too.
+r = await call(lineApi, '/api/line?do=code', { method: 'POST', as: 'admin' });
+await lineApi(lineHook(sayToBot('Uadmin4', r.data.code)));
+await lineApi(lineHook([{ type: 'unfollow', source: { type: 'user', userId: 'Uadmin4' } }]));
+const unfollowed = await sql`SELECT 1 FROM line_links WHERE line_user_id = 'Uadmin4'`;
+ok('blocking the account unlinks it', unfollowed.length === 0);
+
+r = await call(lineApi, '/api/line?do=status');
+ok('the website endpoints need a sign-in', r.status === 401);
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

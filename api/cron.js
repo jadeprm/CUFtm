@@ -3,6 +3,8 @@ import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
 import { assembledEvents, audienceOf } from './events.js';
 import { withNode } from '../lib/http.js';
+import { lineConfigured, push, text as lineText } from '../lib/line.js';
+import { sayTask, sayDate, MENU as LINE_MENU } from '../lib/linecmd.js';
 
 /**
  * The reminder run. Something external calls this every hour — see README,
@@ -225,6 +227,16 @@ async function handler(request) {
     }
   }
 
+  /**
+   * The LINE digest — the only message this app ever pays for.
+   *
+   * One message per person, addressed to that person's own LINE account,
+   * listing only their own work. Never a broadcast: a broadcast would go to
+   * everyone who ever added the account, would tell people about work that is
+   * not theirs, and would cost the same per recipient anyway.
+   */
+  const digest = await sendDigests(sql, today);
+
   // Keep the roster current, and tidy up expired sessions while we're here.
   let roster = null;
   try {
@@ -242,11 +254,140 @@ async function handler(request) {
     created,
     eventNotices,
     pushesSent: pushed,
+    line: digest,
     roster,
     secured: Boolean(secret),
     ...(secret ? {} : { warning: 'Set CRON_SECRET in Vercel and add ?key=… to the ping URL.' }),
   });
 }
+
+/**
+ * Everyone who has connected LINE and left the digest switched on, gets one
+ * message, once, on any day they have something to do.
+ *
+ * Three rules keep this affordable and welcome. Nothing is sent to somebody
+ * with an empty list — silence is the correct message when there is nothing
+ * due. Everything that person has is gathered into ONE message rather than one
+ * per task. And a row in line_digests_sent means a retried cron, or a second
+ * ping in the same hour, cannot send the same person a second copy.
+ */
+async function sendDigests(sql, today) {
+  if (!lineConfigured()) return { skipped: 'not configured' };
+
+  // Only in the morning, once. The hour is Bangkok time, like everything else.
+  const hour = hourInBangkok();
+  const wanted = Number(process.env.LINE_DIGEST_HOUR || 8);
+  if (hour !== wanted) return { skipped: `not ${wanted}:00 in Bangkok (now ${hour})` };
+
+  const links = await sql`
+    SELECT l.line_user_id, l.username
+    FROM line_links l
+    JOIN users u ON u.username = l.username
+    WHERE l.digest = true AND u.active = true AND u.suspended = false
+      AND NOT EXISTS (
+        SELECT 1 FROM line_digests_sent d
+        WHERE d.username = l.username AND d.on_day = ${today}::date)`;
+  if (!links.length) return { sent: 0, considered: 0 };
+
+  const soon = addDaysIso(today, 7);
+  const names = links.map((l) => l.username);
+
+  // Two queries for the whole committee rather than two per person.
+  const tasks = await sql`
+    SELECT t.id, t.title, t.due_date, t.due_time, t.status, t.priority, p.username
+    FROM tasks t JOIN task_people p ON p.task_id = t.id
+    WHERE p.username = ANY(${names}) AND t.status <> 'done'
+      AND t.due_date IS NOT NULL AND t.due_date <= ${soon}::date
+    ORDER BY t.due_date, t.due_time NULLS LAST`;
+
+  const events = await sql`
+    SELECT e.id, e.title, e.starts_on, e.starts_at, e.all_day, e.place, p.username
+    FROM events e JOIN event_people p ON p.event_id = e.id
+    WHERE p.username = ANY(${names})
+      AND e.starts_on >= ${today}::date AND e.starts_on <= ${soon}::date
+    ORDER BY e.starts_on, e.starts_at NULLS FIRST`;
+
+  const mine = (rows, username) => rows.filter((r) => r.username === username);
+
+  let sent = 0;
+  const errors = [];
+  for (const link of links) {
+    const theirTasks = mine(tasks, link.username);
+    const theirEvents = mine(events, link.username);
+    if (!theirTasks.length && !theirEvents.length) continue;   // say nothing
+
+    const body = digestText(theirTasks, theirEvents, today);
+    try {
+      await push(link.line_user_id, lineText(body, LINE_MENU));
+      await sql`INSERT INTO line_digests_sent (username, on_day)
+                VALUES (${link.username}, ${today}::date)
+                ON CONFLICT DO NOTHING`;
+      sent++;
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 200);
+      errors.push({ username: link.username, message });
+      console.error('[line digest]', link.username, message);
+      /**
+       * 403 means they blocked the account or the binding is dead. Keeping the
+       * row would mean failing again every morning forever, so it goes.
+       */
+      if (error?.statusCode === 403) {
+        await sql`DELETE FROM line_links WHERE line_user_id = ${link.line_user_id}`;
+      }
+    }
+  }
+  return { sent, considered: links.length, errors: errors.slice(0, 3) };
+}
+
+function digestText(tasks, events, today) {
+  const overdue = tasks.filter((t) => toIsoDate(t.due_date) < today);
+  const dueToday = tasks.filter((t) => toIsoDate(t.due_date) === today);
+  const ahead = tasks.filter((t) => toIsoDate(t.due_date) > today);
+
+  const lines = ['สรุปงานของคุณวันนี้', ''];
+  let n = 0;
+
+  const block = (heading, rows) => {
+    if (!rows.length) return;
+    lines.push(heading);
+    rows.slice(0, 8).forEach((t) => {
+      n += 1;
+      lines.push(sayTask({
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        dueDate: toIsoDate(t.due_date),
+        dueTime: t.due_time,
+      }, n, today));
+    });
+    if (rows.length > 8) lines.push(`    …และอีก ${rows.length - 8} งาน`);
+    lines.push('');
+  };
+
+  block('⚠ เลยกำหนดแล้ว', overdue);
+  block('ครบกำหนดวันนี้', dueToday);
+  block('ใน 7 วันข้างหน้า', ahead);
+
+  if (events.length) {
+    lines.push('กิจกรรม');
+    events.slice(0, 5).forEach((e) => {
+      const when = sayDate(toIsoDate(e.starts_on), today) +
+        (!e.all_day && e.starts_at ? ` ${e.starts_at} น.` : '');
+      lines.push(`◆ ${e.title}`);
+      lines.push(`    ${[when, e.place].filter(Boolean).join(' · ')}`);
+    });
+    lines.push('');
+  }
+
+  lines.push('พิมพ์ "งาน" เพื่อดูทั้งหมด · "ปิดแจ้งเตือน" เพื่อหยุดสรุปนี้');
+  return lines.join('\n');
+}
+
+const addDaysIso = (iso, n) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
 
 /** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
 export default withNode(handler);

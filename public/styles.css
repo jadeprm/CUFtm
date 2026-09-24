@@ -900,3 +900,14 @@ li.task[data-urgency="done"]  { border-left-color: var(--line); background: var(
   border-color: var(--accent-soft); background: var(--accent-soft);
   color: var(--accent); font-weight: 500;
 }
+
+/* The LINE connecting code: read off a screen and typed into a chat, so it is
+   big, spaced out, and uses characters that cannot be confused. */
+.line-code {
+  font-size: 26px; font-weight: 700; letter-spacing: .28em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 12px 14px; margin: 4px 0; text-align: center;
+  border: 1px dashed var(--line); border-radius: 10px;
+  background: var(--surface-2); color: var(--accent);
+}
+.ok-line { margin: 0; color: var(--done); font-weight: 600; font-size: 13.5px; }

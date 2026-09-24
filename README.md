@@ -158,6 +158,56 @@ Sub-tasks work the same way: the owner breaks a task into parts and gives each p
 
 ---
 
+## LINE
+
+Each person connects their own LINE account, and the bot then sends **only their own work** — one message a morning, addressed to them alone, listing what they have due. It is never a broadcast: a broadcast would go to everyone who ever added the account, would tell people about work that is not theirs, and would cost exactly the same per person anyway. Anyone can switch their digest off, from the website or by typing ปิดแจ้งเตือน in the chat, and back on the same way.
+
+### What it costs, and why the design is what it is
+
+LINE charges for messages the account **starts**, counted per recipient — one reminder to twenty-five people is twenty-five messages. Messages that **reply** to something a person sent are free and unlimited. Thailand's free plan is about 300 chargeable messages a month, Basic about ฿1,200 for 15,000.
+
+So everything the bot says in conversation is a reply and costs nothing, however much the committee uses it. The only charged messages the app ever sends are the daily digests, and even those are skipped entirely for anyone who has nothing due that day. Sending one ping per task instead would have cost roughly ten times as much and been far more annoying.
+
+### Setting it up (about fifteen minutes, and you do this part)
+
+1. Go to **developers.line.biz** and sign in with your LINE account.
+2. Create a **Provider** (any name — "Chula Fair" is fine).
+3. Inside it, create a **Messaging API channel**. This makes the Official Account at the same time.
+4. Open the channel's **Basic settings** tab and copy the **Channel secret**.
+5. Open the **Messaging API** tab, issue a **Channel access token (long-lived)**, and copy it.
+6. In Vercel → your project → Settings → **Environment Variables**, add these two:
+   - `LINE_CHANNEL_SECRET` — the channel secret from step 4
+   - `LINE_CHANNEL_ACCESS_TOKEN` — the token from step 5
+   Optionally `LINE_DIGEST_HOUR` (a number, 0–23, Bangkok time; 8 if you leave it out).
+7. Redeploy, using the **top** row in the Deployments list.
+8. Back in the **Messaging API** tab, set the **Webhook URL** to `https://cu-ftm.vercel.app/api/line`, press **Verify**, and turn **Use webhook** on.
+9. In the same tab turn **Auto-reply messages** and **Greeting messages** OFF — otherwise LINE's own canned replies talk over the bot.
+10. Share the account's QR code with the committee.
+
+**Paste those two secrets straight into Vercel. Never send them to me, or put them in the repo** — anyone holding the access token can send messages as your official account, and anyone holding the channel secret can forge webhook calls.
+
+### How a person connects
+
+Website → โปรไฟล์ → แจ้งเตือนทาง LINE → **ขอรหัสเชื่อมต่อ**. They add the OA as a friend and send it the six-character code. The code lasts fifteen minutes, works once, and only ever binds the account that asked for it — which is what makes it safe to read off a screen. Unlinking works from either side, and blocking the account unlinks it automatically.
+
+### What they can type
+
+Reading — free, instant: `งาน`, `วันนี้`, `สัปดาห์นี้`, `เลยกำหนด`, `กิจกรรม`, `หา <คำ>`, `ช่วยเหลือ`.
+
+Every list comes back numbered, and the numbers are what the next command refers to: `เสร็จ 3`, `กำลังทำ 3`, `รอตรวจ 3`, `ลบ 3`.
+
+Creating: `เพิ่มงาน ติดต่อสถานที่ 20/11 18:00 @กุ๊งกิ๊ง #เนื้อหา !ด่วน`. The markers can come in any order and the date can be written several ways — `20/11`, `2026-11-20`, `20/11/2569`, `พรุ่งนี้`, `ศุกร์นี้`. Anything it could not match is said back rather than silently dropped. Also `เพิ่มกิจกรรม ซ้อมใหญ่ 20/11 14:00`.
+
+Deleting always asks first, because a typo in a chat cannot be taken back.
+
+### What the bot will not do
+
+It obeys exactly the same permission rules as the website, checked on the server, not in the interface. A task somebody cannot see never appears in their list; a task they do not own cannot be deleted by them; filing into a department they have no access to is refused. Being tagged in a task is enough to move its status, and nothing more — the same boundary as the browser.
+
+The webhook URL is public and its address is guessable, so **every** incoming call is checked against an HMAC signature made with the channel secret. Anything unsigned or wrongly signed is refused before a single field of the body is read.
+
+---
+
 ## Sections inside a department
 
 อำนวยการ is three real departments — อำนวยการ 1, 2 and 3 — because each has its own head and your roster sheet files people that way. Everywhere else the org chart's sub-groups are **sections**: สถานที่, พัสดุ, ยานพาหนะและประสาน ปอ.พ., CSO and Green Guide inside อำนวยการ 2; Stage and กิจกรรม inside เนื้อหา; Admin, Graphic Design, Photo & Video and Content Creative inside ประชาสัมพันธ์.

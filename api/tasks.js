@@ -51,7 +51,7 @@ function toIsoDate(value) {
  * anything. Postgres can assemble the same shape itself, and does it faster
  * than the network can carry five questions.
  */
-async function assembled(sql) {
+export async function assembled(sql) {
   const rows = await sql`
     SELECT
       t.*,
