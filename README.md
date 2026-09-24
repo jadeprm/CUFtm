@@ -42,6 +42,23 @@ Viewer is all the sync needs. People you've explicitly shared it with can still 
 
 ---
 
+## ⚠️ Deleting is not automatic
+
+Dragging a zip into GitHub **adds and overwrites files, but never removes** ones that are no longer in it. Retired files therefore pile up in the repo — and because Vercel turns every single file under `api/` into its own Serverless Function, and the Hobby plan allows twelve, those leftovers eventually fail a deploy with a message that does not say which files are to blame.
+
+That already happened once: the repo had thirteen files under `api/` (`api/scope.js` and `api/slack/events.js` were both dead) while the build only had eleven.
+
+Two things now prevent it. This project ships a **`.vercelignore`** listing every known-dead path, so those files can sit in the repo without being uploaded, counted, or able to break anything. And if you ever want to tidy properly, these are safe to delete on GitHub:
+
+- `api/scope.js` and the whole `api/slack/` folder — retired endpoints
+- `src/` — the original Slack bot
+- `app.js`, `auth.js`, `cron.js`, `db.js`, `tasks.js`, `users.js`, `manifest.json` at the **root** (not the copies inside `lib/` and `public/`, which are the real ones)
+- `DEPLOY.md`, `test/e2e.mjs`
+
+**To count your functions before deploying:** open the repo's `api` folder on GitHub and count the files, including any inside sub-folders. Eleven is correct; more than twelve fails.
+
+---
+
 ## Setup
 
 ### 1. Replace the old files
@@ -168,21 +185,28 @@ LINE charges for messages the account **starts**, counted per recipient — one 
 
 So everything the bot says in conversation is a reply and costs nothing, however much the committee uses it. The only charged messages the app ever sends are the daily digests, and even those are skipped entirely for anyone who has nothing due that day. Sending one ping per task instead would have cost roughly ten times as much and been far more annoying.
 
-### Setting it up (about fifteen minutes, and you do this part)
+### Setting it up (about twenty minutes, and you do this part)
 
-1. Go to **developers.line.biz** and sign in with your LINE account.
-2. Create a **Provider** (any name — "Chula Fair" is fine).
-3. Inside it, create a **Messaging API channel**. This makes the Official Account at the same time.
-4. Open the channel's **Basic settings** tab and copy the **Channel secret**.
-5. Open the **Messaging API** tab, issue a **Channel access token (long-lived)**, and copy it.
-6. In Vercel → your project → Settings → **Environment Variables**, add these two:
-   - `LINE_CHANNEL_SECRET` — the channel secret from step 4
-   - `LINE_CHANNEL_ACCESS_TOKEN` — the token from step 5
-   Optionally `LINE_DIGEST_HOUR` (a number, 0–23, Bangkok time; 8 if you leave it out).
-7. Redeploy, using the **top** row in the Deployments list.
-8. Back in the **Messaging API** tab, set the **Webhook URL** to `https://cu-ftm.vercel.app/api/line`, press **Verify**, and turn **Use webhook** on.
-9. In the same tab turn **Auto-reply messages** and **Greeting messages** OFF — otherwise LINE's own canned replies talk over the bot.
-10. Share the account's QR code with the committee.
+**1 — Make the Official Account.** Go to **manager.line.biz** and sign in with your LINE account (create a LINE Business ID if it asks). Make a new Official Account: name it something the committee will recognise, and pick Thailand as the country — that is what puts it on the Thai free plan.
+
+**2 — Turn on the Messaging API.** Still in that manager, open **Settings → Messaging API** and enable it. It asks you to choose or create a **Provider** — any name will do, "Chula Fair" is fine. This creates the developer channel behind the account.
+
+**3 — Get the two secrets.** Go to **developers.line.biz**, open the channel you just made, and collect:
+- **Basic settings** tab → **Channel secret**
+- **Messaging API** tab → under Channel access token, issue a **long-lived** token
+
+**4 — Put them into Vercel.** Project → Settings → **Environment Variables**:
+- `LINE_CHANNEL_SECRET` — from Basic settings
+- `LINE_CHANNEL_ACCESS_TOKEN` — the long-lived token
+- optionally `LINE_DIGEST_HOUR` — a number 0–23 in Bangkok time; 8 if you leave it out
+
+Then redeploy, using the **top** row of the Deployments list.
+
+**5 — Point LINE at the app.** Back in the Developers Console, **Messaging API** tab → **Webhook URL** → Edit → `https://cu-ftm.vercel.app/api/line` → **Verify** (it should say success) → turn **Use webhook** on.
+
+**6 — Silence LINE's own robot.** This one is in a *different* console: back at **manager.line.biz** → Settings → **Response settings**, set **Greeting messages** and **Auto-reply messages** to **Disabled**. Leave them on and LINE's canned replies talk over the bot.
+
+**7 — Hand out the QR code**, from the Official Account Manager's home screen.
 
 **Paste those two secrets straight into Vercel. Never send them to me, or put them in the repo** — anyone holding the access token can send messages as your official account, and anyone holding the channel secret can forge webhook calls.
 
