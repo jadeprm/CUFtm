@@ -1,6 +1,8 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { withNode } from '../lib/http.js';
 import { buildIcs } from '../lib/ics.js';
+import { assembledEvents, canSeeEvent } from './events.js';
+import { accessSet } from '../lib/scope.js';
 
 /**
  * The calendar feed: GET /api/calendar?token=…
@@ -22,23 +24,50 @@ async function handler(request) {
 
   const url = requestUrl(request);
   const token = String(url.searchParams.get('token') || '').trim();
-  const scope = url.searchParams.get('scope') === 'all' ? 'all' : 'mine';
+
+  /**
+   * Four feeds rather than one.
+   *
+   * Google gives a subscribed calendar a single colour, so the only way to
+   * have the committee's dates in one colour and your own work in another is
+   * to subscribe to them separately. Each of these is its own calendar in
+   * Google, named so it is obvious which is which.
+   */
+  const SCOPES = ['mine', 'dept', 'events', 'all'];
+  const asked = url.searchParams.get('scope') || 'mine';
+  const scope = SCOPES.includes(asked) ? asked : 'mine';
 
   if (!token || token.length < 20) return json({ error: 'BAD_TOKEN' }, 401);
 
   const [owner] = await sql`
-    SELECT username, display_name, sheet_name FROM users
+    SELECT * FROM users
     WHERE calendar_token = ${token} AND active = true AND suspended = false`;
   if (!owner) return json({ error: 'BAD_TOKEN' }, 401);
 
+  owner.departments = (
+    await sql`SELECT department FROM user_departments WHERE username = ${owner.username}`
+  ).map((r) => r.department);
+  const mine = [...accessSet(owner)];
+
   const rows =
-    scope === 'all'
-      ? await sql`SELECT * FROM tasks WHERE due_date IS NOT NULL ORDER BY due_date`
-      : await sql`
-          SELECT t.* FROM tasks t
-          JOIN task_people p ON p.task_id = t.id
-          WHERE p.username = ${owner.username} AND t.due_date IS NOT NULL
-          ORDER BY t.due_date`;
+    scope === 'events'
+      ? []
+      : scope === 'all'
+        ? await sql`SELECT * FROM tasks WHERE due_date IS NOT NULL ORDER BY due_date`
+        : scope === 'dept'
+          ? (mine.length
+              ? await sql`
+                  SELECT DISTINCT t.* FROM tasks t
+                  LEFT JOIN task_departments d ON d.task_id = t.id
+                  WHERE t.due_date IS NOT NULL
+                    AND (t.department = ANY(${mine}) OR d.department = ANY(${mine}))
+                  ORDER BY t.due_date`
+              : [])
+          : await sql`
+              SELECT t.* FROM tasks t
+              JOIN task_people p ON p.task_id = t.id
+              WHERE p.username = ${owner.username} AND t.due_date IS NOT NULL
+              ORDER BY t.due_date`;
 
   const ids = rows.map((r) => r.id);
   const people = ids.length
@@ -76,10 +105,24 @@ async function handler(request) {
     assignees: byTask.get(t.id) ?? [],
   }));
 
-  const who = owner.display_name || owner.sheet_name || owner.username;
-  const calName = scope === 'all' ? 'งานจุฬาฯแฟร์ · Fair Tasks (all)' : `งานของ ${who} · Fair Tasks`;
+  /**
+   * Events ride along with the "mine" and "all" feeds, and have a feed of
+   * their own. Somebody who only wants to know when things happen subscribes
+   * to that one and gets no deadlines at all.
+   */
+  const events = ['events', 'mine', 'all'].includes(scope)
+    ? (await assembledEvents(sql)).filter((e) => canSeeEvent(owner, e))
+    : [];
 
-  return new Response(buildIcs(tasks, calName, nameOf), {
+  const who = owner.display_name || owner.sheet_name || owner.username;
+  const NAMES = {
+    mine: `จุฬาฯแฟร์ · งานของ ${who}`,
+    dept: 'จุฬาฯแฟร์ · งานของฝ่าย',
+    events: 'จุฬาฯแฟร์ · กิจกรรม',
+    all: 'จุฬาฯแฟร์ · ทั้งหมด',
+  };
+
+  return new Response(buildIcs(tasks, NAMES[scope], nameOf, events), {
     status: 200,
     headers: {
       'content-type': 'text/calendar; charset=utf-8',

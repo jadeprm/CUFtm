@@ -1,7 +1,12 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
-import { isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet } from '../lib/scope.js';
+import {
+  isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet,
+  canEditTask, canSetStatus, canDeleteTask,
+  canManageParts, canCompletePart, canAttach, canRemoveLink,
+  linkKind, safeUrl,
+} from '../lib/scope.js';
 import { sendToMany } from '../lib/push.js';
 import { withNode } from '../lib/http.js';
 
@@ -47,11 +52,34 @@ async function assembled(sql) {
       due_date NULLS LAST, due_time NULLS LAST, created_at`;
   const people = await sql`SELECT * FROM task_people`;
   const depts = await sql`SELECT * FROM task_departments`;
+  const parts = await sql`SELECT * FROM task_parts ORDER BY position, created_at`;
+  const links = await sql`SELECT * FROM task_links ORDER BY created_at`;
 
   const byTask = new Map();
-  for (const t of tasks) byTask.set(t.id, { people: [], departments: [] });
+  for (const t of tasks) byTask.set(t.id, { people: [], departments: [], parts: [], links: [] });
   for (const p of people) byTask.get(p.task_id)?.people.push(p.username);
   for (const d of depts) byTask.get(d.task_id)?.departments.push({ key: d.department, scope: d.scope });
+  for (const p of parts) {
+    byTask.get(p.task_id)?.parts.push({
+      id: p.id,
+      title: p.title,
+      assignee: p.assignee,
+      done: p.done,
+      doneAt: p.done_at,
+      doneBy: p.done_by,
+    });
+  }
+  for (const l of links) {
+    byTask.get(l.task_id)?.links.push({
+      id: l.id,
+      partId: l.part_id,
+      url: l.url,
+      label: l.label,
+      kind: l.kind,
+      addedBy: l.added_by,
+      createdAt: l.created_at,
+    });
+  }
 
   return tasks.map((t) => ({
     id: t.id,
@@ -68,8 +96,22 @@ async function assembled(sql) {
     updatedAt: t.updated_at,
     assignees: byTask.get(t.id)?.people ?? [],
     departments: byTask.get(t.id)?.departments ?? [],
+    parts: byTask.get(t.id)?.parts ?? [],
+    links: byTask.get(t.id)?.links ?? [],
   }));
 }
+
+/** Stamps each task with what this person is allowed to do to it. */
+const withRights = (me, tasks) =>
+  tasks.map((task) => ({
+    ...task,
+    mayEdit: canEditTask(me, task),
+    maySetStatus: canSetStatus(me, task),
+    mayAttach: canAttach(me, task),
+    // The piece of this task that is this person's own, if any — what the
+    // card shows them instead of making them open it to find out.
+    myPart: (task.parts || []).find((p) => p.assignee === me?.username) || null,
+  }));
 
 /**
  * Turns department tags into the actual list of people to notify.
@@ -159,6 +201,192 @@ async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
   }
 }
 
+/** The task a part or link belongs to, already assembled and scope-checked. */
+async function ownerTask(sql, me, taskId) {
+  const task = (await assembled(sql)).find((t) => t.id === taskId);
+  if (!task) return { error: json({ error: 'NO_SUCH_TASK' }, 404) };
+  if (!canSeeTask(me, task)) return { error: json({ error: 'NOT_YOUR_DEPARTMENT' }, 403) };
+  return { task };
+}
+
+const reply = async (sql, me, id) => {
+  const all = await assembled(sql);
+  return json({
+    task: withRights(me, all.filter((t) => t.id === id))[0],
+    tasks: withRights(me, all.filter((x) => canSeeTask(me, x))),
+  });
+};
+
+/**
+ * Sub-tasks: the pieces of a task, each with a name on it.
+ *
+ *   POST   ?do=part   { taskId, title, assignee }
+ *   PATCH  ?do=part   { id, title?, assignee?, done? }
+ *   DELETE ?do=part&id=…
+ */
+async function handlePart(sql, me, request, url) {
+  if (request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const { task, error } = await ownerTask(sql, me, clean(body.taskId, 64));
+    if (error) return error;
+    if (!canManageParts(me, task)) return json({ error: 'NOT_TASK_OWNER' }, 403);
+
+    const title = clean(body.title, 200);
+    if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
+
+    const assignee = body.assignee ? clean(body.assignee, 64) : null;
+    if (assignee) {
+      const [who] = await sql`SELECT 1 FROM users WHERE username = ${assignee} AND active = true`;
+      if (!who) return json({ error: 'NO_SUCH_USER' }, 400);
+    }
+
+    const [{ next }] = await sql`
+      SELECT COALESCE(max(position) + 1, 0) AS next FROM task_parts WHERE task_id = ${task.id}`;
+    const id = `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+    await sql`
+      INSERT INTO task_parts (id, task_id, title, assignee, position, created_by)
+      VALUES (${id}, ${task.id}, ${title}, ${assignee}, ${next}, ${me.username})`;
+
+    /**
+     * Being handed a piece of work is worth knowing about. The person is also
+     * added to the task itself, so it turns up under "my tasks" rather than
+     * only inside a task they were never tagged in.
+     */
+    if (assignee && assignee !== me.username) {
+      await sql`INSERT INTO task_people (task_id, username) VALUES (${task.id}, ${assignee})
+                ON CONFLICT DO NOTHING`;
+      await notifyAssigned(sql, { id: task.id }, [assignee], me.username, 'part',
+        task.title, `${me.display_name || me.username}: ${title}`);
+    }
+    return reply(sql, me, task.id);
+  }
+
+  if (request.method === 'PATCH') {
+    const body = await request.json().catch(() => ({}));
+    const partId = clean(body.id, 64);
+    const [row] = await sql`SELECT * FROM task_parts WHERE id = ${partId}`;
+    if (!row) return json({ error: 'NO_SUCH_PART' }, 404);
+
+    const { task, error } = await ownerTask(sql, me, row.task_id);
+    if (error) return error;
+
+    const part = { assignee: row.assignee };
+    const renaming = body.title !== undefined || body.assignee !== undefined;
+
+    // Ticking your own piece is a different right from rewriting it.
+    if (renaming && !canManageParts(me, task)) return json({ error: 'NOT_TASK_OWNER' }, 403);
+    if (body.done !== undefined && !canCompletePart(me, task, part)) {
+      return json({ error: 'NOT_YOUR_PART' }, 403);
+    }
+
+    if (body.title !== undefined) {
+      const title = clean(body.title, 200);
+      if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
+      await sql`UPDATE task_parts SET title = ${title} WHERE id = ${partId}`;
+    }
+
+    if (body.assignee !== undefined) {
+      const assignee = body.assignee ? clean(body.assignee, 64) : null;
+      if (assignee) {
+        const [who] = await sql`SELECT 1 FROM users WHERE username = ${assignee} AND active = true`;
+        if (!who) return json({ error: 'NO_SUCH_USER' }, 400);
+        await sql`INSERT INTO task_people (task_id, username) VALUES (${row.task_id}, ${assignee})
+                  ON CONFLICT DO NOTHING`;
+        if (assignee !== me.username && assignee !== row.assignee) {
+          await notifyAssigned(sql, { id: row.task_id }, [assignee], me.username, 'part',
+            task.title, `${me.display_name || me.username}: ${row.title}`);
+        }
+      }
+      await sql`UPDATE task_parts SET assignee = ${assignee} WHERE id = ${partId}`;
+    }
+
+    if (body.done !== undefined) {
+      const done = Boolean(body.done);
+      await sql`
+        UPDATE task_parts SET done = ${done},
+                              done_at = ${done ? 'now()' : null}::timestamptz,
+                              done_by = ${done ? me.username : null}
+        WHERE id = ${partId}`;
+    }
+
+    return reply(sql, me, row.task_id);
+  }
+
+  if (request.method === 'DELETE') {
+    const partId = clean(url.searchParams.get('id'), 64);
+    const [row] = await sql`SELECT * FROM task_parts WHERE id = ${partId}`;
+    if (!row) return json({ error: 'NO_SUCH_PART' }, 404);
+
+    const { task, error } = await ownerTask(sql, me, row.task_id);
+    if (error) return error;
+    if (!canManageParts(me, task)) return json({ error: 'NOT_TASK_OWNER' }, 403);
+
+    // Anything handed in against this piece loses its anchor, not its record:
+    // it stays on the task rather than disappearing with the piece.
+    await sql`UPDATE task_links SET part_id = NULL WHERE part_id = ${partId}`;
+    await sql`DELETE FROM task_parts WHERE id = ${partId}`;
+    return reply(sql, me, row.task_id);
+  }
+
+  return json({ error: 'METHOD' }, 405);
+}
+
+/**
+ * Attachments: finished work, handed in as a link.
+ *
+ *   POST   ?do=link   { taskId, url, label?, partId? }
+ *   DELETE ?do=link&id=…
+ */
+async function handleLink(sql, me, request, url) {
+  if (request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const { task, error } = await ownerTask(sql, me, clean(body.taskId, 64));
+    if (error) return error;
+    if (!canAttach(me, task)) return json({ error: 'NOT_ON_THIS_TASK' }, 403);
+
+    const href = safeUrl(body.url);
+    if (!href) return json({ error: 'BAD_LINK' }, 400);
+
+    const partId = body.partId ? clean(body.partId, 64) : null;
+    if (partId && !(task.parts || []).some((p) => p.id === partId)) {
+      return json({ error: 'NO_SUCH_PART' }, 400);
+    }
+
+    const id = `l_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    await sql`
+      INSERT INTO task_links (id, task_id, part_id, url, label, kind, added_by)
+      VALUES (${id}, ${task.id}, ${partId}, ${href}, ${clean(body.label, 120)},
+              ${linkKind(href)}, ${me.username})`;
+
+    // The person who set the task is the one waiting on the work, so they are
+    // told it has arrived — everyone else on the task is not, or a five-person
+    // task would notify four people about each other's uploads.
+    if (task.createdBy !== me.username) {
+      await notifyAssigned(sql, { id: task.id }, [task.createdBy], me.username, 'work',
+        task.title, `${me.display_name || me.username} \u2192 ${clean(body.label, 120) || href}`);
+    }
+    return reply(sql, me, task.id);
+  }
+
+  if (request.method === 'DELETE') {
+    const linkId = clean(url.searchParams.get('id'), 64);
+    const [row] = await sql`SELECT * FROM task_links WHERE id = ${linkId}`;
+    if (!row) return json({ error: 'NO_SUCH_LINK' }, 404);
+
+    const { task, error } = await ownerTask(sql, me, row.task_id);
+    if (error) return error;
+    if (!canRemoveLink(me, task, { addedBy: row.added_by })) {
+      return json({ error: 'NOT_YOUR_LINK' }, 403);
+    }
+
+    await sql`DELETE FROM task_links WHERE id = ${linkId}`;
+    return reply(sql, me, row.task_id);
+  }
+
+  return json({ error: 'METHOD' }, 405);
+}
+
 async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
@@ -169,14 +397,20 @@ async function handler(request) {
   if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
 
   const url = requestUrl(request);
+  const action = url.searchParams.get('do');
 
   try {
+    // Sub-tasks and attachments hang off a task, so they live on this
+    // endpoint rather than adding two more serverless functions.
+    if (action === 'part') return await handlePart(sql, me, request, url);
+    if (action === 'link') return await handleLink(sql, me, request, url);
+
     if (request.method === 'GET') {
       const all = await assembled(sql);
       // Filtering here rather than in SQL keeps one definition of the rule,
       // in lib/scope.js, shared with the client's own display logic.
       return json({
-        tasks: all.filter((task) => canSeeTask(me, task)),
+        tasks: withRights(me, all.filter((task) => canSeeTask(me, task))),
         seesEverything: seesEverything(me),
         myDepartments: [...accessSet(me)],
       });
@@ -221,7 +455,10 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
-      return json({ task: all.find((t) => t.id === id), tasks: all.filter((x) => canSeeTask(me, x)) }, 201);
+      return json({
+        task: withRights(me, all.filter((t) => t.id === id))[0],
+        tasks: withRights(me, all.filter((x) => canSeeTask(me, x))),
+      }, 201);
     }
 
     if (request.method === 'PATCH') {
@@ -232,9 +469,26 @@ async function handler(request) {
       const [existing] = await sql`SELECT * FROM tasks WHERE id = ${id}`;
       if (!existing) return json({ error: 'NO_SUCH_TASK' }, 404);
 
-      // Editing is open to everyone who can SEE the task — but not beyond.
       const visible = (await assembled(sql)).find((x) => x.id === id);
       if (!canSeeTask(me, visible)) return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
+
+      /**
+       * Two levels of permission, checked here rather than only in the
+       * interface — a hidden button is a suggestion, this is the rule.
+       *
+       * The creator and the admins may change anything. Anyone else who is
+       * tagged in the task may change the status and nothing else, so a
+       * member can report their own progress without being able to rewrite
+       * the deadline or remove people from it.
+       */
+      const mayEdit = canEditTask(me, visible);
+      if (!mayEdit) {
+        const touched = Object.keys(body).filter((k) => k !== 'id' && body[k] !== undefined);
+        const statusOnly = touched.length > 0 && touched.every((k) => k === 'status');
+
+        if (!statusOnly) return json({ error: 'NOT_TASK_OWNER' }, 403);
+        if (!canSetStatus(me, visible)) return json({ error: 'NOT_TASK_OWNER' }, 403);
+      }
 
       if (body.department !== undefined && body.department !== null &&
           !canPostTo(me, body.department)) {
@@ -280,7 +534,10 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
-      return json({ task: all.find((t) => t.id === id), tasks: all.filter((x) => canSeeTask(me, x)) });
+      return json({
+        task: withRights(me, all.filter((t) => t.id === id))[0],
+        tasks: withRights(me, all.filter((x) => canSeeTask(me, x))),
+      });
     }
 
     if (request.method === 'DELETE') {
@@ -289,9 +546,12 @@ async function handler(request) {
 
       const target = (await assembled(sql)).find((x) => x.id === id);
       if (target && !canSeeTask(me, target)) return json({ error: 'NOT_YOUR_DEPARTMENT' }, 403);
+      // Deleting is permanent and has no undo, so it follows the same rule as
+      // editing rather than the wider "can see it" one.
+      if (target && !canDeleteTask(me, target)) return json({ error: 'NOT_TASK_OWNER' }, 403);
       await sql`DELETE FROM tasks WHERE id = ${id}`;
       await sql`DELETE FROM reminders_sent WHERE task_id = ${id}`;
-      return json({ ok: true, tasks: (await assembled(sql)).filter((x) => canSeeTask(me, x)) });
+      return json({ ok: true, tasks: withRights(me, (await assembled(sql)).filter((x) => canSeeTask(me, x))) });
     }
 
     return json({ error: 'METHOD' }, 405);

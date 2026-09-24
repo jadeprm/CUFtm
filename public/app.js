@@ -30,6 +30,11 @@
       key: null, standalone: false, devices: [], serverKnown: false,
     },
     announcements: [],
+    events: [],
+    colours: [],
+    calView: 'month',
+    calAnchor: null,
+    calShowEvents: true,
     calRange: 7,
     calMineOnly: false,
   };
@@ -141,12 +146,17 @@
     d.setUTCDate(d.getUTCDate() + n);
     return d.toISOString().slice(0, 10);
   }
+  /**
+   * `opts` REPLACES the default parts rather than adding to them — asking for
+   * a month and a year should give "November 2026", not "23 November 2026".
+   */
   function fmtDate(iso, opts) {
     if (!iso) return t('noDue');
     var d = new Date(iso + 'T00:00:00Z');
     if (isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString(S.lang === 'th' ? 'th-TH' : 'en-GB',
-      Object.assign({ day: 'numeric', month: 'short', timeZone: 'UTC' }, opts || {}));
+    var parts = opts ? Object.assign({}, opts) : { day: 'numeric', month: 'short' };
+    parts.timeZone = 'UTC';
+    return d.toLocaleDateString(S.lang === 'th' ? 'th-TH' : 'en-GB', parts);
   }
   function relativeDay(iso) {
     var today = todayIso();
@@ -513,7 +523,7 @@
     }
 
     var page = raw;
-    if (['mine', 'all', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'mine';
+    if (['mine', 'all', 'events', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'mine';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'mine';
     S.page = page;
   }
@@ -525,6 +535,7 @@
     var main = clear($('main'));
     if (S.page === 'mine') return pageTasks(main, true);
     if (S.page === 'all') return pageTasks(main, false);
+    if (S.page === 'events') return pageEvents(main);
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'profile') return pageProfile(main);
     if (S.page === 'admin') return pageAdmin(main);
@@ -640,6 +651,19 @@
     var prio = task.priority || 'medium';
     // Only show a chip when it is not the default — otherwise every card
     // carries the same badge and the urgent ones stop standing out.
+    // How far the pieces have got, and how much work has been handed in.
+    var parts = task.parts || [];
+    if (parts.length) {
+      var done = parts.filter(function (p) { return p.done; }).length;
+      meta.push(h('span', {
+        class: 'chip parts' + (done === parts.length ? ' done' : ''),
+        text: '\u2713 ' + done + '/' + parts.length,
+      }));
+    }
+    if ((task.links || []).length) {
+      meta.push(h('span', { class: 'chip', text: '\u2197 ' + task.links.length }));
+    }
+
     if (prio !== 'medium') {
       meta.push(h('span', { class: 'chip prio prio-' + prio, text: prioLabel(prio) }));
     }
@@ -662,10 +686,28 @@
       onclick: function () { openTask(task); },
     }, [
       h('button', {
-        class: 'status-btn', text: MARK[task.status], title: statusLabel(task.status),
-        onclick: function (e) { e.stopPropagation(); openStatusMenu(e.currentTarget, task); },
+        class: 'status-btn' + (task.maySetStatus ? '' : ' locked'),
+        text: MARK[task.status],
+        title: statusLabel(task.status) + (task.maySetStatus ? '' : ' \u00b7 ' + t('statusLocked')),
+        onclick: function (e) {
+          e.stopPropagation();
+          if (task.maySetStatus) openStatusMenu(e.currentTarget, task);
+        },
       }),
-      h('div', { class: 't-title', text: task.title }),
+      h('div', { class: 't-title' }, [
+        task.title,
+        /**
+         * The person's own piece, on the card.
+         *
+         * Without this, someone on a five-part task has to open it to find
+         * out which part is theirs — which is the whole reason for splitting
+         * a task up in the first place.
+         */
+        task.myPart ? h('div', {
+          class: 'my-part' + (task.myPart.done ? ' done' : ''),
+          text: (task.myPart.done ? '\u2713 ' : '\u25B8 ') + t('yourPart') + ': ' + task.myPart.title,
+        }) : null,
+      ]),
       h('div', { class: 't-side' }, [stack]),
       meta.length ? h('div', { class: 't-meta' }, meta) : null,
     ]);
@@ -730,21 +772,52 @@
       notify: task ? task.notify.slice() : ['created', '7d', '24h', 'due'],
     };
 
-    var titleInput = h('input', { type: 'text', value: draft.title, maxlength: '200', placeholder: t('taskTitlePlaceholder') });
-    var descInput = h('textarea', { maxlength: '4000', placeholder: t('description') });
-    descInput.value = draft.description;
-    var dateInput = h('input', { type: 'date', value: draft.dueDate || '' });
-    var timeInput = h('input', { type: 'time', value: draft.dueTime || '' });
+    /**
+     * What this person may do here.
+     *
+     * A new task is always fully editable — you are writing it. An existing
+     * one is editable by its creator and the admins; anyone else who is
+     * tagged in it may move the status and nothing more. Fields they cannot
+     * change are shown disabled rather than hidden, so the task still reads
+     * as a whole and it is obvious why a control will not respond.
+     */
+    var mayEdit = isNew || task.mayEdit;
+    var maySetStatus = isNew || task.maySetStatus;
 
-    var peopleBox = h('div', { class: 'picker' });
-    var deptBox = h('div', { class: 'picker' });
-    buildPeoplePicker(peopleBox, draft);
-    buildDeptPicker(deptBox, draft);
+    var titleInput = h('input', {
+      type: 'text', value: draft.title, maxlength: '200',
+      placeholder: t('taskTitlePlaceholder'), disabled: !mayEdit,
+    });
+    var descInput = h('textarea', { maxlength: '4000', placeholder: t('description'), disabled: !mayEdit });
+    descInput.value = draft.description;
+    var dateInput = h('input', { type: 'date', value: draft.dueDate || '', disabled: !mayEdit });
+    var timeInput = h('input', { type: 'time', value: draft.dueTime || '', disabled: !mayEdit });
+
+    var peopleBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
+    var deptBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
+    if (mayEdit) {
+      buildPeoplePicker(peopleBox, draft);
+      buildDeptPicker(deptBox, draft);
+    } else {
+      // Read-only: who is on it still matters to the person doing the work.
+      peopleBox.appendChild(h('div', { class: 'selected' }, draft.assignees.length
+        ? draft.assignees.map(function (u) {
+            return h('span', { class: 'chip who' }, [avatarNode(u, 'sm'), nameOf(u)]);
+          })
+        : [h('span', { class: 'chip', text: t('noOne') })]));
+      deptBox.appendChild(h('div', { class: 'selected' }, draft.departments.length
+        ? draft.departments.map(function (d) {
+            return h('span', { class: 'chip dept', text: deptLabel(d.key) });
+          })
+        : [h('span', { class: 'chip', text: '\u2014' })]));
+    }
 
     var notifyBox = h('div', { class: 'checks' }, [
       ['created', 'notifyCreated'], ['7d', 'notify7d'], ['24h', 'notify24h'], ['due', 'notifyDue'],
     ].map(function (pair) {
-      var cb = h('input', { type: 'checkbox', checked: draft.notify.indexOf(pair[0]) !== -1 });
+      var cb = h('input', {
+        type: 'checkbox', checked: draft.notify.indexOf(pair[0]) !== -1, disabled: !mayEdit,
+      });
       cb.addEventListener('change', function () {
         draft.notify = draft.notify.filter(function (k) { return k !== pair[0]; });
         if (cb.checked) draft.notify.push(pair[0]);
@@ -755,6 +828,7 @@
     var statusSeg = h('div', { class: 'seg wrap' }, STATUS_LIST.map(function (st) {
       var b = h('button', {
         type: 'button', class: draft.status === st ? 'on' : '', text: statusLabel(st),
+        disabled: !maySetStatus,
         onclick: function () {
           draft.status = st;
           statusSeg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
@@ -767,7 +841,7 @@
     var prioSeg = h('div', { class: 'seg wrap' }, PRIORITY_LIST.slice().reverse().map(function (p) {
       var b = h('button', {
         type: 'button', class: 'prio-btn prio-' + p + (draft.priority === p ? ' on' : ''),
-        text: prioLabel(p),
+        text: prioLabel(p), disabled: !mayEdit,
         onclick: function () {
           draft.priority = p;
           prioSeg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
@@ -785,7 +859,7 @@
      */
     var choices = myDepartments();
     var deptSelect = h('select', {
-      disabled: !S.seesEverything && choices.length < 2,
+      disabled: !mayEdit || (!S.seesEverything && choices.length < 2),
       onchange: function (e) { draft.department = e.target.value || null; },
     }, [h('option', { value: '', text: t('noDepartment') })].concat(
       choices.map(function (d) {
@@ -793,13 +867,65 @@
       })
     ));
 
+    /**
+     * Three tabs rather than one long scroll.
+     *
+     * The detail pane is what the task IS; the parts pane is who does which
+     * piece of it; the work pane is what has been handed in. They are
+     * different questions asked at different moments, and stacking them into
+     * one column meant scrolling past the whole form to find an attachment.
+     */
+    var TABS = [
+      ['detail', t('tabDetails')],
+      ['parts', t('tabParts')],
+      ['links', t('tabWork')],
+    ];
+    var pane = 'detail';
+
+    var detailPane = h('div', {});
+    var partsPane = h('div', {});
+    var linksPane = h('div', {});
+
+    var tabBar = h('div', { class: 'seg tabs-seg' }, TABS.map(function (pair) {
+      var count = pair[0] === 'parts' ? (task ? task.parts.length : 0)
+        : pair[0] === 'links' ? (task ? task.links.length : 0)
+          : 0;
+      return h('button', {
+        type: 'button', class: pane === pair[0] ? 'on' : '',
+        // A new task has nothing to break up or hand in yet — save it first.
+        disabled: isNew && pair[0] !== 'detail',
+        onclick: function () { pane = pair[0]; paintPanes(); },
+      }, [pair[1], count ? h('span', { class: 'n', text: String(count) }) : null]);
+    }));
+
+    function paintPanes() {
+      tabBar.querySelectorAll('button').forEach(function (b, i) {
+        b.classList.toggle('on', TABS[i][0] === pane);
+      });
+      detailPane.hidden = pane !== 'detail';
+      partsPane.hidden = pane !== 'parts';
+      linksPane.hidden = pane !== 'links';
+      if (pane === 'parts') drawParts();
+      if (pane === 'links') drawLinks();
+    }
+
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
     var modal = h('div', { class: 'modal' }, [
       h('header', {}, [
-        h('h2', { text: isNew ? t('newTask') : t('taskTitle') }),
+        // An existing task is named by its own title, not by the word "task".
+        h('h2', { text: isNew ? t('newTask') : task.title }),
         h('button', { class: 'btn ghost sm', text: '✕', onclick: close }),
       ]),
       h('div', { class: 'body' }, [
+        tabBar,
+        detailPane,
+        partsPane,
+        linksPane,
+      ]),
+    ]);
+
+    // Kept out of the markup above so the three panes read as three things.
+    function buildDetailPane() { return h('div', { class: 'pane' }, [
         h('div', { class: 'field' }, [h('label', { text: t('taskTitle') }), titleInput]),
         h('div', { class: 'field' }, [h('label', { text: t('description') }), descInput]),
         h('div', { class: 'two' }, [
@@ -819,34 +945,217 @@
         h('div', { class: 'field' }, [h('label', { text: t('notifyWhen') }), notifyBox]),
         task ? h('p', { class: 'hint', style: 'font-size:12.5px;color:var(--ink-faint);margin:0' },
           [t('createdBy') + ': ' + nameOf(task.createdBy)]) : null,
-      ]),
+        (task && !mayEdit) ? h('div', { class: 'notice' , style: 'margin-top:8px' },
+          [maySetStatus ? t('statusOnlyNote') : t('viewOnlyNote')]) : null,
+      ]); }
+
+    modal.appendChild(
       h('footer', {}, [
-        h('button', { class: 'btn primary', text: isNew ? t('addTask') : t('saveTask'), onclick: save }),
-        h('button', { class: 'btn', text: t('cancel'), onclick: close }),
+        // Someone who may only move the status still gets a save button —
+        // it just saves less. Removing it entirely would leave them with no
+        // way to commit the one change they are allowed to make.
+        (mayEdit || maySetStatus)
+          ? h('button', {
+              class: 'btn primary',
+              text: isNew ? t('addTask') : (mayEdit ? t('saveTask') : t('saveStatus')),
+              onclick: save,
+            })
+          : null,
+        h('button', { class: 'btn', text: mayEdit ? t('cancel') : t('close'), onclick: close }),
         // Only for a saved task with a date — there is nothing to add otherwise.
         task && task.dueDate ? h('a', {
           class: 'btn', target: '_blank', rel: 'noopener',
           href: googleCalUrl(task), text: '📅 ' + t('addToCalendar'),
         }) : null,
         h('span', { class: 'grow' }),
-        task ? h('button', {
+        (task && task.mayEdit) ? h('button', {
           class: 'btn danger', text: t('deleteTask'),
           onclick: function () {
             if (!confirm(t('confirmDelete'))) return;
             api('/api/tasks?id=' + encodeURIComponent(task.id), { method: 'DELETE' })
-              .then(function (d) { S.tasks = d.tasks; close(); renderPage(); });
+              .then(function (d) { S.tasks = d.tasks; close(); renderPage(); })
+              .catch(function (err) { alert(errText(err.code)); });
           },
         }) : null,
       ]),
-    ]);
+    );
+
+    detailPane.appendChild(buildDetailPane());
+    paintPanes();
 
     veil.appendChild(modal);
     $('modal-root').appendChild(veil);
-    setTimeout(function () { titleInput.focus(); }, 30);
+    setTimeout(function () { if (mayEdit) titleInput.focus(); }, 30);
 
     function close() { veil.remove(); }
 
+    /** Replaces the task in hand after any change, so the panes stay honest. */
+    function refreshFrom(data) {
+      S.tasks = data.tasks;
+      if (data.task) task = data.task;
+      renderPage();
+      paintPanes();
+    }
+
+    function callTask(path, options) {
+      return api(path, options)
+        .then(refreshFrom)
+        .catch(function (err) { alert(errText(err.code)); });
+    }
+
+    /* ---- sub-tasks: who does which piece ---- */
+    function drawParts() {
+      clear(partsPane);
+      if (!task) return;
+
+      var parts = task.parts || [];
+      var done = parts.filter(function (p) { return p.done; }).length;
+
+      partsPane.appendChild(h('p', { class: 'hint' }, [
+        parts.length ? t('partsProgress').replace('{d}', String(done)).replace('{n}', String(parts.length))
+          : t('partsEmpty'),
+      ]));
+
+      if (parts.length) {
+        partsPane.appendChild(h('ul', { class: 'parts' }, parts.map(function (part) {
+          // Only the person it belongs to, or whoever runs the task, may tick it.
+          var mayTick = task.mayEdit || part.assignee === S.user.username;
+          var mine = part.assignee === S.user.username;
+
+          var box = h('input', { type: 'checkbox', checked: part.done, disabled: !mayTick });
+          box.addEventListener('change', function () {
+            callTask('/api/tasks?do=part', { method: 'PATCH', body: { id: part.id, done: box.checked } });
+          });
+
+          return h('li', { class: (part.done ? 'done ' : '') + (mine ? 'mine' : '') }, [
+            box,
+            h('div', { class: 'grow' }, [
+              h('div', { class: 'p-title', text: part.title }),
+              h('div', { class: 'p-who' }, part.assignee
+                ? [avatarNode(part.assignee, 'sm'), nameOf(part.assignee), mine ? ' \u00b7 ' + t('yours') : '']
+                : [h('span', { class: 'chip', text: t('unassigned') })]),
+            ]),
+            task.mayEdit ? h('button', {
+              class: 'btn ghost sm', title: t('removePart'), text: '\u2715',
+              onclick: function () {
+                if (!confirm(t('confirmRemovePart'))) return;
+                callTask('/api/tasks?do=part&id=' + encodeURIComponent(part.id), { method: 'DELETE' });
+              },
+            }) : null,
+          ]);
+        })));
+      }
+
+      if (!task.mayEdit) return;   // only the owner hands pieces out
+
+      var titleIn = h('input', { type: 'text', maxlength: '200', placeholder: t('partPlaceholder') });
+      var whoSel = h('select', {}, [h('option', { value: '', text: t('unassigned') })].concat(
+        groupedPeopleOptions(S.users.filter(function (u) { return u.active && !u.suspended; }))
+      ));
+      var add = h('button', {
+        class: 'btn', text: '+ ' + t('addPart'),
+        onclick: function () {
+          var title = titleIn.value.trim();
+          if (!title) { titleIn.focus(); return; }
+          callTask('/api/tasks?do=part', {
+            method: 'POST',
+            body: { taskId: task.id, title: title, assignee: whoSel.value || null },
+          });
+        },
+      });
+      titleIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') add.click(); });
+
+      partsPane.appendChild(h('div', { class: 'add-row' }, [titleIn, whoSel, add]));
+    }
+
+    /* ---- work handed in ---- */
+    var LINK_MARK = {
+      drive: '\u25B3', doc: '\u25A4', sheet: '\u25A6', slide: '\u25B7',
+      form: '\u2261', figma: '\u25C7', canva: '\u25CB', video: '\u25B6', link: '\u2197',
+    };
+
+    function drawLinks() {
+      clear(linksPane);
+      if (!task) return;
+
+      var links = task.links || [];
+      linksPane.appendChild(h('p', { class: 'hint', text: links.length ? t('workHint') : t('workEmpty') }));
+
+      if (links.length) {
+        linksPane.appendChild(h('ul', { class: 'links' }, links.map(function (link) {
+          var part = (task.parts || []).filter(function (p) { return p.id === link.partId; })[0];
+          var mayRemove = task.mayEdit || link.addedBy === S.user.username;
+
+          return h('li', {}, [
+            h('span', { class: 'l-mark ' + link.kind, text: LINK_MARK[link.kind] || LINK_MARK.link }),
+            h('div', { class: 'grow' }, [
+              h('a', {
+                href: link.url, target: '_blank', rel: 'noopener noreferrer',
+                text: link.label || link.url,
+              }),
+              h('div', { class: 'l-who' }, [
+                nameOf(link.addedBy) + ' \u00b7 ' + fmtWhen(link.createdAt),
+                part ? h('span', { class: 'chip', text: part.title }) : null,
+              ]),
+            ]),
+            mayRemove ? h('button', {
+              class: 'btn ghost sm', title: t('removeLink'), text: '\u2715',
+              onclick: function () {
+                if (!confirm(t('confirmRemoveLink'))) return;
+                callTask('/api/tasks?do=link&id=' + encodeURIComponent(link.id), { method: 'DELETE' });
+              },
+            }) : null,
+          ]);
+        })));
+      }
+
+      if (!task.mayAttach) {
+        linksPane.appendChild(h('div', { class: 'notice', text: t('cannotAttach') }));
+        return;
+      }
+
+      var urlIn = h('input', { type: 'url', placeholder: 'https://…  ' + t('orDriveLink') });
+      var labelIn = h('input', { type: 'text', maxlength: '120', placeholder: t('linkLabel') });
+      var partSel = (task.parts || []).length
+        ? h('select', {}, [h('option', { value: '', text: t('wholeTask') })].concat(
+            task.parts.map(function (p) { return h('option', { value: p.id, text: p.title }); })
+          ))
+        : null;
+
+      var attach = h('button', {
+        class: 'btn primary', text: t('attachWork'),
+        onclick: function () {
+          var value = urlIn.value.trim();
+          if (!value) { urlIn.focus(); return; }
+          callTask('/api/tasks?do=link', {
+            method: 'POST',
+            body: {
+              taskId: task.id, url: value,
+              label: labelIn.value.trim(),
+              partId: partSel ? (partSel.value || null) : null,
+            },
+          });
+        },
+      });
+      urlIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') attach.click(); });
+
+      linksPane.appendChild(h('div', { class: 'field attach-form' }, [
+        urlIn, labelIn, partSel, attach,
+        h('small', { class: 'hint', text: t('driveHint') }),
+      ]));
+    }
+
     function save() {
+      // Someone who may only move the status sends only the status. Sending
+      // the untouched fields as well would be refused by the server, which
+      // rightly treats "everything, unchanged" as an edit attempt.
+      if (!mayEdit) {
+        api('/api/tasks', { method: 'PATCH', body: { id: task.id, status: draft.status } })
+          .then(function (data) { S.tasks = data.tasks; close(); renderPage(); })
+          .catch(function (err) { alert(errText(err.code)); });
+        return;
+      }
+
       var body = {
         title: titleInput.value.trim(),
         description: descInput.value.trim(),
@@ -1128,67 +1437,480 @@
   }
 
   /* ---------- calendar -------------------------------------------------- */
-  function pageCalendar(main) {
-    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navCalendar') })]));
+  /* ---------- events ------------------------------------------------------ */
 
-    var seg = h('div', { class: 'seg' }, [[1, 'view1'], [7, 'view7'], [30, 'view30']].map(function (pair) {
-      return h('button', {
-        class: S.calRange === pair[0] ? 'on' : '', text: t(pair[1]),
-        onclick: function () { S.calRange = pair[0]; renderPage(); },
-      });
-    }));
-    var mineCb = h('input', { type: 'checkbox', checked: S.calMineOnly });
-    mineCb.addEventListener('change', function () { S.calMineOnly = mineCb.checked; renderPage(); });
-
-    main.appendChild(h('div', { class: 'filters' }, [
-      seg, h('span', { class: 'grow' }),
-      h('label', { style: 'display:flex;gap:7px;align-items:center;font-size:13.5px' }, [mineCb, t('mineOnly')]),
+  /**
+   * Dates to know about, with no work attached.
+   *
+   * Kept as its own page rather than a filter on the task list, because the
+   * question "what is happening next week" is not the question "what do I owe
+   * anyone" — and mixing them is how a rehearsal ends up with a status.
+   */
+  function pageEvents(main) {
+    main.appendChild(h('div', { class: 'page-head' }, [
+      h('h1', { text: t('navEvents') }),
+      h('button', { class: 'btn primary', text: t('newEvent'), onclick: function () { openEvent(null); } }),
     ]));
 
-    var start = todayIso();
-    var pool = S.tasks.filter(function (task) {
-      if (!task.dueDate) return false;
-      if (S.calMineOnly && task.assignees.indexOf(S.user.username) === -1) return false;
-      return true;
-    });
+    var today = todayIso();
+    var upcoming = S.events.filter(function (e) { return (e.endsOn || e.startsOn) >= today; });
+    var past = S.events.filter(function (e) { return (e.endsOn || e.startsOn) < today; });
 
-    var days = [];
-    for (var i = 0; i < S.calRange; i++) {
-      var day = addDays(start, i);
-      days.push({ day: day, tasks: pool.filter(function (x) { return x.dueDate === day; }) });
-    }
-    var any = days.some(function (d) { return d.tasks.length > 0; });
-
-    // Nothing at all in range: say so once, rather than stacking empty cards
-    // under a message that contradicts them.
-    if (!any) {
-      main.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('calEmpty') })]));
+    if (!S.events.length) {
+      main.appendChild(h('div', { class: 'empty' }, [
+        h('strong', { text: t('eventsEmpty') }), t('eventsEmptySub'),
+      ]));
       return;
     }
 
-    days.forEach(function (entry) {
-      // Over a month, empty days are pure noise. Over a day or a week they are
-      // useful scaffolding, so keep the header but drop the filler row.
-      if (!entry.tasks.length && S.calRange > 7) return;
+    if (upcoming.length) {
+      main.appendChild(h('h2', { class: 'section-head', text: t('upcoming') }));
+      main.appendChild(h('ul', { class: 'events' }, upcoming.map(eventRow)));
+    }
+    if (past.length) {
+      main.appendChild(h('h2', { class: 'section-head faded', text: t('past') }));
+      main.appendChild(h('ul', { class: 'events past' }, past.slice().reverse().map(eventRow)));
+    }
+  }
 
-      main.appendChild(h('div', { class: 'cal-day' + (entry.day === start ? ' is-today' : '') }, [
-        h('h3', {}, [
-          relativeDay(entry.day) || fmtDate(entry.day, { weekday: 'short' }),
-          h('small', { text: entry.tasks.length ? String(entry.tasks.length) : '—' }),
+  function eventRow(event) {
+    var when = eventWhen(event);
+    return h('li', {
+      class: 'event-row',
+      style: '--c:' + colourHex(event.colour),
+      onclick: function () { openEvent(event); },
+    }, [
+      h('div', { class: 'e-date' }, [
+        h('b', { text: String(Number(event.startsOn.slice(8, 10))) }),
+        h('small', { text: fmtDate(event.startsOn, { month: 'short' }) }),
+      ]),
+      h('div', { class: 'grow' }, [
+        h('div', { class: 'e-title', text: event.title }),
+        h('div', { class: 'e-meta' }, [
+          when,
+          event.place ? ' \u00b7 ' + event.place : '',
+          event.department ? h('span', { class: 'chip dept', text: deptLabel(event.department) }) : null,
         ]),
-        entry.tasks.length ? h('ul', {}, entry.tasks.map(function (task) {
-          return h('li', { onclick: (function (x) { return function () { openTask(x); }; })(task) }, [
-            h('span', { class: 'status-btn', text: MARK[task.status], style: 'pointer-events:none' }),
-            h('span', { style: 'flex:1', text: task.title }),
-            task.dueTime ? h('span', { class: 'time', text: task.dueTime }) : null,
-            h('span', { class: 'stack' }, task.assignees.slice(0, 3).map(function (u) { return avatarNode(u, 'sm'); })),
-          ]);
-        })) : null,
-      ]));
+      ]),
+      h('span', { class: 'stack' }, (event.people || []).slice(0, 3).map(function (u) {
+        return avatarNode(u, 'sm');
+      })),
+    ]);
+  }
+
+  /** "20 Nov" · "20–25 Nov" · "20 Nov 14:00–17:00" — whichever fits. */
+  function eventWhen(event) {
+    var from = fmtDate(event.startsOn, { day: 'numeric', month: 'short' });
+    if (event.endsOn && event.endsOn !== event.startsOn) {
+      return from + ' – ' + fmtDate(event.endsOn, { day: 'numeric', month: 'short' });
+    }
+    if (event.allDay || !event.startsAt) return from + ' \u00b7 ' + t('allDay');
+    return from + ' \u00b7 ' + event.startsAt + (event.endsAt ? '–' + event.endsAt : '');
+  }
+
+  /** Create or edit one. */
+  function openEvent(event) {
+    var isNew = !event;
+    var mayEdit = isNew || event.mayEdit;
+
+    var draft = {
+      colour: event ? event.colour : 'plum',
+      people: event ? (event.people || []).slice() : [],
+      departments: event ? (event.departments || []).slice() : [],
+      notify: event ? event.notify.slice() : ['7d', '24h', 'due'],
+      allDay: event ? event.allDay : true,
+    };
+
+    var titleIn = h('input', { type: 'text', maxlength: '200', value: event ? event.title : '',
+      placeholder: t('eventTitlePlaceholder'), disabled: !mayEdit });
+    var descIn = h('textarea', { maxlength: '4000', rows: '2', placeholder: t('description'), disabled: !mayEdit });
+    descIn.value = event ? event.description : '';
+    var placeIn = h('input', { type: 'text', maxlength: '200', value: event ? event.place : '',
+      placeholder: t('placePlaceholder'), disabled: !mayEdit });
+
+    var startOn = h('input', { type: 'date', value: event ? event.startsOn : todayIso(), disabled: !mayEdit });
+    var endOn = h('input', { type: 'date', value: event && event.endsOn ? event.endsOn : '', disabled: !mayEdit });
+    var startAt = h('input', { type: 'time', value: event && event.startsAt ? event.startsAt : '', disabled: !mayEdit });
+    var endAt = h('input', { type: 'time', value: event && event.endsAt ? event.endsAt : '', disabled: !mayEdit });
+
+    var allDayCb = h('input', { type: 'checkbox', checked: draft.allDay, disabled: !mayEdit });
+    function paintTimes() {
+      startAt.disabled = endAt.disabled = !mayEdit || allDayCb.checked;
+      timeRow.style.opacity = allDayCb.checked ? '.45' : '1';
+    }
+    allDayCb.addEventListener('change', function () { draft.allDay = allDayCb.checked; paintTimes(); });
+
+    var timeRow = h('div', { class: 'two' }, [
+      h('div', { class: 'field' }, [h('label', { text: t('startsAt') }), startAt]),
+      h('div', { class: 'field' }, [h('label', { text: t('endsAt') }), endAt]),
+    ]);
+
+    var swatches = h('div', { class: 'swatches' }, S.colours.map(function (c) {
+      var b = h('button', {
+        type: 'button', class: 'swatch' + (draft.colour === c.key ? ' on' : ''),
+        style: 'background:' + c.hex, title: c.key, disabled: !mayEdit,
+        onclick: function () {
+          draft.colour = c.key;
+          swatches.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+          b.classList.add('on');
+        },
+      });
+      return b;
+    }));
+
+    var whoBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
+    function drawWho() {
+      clear(whoBox);
+      whoBox.appendChild(h('div', { class: 'selected' },
+        (draft.people.length || draft.departments.length)
+          ? draft.people.map(function (u) {
+              return h('span', {
+                class: 'chip who' + (mayEdit ? ' x' : ''),
+                onclick: mayEdit ? function () {
+                  draft.people = draft.people.filter(function (x) { return x !== u; });
+                  drawWho();
+                } : null,
+              }, [avatarNode(u, 'sm'), nameOf(u), mayEdit ? ' \u2715' : '']);
+            }).concat(draft.departments.map(function (k) {
+              return h('span', {
+                class: 'chip dept' + (mayEdit ? ' x' : ''),
+                onclick: mayEdit ? function () {
+                  draft.departments = draft.departments.filter(function (x) { return x !== k; });
+                  drawWho();
+                } : null,
+              }, [deptLabel(k) + (mayEdit ? ' \u2715' : '')]);
+            }))
+          : [h('span', { class: 'chip', text: t('everyoneInFair') })]));
+
+      if (!mayEdit) return;
+
+      var pick = h('select', {
+        onchange: function (e) {
+          var v = e.target.value;
+          e.target.value = '';
+          if (!v) return;
+          if (v.indexOf('d:') === 0) {
+            var key = v.slice(2);
+            if (draft.departments.indexOf(key) === -1) draft.departments.push(key);
+          } else if (draft.people.indexOf(v) === -1) draft.people.push(v);
+          drawWho();
+        },
+      }, [h('option', { value: '', text: '+ ' + t('addPerson') })]
+        .concat(S.departments.map(function (d) {
+          return h('option', { value: 'd:' + d.key, text: deptOptionLabel(d) });
+        }))
+        .concat(groupedPeopleOptions(S.users.filter(function (u) {
+          return u.active && !u.suspended && draft.people.indexOf(u.username) === -1;
+        }))));
+      whoBox.appendChild(pick);
+    }
+    drawWho();
+
+    var notifyBox = h('div', { class: 'checks' }, [
+      ['7d', 'notify7d'], ['24h', 'notify24h'], ['due', 'notifyEventDay'],
+    ].map(function (pair) {
+      var cb = h('input', { type: 'checkbox', checked: draft.notify.indexOf(pair[0]) !== -1, disabled: !mayEdit });
+      cb.addEventListener('change', function () {
+        draft.notify = draft.notify.filter(function (k) { return k !== pair[0]; });
+        if (cb.checked) draft.notify.push(pair[0]);
+      });
+      return h('label', {}, [cb, t(pair[1])]);
+    }));
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
+    var modal = h('div', { class: 'modal' }, [
+      h('header', {}, [
+        h('h2', { text: isNew ? t('newEvent') : event.title }),
+        h('button', { class: 'btn ghost sm', text: '\u2715', onclick: close }),
+      ]),
+      h('div', { class: 'body' }, [
+        h('div', { class: 'field' }, [h('label', { text: t('eventTitle') }), titleIn]),
+        h('div', { class: 'field' }, [h('label', { text: t('description') }), descIn]),
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('startsOn') }), startOn]),
+          h('div', { class: 'field' }, [h('label', { text: t('endsOn') }), endOn]),
+        ]),
+        h('label', { class: 'inline-check' }, [allDayCb, t('allDay')]),
+        timeRow,
+        h('div', { class: 'field' }, [h('label', { text: t('place') }), placeIn]),
+        h('div', { class: 'field' }, [h('label', { text: t('whoIsItFor') }), whoBox]),
+        h('div', { class: 'field' }, [h('label', { text: t('colour') }), swatches]),
+        h('div', { class: 'field' }, [h('label', { text: t('remindWhen') }), notifyBox]),
+        event ? h('p', { class: 'hint', text: t('createdBy') + ': ' + nameOf(event.createdBy) }) : null,
+        (event && !mayEdit) ? h('div', { class: 'notice', text: t('eventViewOnly') }) : null,
+      ]),
+      h('footer', {}, [
+        mayEdit ? h('button', { class: 'btn primary', text: isNew ? t('addEvent') : t('save'), onclick: save }) : null,
+        h('button', { class: 'btn', text: mayEdit ? t('cancel') : t('close'), onclick: close }),
+        h('span', { class: 'grow' }),
+        (event && mayEdit) ? h('button', {
+          class: 'btn danger', text: t('deleteEvent'),
+          onclick: function () {
+            if (!confirm(t('confirmDeleteEvent'))) return;
+            api('/api/events?id=' + encodeURIComponent(event.id), { method: 'DELETE' })
+              .then(function (d) { S.events = d.events; close(); renderPage(); })
+              .catch(function (err) { alert(errText(err.code)); });
+          },
+        }) : null,
+      ]),
+    ]);
+
+    paintTimes();
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+    setTimeout(function () { if (mayEdit) titleIn.focus(); }, 30);
+
+    function close() { veil.remove(); }
+
+    function save() {
+      var body = {
+        title: titleIn.value.trim(),
+        description: descIn.value.trim(),
+        startsOn: startOn.value,
+        endsOn: endOn.value || null,
+        allDay: allDayCb.checked,
+        startsAt: allDayCb.checked ? null : (startAt.value || null),
+        endsAt: allDayCb.checked ? null : (endAt.value || null),
+        place: placeIn.value.trim(),
+        colour: draft.colour,
+        people: draft.people,
+        departments: draft.departments,
+        notify: draft.notify,
+      };
+      if (!body.title) { titleIn.focus(); return; }
+      if (!body.startsOn) { startOn.focus(); return; }
+
+      var call = isNew
+        ? api('/api/events', { method: 'POST', body: body })
+        : api('/api/events', { method: 'PATCH', body: Object.assign({ id: event.id }, body) });
+
+      call.then(function (d) { S.events = d.events; close(); renderPage(); })
+        .catch(function (err) { alert(errText(err.code)); });
+    }
+  }
+
+  /* ---------- calendar ---------------------------------------------------- */
+
+  /**
+   * A month grid, the way a calendar actually looks.
+   *
+   * The old version was a list of the next N days, which answered "what is
+   * coming up" but never "what does November look like" — and a committee
+   * planning a fair needs the second one. Month, week and day share the same
+   * cell renderer so a chip means the same thing in all three.
+   */
+  function pageCalendar(main) {
+    var view = S.calView || 'month';
+    var anchor = S.calAnchor || todayIso();
+
+    function shift(step) {
+      if (view === 'month') S.calAnchor = addMonths(anchor, step);
+      else if (view === 'week') S.calAnchor = addDays(anchor, step * 7);
+      else S.calAnchor = addDays(anchor, step);
+      renderPage();
+    }
+
+    var title = view === 'month'
+      ? fmtDate(anchor, { month: 'long', year: 'numeric' })
+      : view === 'week'
+        ? fmtDate(startOfWeek(anchor), { day: 'numeric', month: 'short' }) + ' – ' +
+          fmtDate(addDays(startOfWeek(anchor), 6), { day: 'numeric', month: 'short', year: 'numeric' })
+        : fmtDate(anchor, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+    main.appendChild(h('div', { class: 'cal-bar' }, [
+      h('div', { class: 'cal-nav' }, [
+        h('button', { class: 'btn sm', text: '\u2039', title: t('previous'), onclick: function () { shift(-1); } }),
+        h('button', { class: 'btn sm', text: t('today'), onclick: function () { S.calAnchor = todayIso(); renderPage(); } }),
+        h('button', { class: 'btn sm', text: '\u203A', title: t('next'), onclick: function () { shift(1); } }),
+      ]),
+      h('h1', { class: 'cal-title', text: title }),
+      h('span', { class: 'grow' }),
+      h('div', { class: 'seg' }, [['month', 'viewMonth'], ['week', 'viewWeek'], ['day', 'viewDay']].map(function (pair) {
+        return h('button', {
+          class: view === pair[0] ? 'on' : '', text: t(pair[1]),
+          onclick: function () { S.calView = pair[0]; renderPage(); },
+        });
+      })),
+    ]));
+
+    var mineCb = h('input', { type: 'checkbox', checked: S.calMineOnly });
+    mineCb.addEventListener('change', function () { S.calMineOnly = mineCb.checked; renderPage(); });
+    var eventsCb = h('input', { type: 'checkbox', checked: S.calShowEvents !== false });
+    eventsCb.addEventListener('change', function () { S.calShowEvents = eventsCb.checked; renderPage(); });
+
+    main.appendChild(h('div', { class: 'cal-legend' }, [
+      h('label', {}, [mineCb, t('mineOnly')]),
+      h('label', {}, [eventsCb, t('showEvents')]),
+      h('span', { class: 'grow' }),
+      h('span', { class: 'key' }, [h('i', { class: 'dot task' }), t('navAll')]),
+      h('span', { class: 'key' }, [h('i', { class: 'dot event' }), t('navEvents')]),
+    ]));
+
+    if (view === 'month') main.appendChild(monthGrid(anchor));
+    else if (view === 'week') main.appendChild(weekStrip(startOfWeek(anchor), 7));
+    else main.appendChild(weekStrip(anchor, 1));
+  }
+
+  /** Everything happening on one day, tasks first, then events. */
+  function entriesOn(iso) {
+    var out = [];
+
+    S.tasks.forEach(function (task) {
+      if (task.dueDate !== iso) return;
+      if (S.calMineOnly && task.assignees.indexOf(S.user.username) === -1) return;
+      out.push({ kind: 'task', at: task.dueTime || '', task: task, title: task.title });
+    });
+
+    if (S.calShowEvents !== false) {
+      S.events.forEach(function (event) {
+        if (!coversDay(event, iso)) return;
+        if (S.calMineOnly && (event.people || []).length &&
+            event.people.indexOf(S.user.username) === -1) return;
+        out.push({ kind: 'event', at: event.allDay ? '' : (event.startsAt || ''), event: event, title: event.title });
+      });
+    }
+
+    // All-day things first, then by time — the order a day actually runs in.
+    return out.sort(function (a, b) {
+      if (!a.at && b.at) return -1;
+      if (a.at && !b.at) return 1;
+      return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;
     });
   }
 
-  /* ---------- profile --------------------------------------------------- */
+  /** A multi-day event covers every day between its ends. */
+  function coversDay(event, iso) {
+    var from = event.startsOn;
+    var to = event.endsOn || event.startsOn;
+    return iso >= from && iso <= to;
+  }
+
+  function chipFor(entry) {
+    if (entry.kind === 'event') {
+      var colour = colourHex(entry.event.colour);
+      return h('button', {
+        class: 'cal-chip event',
+        style: 'border-left-color:' + colour,
+        title: entry.event.title,
+        onclick: function (e) { e.stopPropagation(); openEvent(entry.event); },
+      }, [
+        entry.at ? h('span', { class: 'at', text: entry.at }) : null,
+        entry.event.title,
+      ]);
+    }
+    return h('button', {
+      class: 'cal-chip task s-' + entry.task.status,
+      title: entry.task.title,
+      onclick: function (e) { e.stopPropagation(); openTask(entry.task); },
+    }, [
+      entry.at ? h('span', { class: 'at', text: entry.at }) : null,
+      entry.task.title,
+    ]);
+  }
+
+  function monthGrid(anchor) {
+    var first = anchor.slice(0, 8) + '01';
+    var gridStart = startOfWeek(first);
+    var today = todayIso();
+    var month = anchor.slice(0, 7);
+
+    var head = h('div', { class: 'cal-head' }, weekdayNames().map(function (name) {
+      return h('div', { text: name });
+    }));
+
+    var cells = [];
+    // Six rows always: a grid that changes height as you page through months
+    // makes the whole page jump about.
+    for (var i = 0; i < 42; i++) {
+      (function () {
+        var day = addDays(gridStart, i);
+        var entries = entriesOn(day);
+        var outside = day.slice(0, 7) !== month;
+
+        cells.push(h('div', {
+          class: 'cal-cell' + (outside ? ' outside' : '') + (day === today ? ' today' : ''),
+          onclick: function () { S.calAnchor = day; S.calView = 'day'; renderPage(); },
+        }, [
+          h('div', { class: 'd-num', text: String(Number(day.slice(8, 10))) }),
+          h('div', { class: 'd-items' }, entries.slice(0, 3).map(chipFor)),
+          entries.length > 3
+            ? h('div', { class: 'more', text: '+' + (entries.length - 3) })
+            : null,
+        ]));
+      })();
+    }
+
+    return h('div', { class: 'cal-month' }, [head, h('div', { class: 'cal-grid' }, cells)]);
+  }
+
+  /** Week and day share this: the same column, one or seven times. */
+  function weekStrip(from, count) {
+    var today = todayIso();
+    var columns = [];
+
+    for (var i = 0; i < count; i++) {
+      (function () {
+        var day = addDays(from, i);
+        var entries = entriesOn(day);
+        columns.push(h('div', { class: 'cal-col' + (day === today ? ' today' : '') }, [
+          h('div', { class: 'col-head' }, [
+            h('small', { text: fmtDate(day, { weekday: 'short' }) }),
+            h('b', { text: String(Number(day.slice(8, 10))) }),
+          ]),
+          h('div', { class: 'col-body' }, entries.length
+            ? entries.map(chipFor)
+            : [h('div', { class: 'col-empty', text: '\u00b7' })]),
+        ]));
+      })();
+    }
+
+    return h('div', { class: 'cal-week' + (count === 1 ? ' single' : '') }, columns);
+  }
+
+  /* ---------- date helpers used only by the calendar ---------------------- */
+  function startOfWeek(iso) {
+    var d = new Date(iso + 'T00:00:00');
+    // Monday first: the committee's week starts then, not on Sunday.
+    var back = (d.getDay() + 6) % 7;
+    return addDays(iso, -back);
+  }
+
+  function addMonths(iso, n) {
+    var y = Number(iso.slice(0, 4));
+    var m = Number(iso.slice(5, 7)) - 1 + n;
+    var day = Number(iso.slice(8, 10));
+    var target = new Date(y, m, 1);
+    // Clamp: the 31st of a month with 30 days is the 30th, not the 1st of next.
+    var last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(day, last));
+    return [
+      target.getFullYear(),
+      String(target.getMonth() + 1).padStart(2, '0'),
+      String(target.getDate()).padStart(2, '0'),
+    ].join('-');
+  }
+
+  function weekdayNames() {
+    var names = [];
+    // 5 January 2026 was a Monday; any known Monday would do. Dates are built
+    // by adding days rather than by pasting numbers into a string, which
+    // produced "2026-01-010" for the last two and printed INVALID DATE.
+    var monday = Date.UTC(2026, 0, 5);
+    for (var i = 0; i < 7; i++) {
+      names.push(new Date(monday + i * 86400000)
+        .toLocaleDateString(S.lang === 'th' ? 'th-TH' : 'en-GB',
+          { weekday: 'short', timeZone: 'UTC' }));
+    }
+    return names;
+  }
+
+  function colourHex(key) {
+    for (var i = 0; i < S.colours.length; i++) {
+      if (S.colours[i].key === key) return S.colours[i].hex;
+    }
+    return S.colours.length ? S.colours[0].hex : '#b51e64';
+  }
+
   function pageProfile(main) {
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('profile') })]));
 
@@ -1389,6 +2111,25 @@
 
       box.appendChild(h('p', { class: 'hint', text: t('pushExplained') }));
 
+      /**
+       * macOS has a second switch.
+       *
+       * Chrome can have permission from the website and still show nothing,
+       * because macOS itself decides whether Chrome may post notifications at
+       * all — and its default for a freshly installed browser is often "no".
+       * Nothing in the browser can detect or change that, so it is spelled
+       * out here for anyone on a Mac rather than left as a mystery.
+       */
+      if (isMac && on) {
+        box.appendChild(h('details', { class: 'mac-help' }, [
+          h('summary', { text: t('macNoBanner') }),
+          h('ol', {}, [t('macStep1'), t('macStep2'), t('macStep3'), t('macStep4')].map(function (line) {
+            return h('li', { text: line });
+          })),
+          isChrome ? h('p', { class: 'hint', text: t('macChromeNote') }) : null,
+        ]));
+      }
+
       // Permission granted, but the server has no device: the registration
       // did not complete. One button fixes it, and says so if it cannot.
       if (halfway) {
@@ -1466,22 +2207,68 @@
         return;
       }
 
-      var url = location.origin + '/api/calendar?token=' + S.user.calendarToken;
-      var field = h('input', { type: 'text', class: 'mono', value: url, readonly: true,
-        onclick: function (e) { e.target.select(); } });
+      /**
+       * Four feeds, not one.
+       *
+       * Google paints a subscribed calendar in a single colour, so the only
+       * way to have committee dates in one colour and your own deadlines in
+       * another is to subscribe to them separately. Each row here becomes its
+       * own calendar in Google, which the person then colours as they like.
+       */
+      var FEEDS = [
+        ['mine', 'feedMine', 'feedMineSub'],
+        ['dept', 'feedDept', 'feedDeptSub'],
+        ['events', 'feedEvents', 'feedEventsSub'],
+        ['all', 'feedAll', 'feedAllSub'],
+      ];
 
-      box.appendChild(field);
+      box.appendChild(h('div', { class: 'feeds' }, FEEDS.map(function (feed) {
+        var url = location.origin + '/api/calendar?token=' +
+          S.user.calendarToken + '&scope=' + feed[0];
+        var field = h('input', { type: 'text', class: 'mono', value: url, readonly: true,
+          onclick: function (e) { e.target.select(); } });
+
+        return h('div', { class: 'feed-row' }, [
+          h('div', { class: 'feed-head' }, [
+            h('b', { text: t(feed[1]) }),
+            h('small', { text: t(feed[2]) }),
+          ]),
+          field,
+          h('div', { class: 'feed-actions' }, [
+            h('button', {
+              class: 'btn sm', text: t('copyLink'),
+              onclick: function (e) {
+                var btn = e.target;
+                field.select();
+                var done = function () {
+                  btn.textContent = t('copied');
+                  setTimeout(function () { btn.textContent = t('copyLink'); }, 1600);
+                };
+                if (navigator.clipboard) navigator.clipboard.writeText(url).then(done, done);
+                else done();
+              },
+            }),
+            // Google's own "add by URL" page, pre-filled. One tap on a
+            // computer; on a phone Google asks you to use a browser.
+            h('a', {
+              class: 'btn sm', target: '_blank', rel: 'noopener',
+              href: 'https://calendar.google.com/calendar/u/0/r/settings/addbyurl?cid=' +
+                encodeURIComponent(url),
+              text: t('addToGoogle'),
+            }),
+          ]),
+        ]);
+      })));
+
+      box.appendChild(h('div', { class: 'notice', style: 'margin-top:10px' }, [
+        h('b', { text: t('howToSubscribe') }),
+        h('ol', {}, [t('subStep1'), t('subStep2'), t('subStep3'), t('subStep4')].map(function (line) {
+          return h('li', { text: line });
+        })),
+      ]));
+
+      var url = location.origin + '/api/calendar?token=' + S.user.calendarToken;
       box.appendChild(h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:8px' }, [
-        h('button', {
-          class: 'btn sm', text: t('copyLink'),
-          onclick: function (e) {
-            var btn = e.target;
-            field.select();
-            var done = function () { btn.textContent = t('copied'); setTimeout(function () { btn.textContent = t('copyLink'); }, 1600); };
-            if (navigator.clipboard) navigator.clipboard.writeText(url).then(done, done);
-            else done();
-          },
-        }),
         h('button', {
           class: 'btn sm ghost', text: t('newCalendarLink'),
           onclick: function () {
@@ -2015,6 +2802,8 @@
 
   var isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var isMac = /Mac/.test(navigator.platform || '') && !isIos;
+  var isChrome = /Chrome\//.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
 
   /**
    * Works out what this device can actually do.
@@ -2291,6 +3080,7 @@
       api('/api/users'),
       api('/api/tasks'),
       api('/api/notifications'),
+      api('/api/events'),
     ]).then(function (res) {
       S.departments = res[0].departments;
       S.users = res[1].users;
@@ -2302,6 +3092,8 @@
       S.myDepartments = res[2].myDepartments || [];
       S.notifs = res[3].notifications;
       S.unread = res[3].unread;
+      S.events = res[4].events;
+      S.colours = res[4].colours;
       routeFromHash();
       renderShell();
       renderPage();
@@ -2339,6 +3131,7 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible' && S.user) {
       api('/api/tasks').then(function (d) { S.tasks = d.tasks; renderPage(); }).catch(function () {});
+      api('/api/events').then(function (d) { S.events = d.events; renderPage(); }).catch(function () {});
       refreshNotifications().then(showPending);
     }
   });

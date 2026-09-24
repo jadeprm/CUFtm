@@ -1,6 +1,7 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
+import { assembledEvents, audienceOf } from './events.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -49,6 +50,13 @@ const MESSAGES = {
   '7d': { th: 'ครบกำหนดในอีก 7 วัน', en: 'Due in 7 days' },
   '24h': { th: 'ครบกำหนดพรุ่งนี้', en: 'Due tomorrow' },
   due: { th: 'ครบกำหนดวันนี้', en: 'Due today' },
+};
+
+/** An event is not due — it happens. The wording follows. */
+const EVENT_MESSAGES = {
+  '7d': { th: 'อีก 7 วัน', en: 'In 7 days' },
+  '24h': { th: 'พรุ่งนี้', en: 'Tomorrow' },
+  due: { th: 'วันนี้', en: 'Today' },
 };
 
 async function handler(request) {
@@ -154,6 +162,69 @@ async function handler(request) {
     pushed += result.sent;
   }
 
+  /**
+   * Events, the same way.
+   *
+   * They share reminders_sent with tasks — an event id is distinctive enough
+   * that the two can never collide — so an event reminds each person once and
+   * then stays quiet, exactly like a deadline does.
+   */
+  const events = await sql`SELECT * FROM events WHERE starts_on >= ${today}::date - 1`;
+  const allEvents = await assembledEvents(sql);
+  let eventNotices = 0;
+
+  for (const row of events) {
+    const event = allEvents.find((e) => e.id === row.id);
+    if (!event) continue;
+
+    const days = daysBetween(today, event.startsOn);
+    let kind = null;
+    if (days === 7) kind = '7d';
+    else if (days === 1) kind = '24h';
+    else if (days === 0) kind = 'due';
+    if (!kind || !event.notify.includes(kind)) continue;
+
+    // A timed event on the day itself waits for a civilised hour rather than
+    // waking people at 1am about something at 6pm.
+    if (kind === 'due' && hour < 7) continue;
+
+    const when = event.allDay
+      ? event.startsOn
+      : `${event.startsOn} ${event.startsAt || ''}`.trim();
+
+    for (const username of await audienceOf(sql, event)) {
+      const [already] = await sql`
+        SELECT 1 FROM reminders_sent
+        WHERE task_id = ${event.id} AND username = ${username} AND kind = ${kind}`;
+      if (already) continue;
+
+      const [person] = await sql`SELECT lang FROM users WHERE username = ${username}`;
+      const lang = person?.lang === 'en' ? 'en' : 'th';
+      const line = `${EVENT_MESSAGES[kind][lang]} \u00b7 ${when}` +
+        (event.place ? ` \u00b7 ${event.place}` : '');
+
+      const id = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      await sql`
+        INSERT INTO notifications (id, username, task_id, kind, title, body)
+        VALUES (${id}, ${username}, ${null}, ${'event'}, ${event.title}, ${line})`;
+      await sql`
+        INSERT INTO reminders_sent (task_id, username, kind)
+        VALUES (${event.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
+
+      eventNotices++;
+      const result = await sendToUser(sql, username, {
+        id,
+        title: event.title,
+        body: line,
+        level: kind === 'due' ? 'urgent' : 'normal',
+        lang,
+        tag: `event-${event.id}`,
+        unread: await unreadCount(sql, username),
+      });
+      pushed += result.sent;
+    }
+  }
+
   // Keep the roster current, and tidy up expired sessions while we're here.
   let roster = null;
   try {
@@ -169,6 +240,7 @@ async function handler(request) {
     hour,
     remindersCreated: created.length,
     created,
+    eventNotices,
     pushesSent: pushed,
     roster,
     secured: Boolean(secret),

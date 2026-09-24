@@ -469,3 +469,220 @@ optgroup { font-size: 12px; color: var(--ink-faint); }
   font-size: 11px; color: var(--ink-faint); line-height: 1.6;
 }
 .push-box .devices .err-text { color: var(--danger); }
+
+/* A status button someone may not use: still shows the state, does not invite
+   a tap that would be refused. */
+.status-btn.locked { cursor: default; opacity: .75; }
+.picker.readonly { background: var(--surface-2); }
+.picker.readonly .selected { padding: 4px 0; }
+.modal .body input:disabled,
+.modal .body textarea:disabled,
+.modal .body select:disabled { opacity: .7; cursor: default; }
+.seg button:disabled { opacity: .5; cursor: default; }
+
+/* ---- task modal tabs ---------------------------------------------------- */
+.tabs-seg { width: 100%; margin-bottom: 4px; }
+.tabs-seg button { flex: 1; }
+.modal .pane { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- sub-tasks ---------------------------------------------------------- */
+ul.parts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+ul.parts li {
+  display: flex; align-items: flex-start; gap: 9px;
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 11px; background: var(--surface);
+}
+/* Your own piece is the one you came here to find. */
+ul.parts li.mine { border-color: var(--accent); background: var(--accent-soft); }
+ul.parts li.done .p-title { text-decoration: line-through; color: var(--ink-faint); }
+ul.parts li input[type=checkbox] { margin-top: 3px; flex: none; }
+.p-title { font-size: 14px; line-height: 1.35; }
+.p-who {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--ink-faint); margin-top: 3px;
+}
+.add-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.add-row input[type=text] { flex: 2 1 12rem; }
+.add-row select { flex: 1 1 9rem; }
+
+/* ---- attached work ------------------------------------------------------ */
+ul.links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+ul.links li {
+  display: flex; align-items: flex-start; gap: 9px;
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 11px; background: var(--surface);
+}
+ul.links a { color: var(--accent); font-size: 14px; word-break: break-word; }
+.l-who {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--ink-faint); margin-top: 3px;
+}
+.l-mark {
+  flex: none; width: 26px; height: 26px; border-radius: 7px;
+  display: grid; place-items: center; font-size: 13px;
+  background: var(--surface-2); color: var(--ink-soft);
+}
+/* Google's own colours, so a Drive link is recognisable at a glance. */
+.l-mark.drive  { background: #e8f0fe; color: #1a73e8; }
+.l-mark.doc    { background: #e8f0fe; color: #1a73e8; }
+.l-mark.sheet  { background: #e6f4ea; color: #188038; }
+.l-mark.slide  { background: #fef7e0; color: #ea8600; }
+.l-mark.form   { background: #f3e8fd; color: #7b1fa2; }
+.attach-form { gap: 6px; }
+.attach-form .hint { font-size: 11.5px; color: var(--ink-faint); }
+
+/* ---- the card ----------------------------------------------------------- */
+.my-part {
+  font-size: 12px; color: var(--accent); font-weight: 500;
+  margin-top: 3px; line-height: 1.35;
+}
+.my-part.done { color: var(--ink-faint); font-weight: 400; }
+.chip.parts.done { border-color: var(--done); color: var(--done); }
+
+/* ==========================================================================
+   Calendar — a real grid, not a list
+   ========================================================================== */
+.cal-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.cal-nav { display: flex; gap: 4px; }
+.cal-title { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+.cal-legend {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 10px; font-size: 12.5px; color: var(--ink-soft);
+}
+.cal-legend label { display: flex; align-items: center; gap: 6px; }
+.cal-legend .key { display: flex; align-items: center; gap: 5px; }
+.cal-legend .dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+.cal-legend .dot.task { background: var(--accent); }
+.cal-legend .dot.event { background: var(--doing); }
+
+.cal-month {
+  border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; background: var(--surface);
+}
+.cal-head {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
+}
+.cal-head div {
+  padding: 8px 6px; text-align: center;
+  font-size: 11.5px; font-weight: 600; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+/* Six fixed rows: a grid that changes height as you page through months
+   makes the whole page jump about. */
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(104px, 1fr); }
+.cal-cell {
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  padding: 5px 5px 4px; display: flex; flex-direction: column; gap: 3px;
+  cursor: pointer; min-width: 0;
+}
+.cal-cell:nth-child(7n) { border-right: none; }
+.cal-cell:nth-last-child(-n+7) { border-bottom: none; }
+.cal-cell:hover { background: var(--surface-2); }
+.cal-cell.outside { background: var(--surface-2); }
+.cal-cell.outside .d-num { color: var(--ink-faint); opacity: .55; }
+.d-num { font-size: 12.5px; font-weight: 600; color: var(--ink-soft); padding: 1px 3px; }
+/* Today is a filled circle on the number, the way every calendar marks it. */
+.cal-cell.today .d-num {
+  background: var(--accent); color: #fff; border-radius: 999px;
+  width: 22px; height: 22px; display: grid; place-items: center;
+  font-weight: 700;
+}
+.d-items { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cal-cell .more { font-size: 10.5px; color: var(--ink-faint); padding-left: 4px; }
+
+.cal-chip {
+  display: flex; align-items: center; gap: 4px;
+  width: 100%; text-align: left; border: none; cursor: pointer;
+  font-size: 11.5px; line-height: 1.3; padding: 2px 5px;
+  border-radius: 4px; border-left: 3px solid var(--accent);
+  background: var(--accent-soft); color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cal-chip .at { font-variant-numeric: tabular-nums; color: var(--ink-faint); flex: none; }
+.cal-chip.task.s-done { opacity: .55; text-decoration: line-through; }
+.cal-chip.task.s-doing { border-left-color: var(--doing); background: var(--doing-soft); }
+.cal-chip.event { background: var(--surface-2); }
+
+/* week and day */
+.cal-week {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+  border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; background: var(--surface);
+}
+.cal-week.single { grid-template-columns: 1fr; }
+.cal-col { border-right: 1px solid var(--line); min-height: 220px; min-width: 0; }
+.cal-col:last-child { border-right: none; }
+.cal-col.today { background: var(--accent-soft); }
+.col-head {
+  padding: 7px 8px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: baseline; gap: 6px; background: var(--surface-2);
+}
+.col-head small { font-size: 11px; color: var(--ink-faint); text-transform: uppercase; }
+.col-head b { font-size: 15px; }
+.col-body { padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.cal-week.single .cal-chip { font-size: 13.5px; padding: 6px 9px; }
+.col-empty { color: var(--line); text-align: center; padding: 14px 0; }
+
+@media (max-width: 720px) {
+  .cal-grid { grid-auto-rows: minmax(70px, 1fr); }
+  .cal-chip { font-size: 10px; padding: 1px 3px; }
+  .cal-chip .at { display: none; }
+  /* A seven-column week is unreadable on a phone; scroll it instead. */
+  .cal-week { grid-template-columns: repeat(7, minmax(120px, 1fr)); overflow-x: auto; }
+}
+
+/* ==========================================================================
+   Events
+   ========================================================================== */
+ul.events { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+ul.events.past { opacity: .6; }
+.event-row {
+  display: flex; align-items: center; gap: 13px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 4px solid var(--c, var(--accent));
+  border-radius: 11px; padding: 11px 14px;
+}
+.event-row:hover { box-shadow: var(--shadow-1); }
+.e-date {
+  flex: none; width: 42px; text-align: center; line-height: 1.1;
+  color: var(--c, var(--accent));
+}
+.e-date b { font-size: 19px; font-weight: 700; display: block; }
+.e-date small { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; }
+.e-title { font-size: 14.5px; font-weight: 500; }
+.e-meta {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; color: var(--ink-faint); margin-top: 2px;
+}
+.section-head.faded { color: var(--ink-faint); }
+.inline-check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+
+.swatches { display: flex; gap: 7px; flex-wrap: wrap; }
+.swatch {
+  width: 26px; height: 26px; border-radius: 999px; cursor: pointer;
+  border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08);
+}
+.swatch.on { border-color: var(--ink); }
+.swatch:disabled { cursor: default; }
+
+/* ---- calendar feeds (profile) ------------------------------------------- */
+.feeds { display: flex; flex-direction: column; gap: 10px; }
+.feed-row {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; background: var(--surface-2);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.feed-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.feed-head b { font-size: 13.5px; }
+.feed-head small { font-size: 11.5px; color: var(--ink-faint); }
+.feed-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.cal-box .notice ol { margin: 6px 0 0; padding-left: 20px; }
+.cal-box .notice li { margin: 3px 0; line-height: 1.45; font-size: 13px; }
+
+/* macOS has a second notification switch outside the browser; this explains it
+   without shouting at everyone who is not on a Mac. */
+.mac-help { margin-top: 10px; font-size: 13px; }
+.mac-help summary { cursor: pointer; color: var(--accent); }
+.mac-help ol { margin: 8px 0 0; padding-left: 20px; }
+.mac-help li { margin: 3px 0; line-height: 1.45; }
