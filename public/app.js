@@ -165,9 +165,80 @@
     if (iso === addDays(today, 1)) return t('tomorrow');
     return null;
   }
+  /** Whole days from today — negative for a date that has already gone past. */
+  function daysFromToday(iso) {
+    var a = new Date(todayIso() + 'T00:00:00Z').getTime();
+    var b = new Date(iso + 'T00:00:00Z').getTime();
+    if (isNaN(b)) return 0;
+    return Math.round((b - a) / 86400000);
+  }
+  /**
+   * A date said the way a person would say it.
+   *
+   * "20 พฤศจิกายน 2569" is accurate and tells you nothing — the question
+   * anyone actually has is how long they have got. Today and tomorrow have
+   * their own words; beyond that it is a count of days, and a date already
+   * past says so rather than making you work it out.
+   */
+  function whenWording(iso, time, tail) {
+    if (!iso) return t('noDue');
+    var text = fmtDate(iso, { day: 'numeric', month: 'long', year: 'numeric' });
+    if (time) text += ' · ' + time + (tail ? '–' + tail : '') + ' ' + t('hrsShort');
+    // `tail` closes a time range, so it belongs with the clock, not after the
+    // "in eleven days" that has to come last to read as a sentence.
+    else if (tail) text += ' – ' + tail;
+    var near = relativeDay(iso);
+    if (near) return text + ' · ' + near;
+    var days = daysFromToday(iso);
+    if (days > 0 && days <= 60) return text + ' · ' + t('inDays').replace('{n}', String(days));
+    if (days < 0 && days >= -365) return text + ' · ' + t('daysAgo').replace('{n}', String(-days));
+    return text;
+  }
+  /** One labelled line of a read-only summary. */
+  function vRow(label, value) {
+    return h('div', { class: 'vrow' }, [
+      h('div', { class: 'vk', text: label }),
+      h('div', { class: 'vv' }, [value]),
+    ]);
+  }
+  var vMuted = function (text) { return h('span', { class: 'vmuted', text: text }); };
   var isOverdue = function (task) {
     return task.dueDate && task.status !== 'done' && task.dueDate < todayIso();
   };
+
+  /**
+   * How urgent a task is, as one word.
+   *
+   * Two things decide it and they are not independent: how close the deadline
+   * is, and how much it matters. A "highest" task due in a week deserves more
+   * attention than an ordinary one due in a week, so priority lifts the task
+   * up the scale rather than colouring it separately — which is what people
+   * mean when they say something is urgent.
+   *
+   * Finished work drops off the scale entirely. A done task is not urgent no
+   * matter what its deadline was, and colouring it red would be noise on the
+   * one card nobody needs to act on.
+   *
+   * The order below is also the sort order: late, then now, then soon, then
+   * ahead, then everything undated.
+   */
+  var URGENCY = ['late', 'now', 'soon', 'ahead', 'none', 'done'];
+  function urgencyOf(task) {
+    if (task.status === 'done') return 'done';
+
+    var lift = task.priority === 'highest' ? 2 : task.priority === 'high' ? 1 : 0;
+
+    // No deadline at all: only the loudest priority earns any colour.
+    if (!task.dueDate) return lift >= 2 ? 'soon' : 'none';
+
+    var days = daysFromToday(task.dueDate);
+    if (days < 0) return 'late';
+
+    var level = days === 0 ? 3 : days <= 3 ? 2 : days <= 7 ? 1 : 0;
+    level += lift;
+    return level >= 3 ? 'now' : level === 2 ? 'soon' : level === 1 ? 'ahead' : 'none';
+  }
+  var urgencyRank = function (task) { return URGENCY.indexOf(urgencyOf(task)); };
 
   /* ---------- people ---------------------------------------------------- */
   function userBy(username) {
@@ -562,6 +633,27 @@
         if (!inDept) return false;
       }
       return true;
+    }).sort(function (a, b) {
+      /**
+       * Most urgent first, not most recently touched.
+       *
+       * The server orders by status so the work in progress is findable, but
+       * the question someone opens this page with is "what is about to bite
+       * me" — so the list is re-sorted here by the same scale that colours
+       * the cards. Within one band the earlier deadline wins, then the louder
+       * priority, so two things due Friday do not swap places on every load.
+       */
+      var byUrgency = urgencyRank(a) - urgencyRank(b);
+      if (byUrgency) return byUrgency;
+
+      if (a.dueDate !== b.dueDate) {
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate < b.dueDate ? -1 : 1;
+      }
+      var byPrio = PRIORITY_LIST.indexOf(b.priority || 'medium') - PRIORITY_LIST.indexOf(a.priority || 'medium');
+      if (byPrio) return byPrio;
+      return (a.dueTime || '99:99') < (b.dueTime || '99:99') ? -1 : 1;
     });
   }
 
@@ -749,7 +841,7 @@
 
     return h('li', {
       class: 'task' + (task.pending ? ' pending' : ''),
-      dataset: { status: task.status, prio: task.priority || 'medium' },
+      dataset: { status: task.status, prio: task.priority || 'medium', urgency: urgencyOf(task) },
       onclick: function () { openTask(task); },
     }, [
       h('button', {
@@ -850,6 +942,18 @@
      */
     var mayEdit = isNew || task.mayEdit;
     var maySetStatus = isNew || task.maySetStatus;
+
+    /**
+     * Read first, edit on purpose.
+     *
+     * Most of the time a task is opened to find something out — when it is
+     * due, who is on it, what has been handed in — and a screen of form
+     * fields is a poor way to answer that. So an existing task opens as
+     * something to read, and anyone allowed to change it presses แก้ไข to
+     * turn the same pop-up into the form. A new task skips straight to the
+     * form: there is nothing to read yet.
+     */
+    var mode = isNew ? 'edit' : 'view';
 
     var titleInput = h('input', {
       type: 'text', value: draft.title, maxlength: '200',
@@ -967,13 +1071,26 @@
 
     function paintPanes() {
       tabBar.querySelectorAll('button').forEach(function (b, i) {
-        b.classList.toggle('on', TABS[i][0] === pane);
+        var key = TABS[i][0];
+        b.classList.toggle('on', key === pane);
+        // Rebuilt rather than patched: a tab that had no badge grows one the
+        // moment the first sub-task or attachment is added.
+        var count = key === 'parts' ? (task ? task.parts.length : 0)
+          : key === 'links' ? (task ? task.links.length : 0) : 0;
+        clear(b);
+        b.appendChild(document.createTextNode(TABS[i][1]));
+        if (count) b.appendChild(h('span', { class: 'n', text: String(count) }));
       });
       detailPane.hidden = pane !== 'detail';
       partsPane.hidden = pane !== 'parts';
       linksPane.hidden = pane !== 'links';
+      if (pane === 'detail') {
+        clear(detailPane);
+        detailPane.appendChild(mode === 'view' ? buildViewPane() : buildDetailPane());
+      }
       if (pane === 'parts') drawParts();
       if (pane === 'links') drawLinks();
+      paintFooter();
     }
 
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
@@ -990,6 +1107,113 @@
         linksPane,
       ]),
     ]);
+
+    /**
+     * The task as something to read.
+     *
+     * Ordered by what people come here to find out: how it stands and when it
+     * is due, then what it actually is, then who is on it. Sub-tasks and work
+     * handed in get a line each with a count, because knowing there are three
+     * attachments is half the reason to open the other tabs.
+     */
+    function buildViewPane() {
+      var parts = task.parts || [];
+      var links = task.links || [];
+      var doneParts = parts.filter(function (p) { return p.done; }).length;
+
+      var band = h('div', { class: 'view-band' }, [
+        h('span', { class: 'vb-status st-' + task.status, text: statusLabel(task.status) }),
+        (task.priority && task.priority !== 'medium')
+          ? h('span', { class: 'vb-prio prio-' + task.priority, text: prioLabel(task.priority) })
+          : null,
+        h('span', { class: 'grow' }),
+        h('span', {
+          class: 'vb-due u-' + urgencyOf(task),
+          text: whenWording(task.dueDate, task.dueTime),
+        }),
+      ]);
+
+      var rows = [
+        vRow(t('assignTo'), task.assignees.length
+          ? h('span', { class: 'selected' }, task.assignees.map(function (u) {
+              return h('span', { class: 'chip who' }, [avatarNode(u, 'sm'), nameOf(u)]);
+            }))
+          : vMuted(t('noOne'))),
+        vRow(t('viewDepartments'), task.departments.length
+          ? h('span', { class: 'selected' }, task.departments.map(function (d) {
+              return h('span', { class: 'chip dept', text: deptLabel(d.key) });
+            }))
+          : vMuted('—')),
+        vRow(t('viewTeamspace'), task.department ? h('span', { text: deptLabel(task.department) }) : vMuted('—')),
+      ];
+
+      // Sub-tasks and attachments, each a line that takes you to its tab.
+      if (parts.length) {
+        rows.push(vRow(t('tabParts'), h('button', {
+          class: 'vlink', onclick: function () { pane = 'parts'; paintPanes(); },
+        }, [
+          h('span', { class: 'vbar' }, [h('i', { style: 'width:' + Math.round(doneParts / parts.length * 100) + '%' })]),
+          t('partsDone').replace('{n}', String(doneParts)).replace('{of}', String(parts.length)),
+        ])));
+      }
+      if (links.length) {
+        rows.push(vRow(t('tabWork'), h('button', {
+          class: 'vlink', onclick: function () { pane = 'links'; paintPanes(); },
+          text: t('linksCount').replace('{n}', String(links.length)),
+        })));
+      }
+      rows.push(vRow(t('createdBy'), h('span', { class: 'selected' },
+        [h('span', { class: 'chip who' }, [avatarNode(task.createdBy, 'sm'), nameOf(task.createdBy)])])));
+
+      /**
+       * Moving the status is the one change almost everyone is allowed to
+       * make, and it is the change they make most often. Putting it here,
+       * saving the moment it is pressed, means the common case never has to
+       * go near the form at all.
+       */
+      var quick = null;
+      if (maySetStatus) {
+        var seg = h('div', { class: 'seg wrap' }, STATUS_LIST.map(function (st) {
+          return h('button', {
+            type: 'button', class: task.status === st ? 'on' : '', text: statusLabel(st),
+            onclick: function () { setStatusNow(st); },
+          });
+        }));
+        quick = h('div', { class: 'field view-quick' }, [h('label', { text: t('changeStatus') }), seg]);
+      }
+
+      return h('div', { class: 'pane view-pane' }, [
+        band,
+        task.description
+          ? h('p', { class: 'view-desc', text: task.description })
+          : h('p', { class: 'view-desc empty', text: t('noDescription') }),
+        h('div', { class: 'view-rows' }, rows),
+        quick,
+        (!mayEdit && !maySetStatus) ? h('div', { class: 'notice', text: t('viewOnlyNote') }) : null,
+      ]);
+    }
+
+    /** Saves a status change straight from the read view, with no form. */
+    function setStatusNow(st) {
+      if (st === task.status) return;
+      var previous = S.tasks;
+      var before = task.status;
+      task.status = st;
+      S.tasks = S.tasks.map(function (x) {
+        return x.id === task.id ? Object.assign({}, x, { status: st }) : x;
+      });
+      renderPage();
+      paintPanes();
+      api('/api/tasks', { method: 'PATCH', body: { id: task.id, status: st } })
+        .then(refreshFrom)
+        .catch(function (err) {
+          task.status = before;
+          S.tasks = previous;
+          renderPage();
+          paintPanes();
+          alert(errText(err.code));
+        });
+    }
 
     // Kept out of the markup above so the three panes read as three things.
     function buildDetailPane() { return h('div', { class: 'pane' }, [
@@ -1016,26 +1240,50 @@
           [maySetStatus ? t('statusOnlyNote') : t('viewOnlyNote')]) : null,
       ]); }
 
-    modal.appendChild(
-      h('footer', {}, [
-        // Someone who may only move the status still gets a save button —
-        // it just saves less. Removing it entirely would leave them with no
-        // way to commit the one change they are allowed to make.
-        (mayEdit || maySetStatus)
-          ? h('button', {
-              class: 'btn primary',
-              text: isNew ? t('addTask') : (mayEdit ? t('saveTask') : t('saveStatus')),
-              onclick: save,
-            })
-          : null,
-        h('button', { class: 'btn', text: mayEdit ? t('cancel') : t('close'), onclick: close }),
-        // Only for a saved task with a date — there is nothing to add otherwise.
-        task && task.dueDate ? h('a', {
-          class: 'btn', target: '_blank', rel: 'noopener',
-          href: googleCalUrl(task), text: '📅 ' + t('addToCalendar'),
-        }) : null,
-        h('span', { class: 'grow' }),
-        (task && task.mayEdit) ? h('button', {
+    /**
+     * The buttons follow the mode, because the two modes are asking different
+     * things. Reading offers a way out and a way in — close, or edit. Editing
+     * offers a way to commit and a way to back out without committing.
+     */
+    var footer = h('footer', {});
+    function paintFooter() {
+      clear(footer);
+
+      if (mode === 'view') {
+        footer.appendChild(h('button', { class: 'btn primary', text: t('close'), onclick: close }));
+        if (mayEdit) {
+          footer.appendChild(h('button', {
+            class: 'btn', text: '✎ ' + t('editTask'),
+            onclick: function () { mode = 'edit'; pane = 'detail'; paintPanes(); },
+          }));
+        }
+        if (task.dueDate) {
+          footer.appendChild(h('a', {
+            class: 'btn', target: '_blank', rel: 'noopener',
+            href: googleCalUrl(task), text: '📅 ' + t('addToCalendar'),
+          }));
+        }
+        return;
+      }
+
+      // Someone who may only move the status still gets a save button — it
+      // just saves less. Removing it entirely would leave them with no way to
+      // commit the one change they are allowed to make.
+      if (mayEdit || maySetStatus) {
+        footer.appendChild(h('button', {
+          class: 'btn primary',
+          text: isNew ? t('addTask') : (mayEdit ? t('saveTask') : t('saveStatus')),
+          onclick: save,
+        }));
+      }
+      footer.appendChild(h('button', {
+        class: 'btn', text: t('cancel'),
+        // Backing out of an edit returns to the task, not out of it entirely.
+        onclick: isNew ? close : function () { mode = 'view'; paintPanes(); },
+      }));
+      if (task && task.mayEdit) {
+        footer.appendChild(h('span', { class: 'grow' }));
+        footer.appendChild(h('button', {
           class: 'btn danger', text: t('deleteTask'),
           onclick: function () {
             if (!confirm(t('confirmDelete'))) return;
@@ -1043,16 +1291,16 @@
               .then(function (d) { S.tasks = d.tasks; close(); renderPage(); })
               .catch(function (err) { alert(errText(err.code)); });
           },
-        }) : null,
-      ]),
-    );
+        }));
+      }
+    }
+    modal.appendChild(footer);
 
-    detailPane.appendChild(buildDetailPane());
     paintPanes();
 
     veil.appendChild(modal);
     $('modal-root').appendChild(veil);
-    setTimeout(function () { if (mayEdit) titleInput.focus(); }, 30);
+    setTimeout(function () { if (isNew) titleInput.focus(); }, 30);
 
     function close() { veil.remove(); }
 
@@ -1747,13 +1995,58 @@
       return h('label', {}, [cb, t(pair[1])]);
     }));
 
-    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
-    var modal = h('div', { class: 'modal' }, [
-      h('header', {}, [
-        h('h2', { text: isNew ? t('newEvent') : event.title }),
-        h('button', { class: 'btn ghost sm', text: '\u2715', onclick: close }),
-      ]),
-      h('div', { class: 'body' }, [
+    /**
+     * An event read rather than filled in.
+     *
+     * Almost nobody opens an event to change it \u2014 they open it to find out
+     * when and where. So that is what this says, in the order it is asked,
+     * and the form stays behind a button for the handful of people who own it.
+     */
+    function buildEventView() {
+      /**
+       * A run of days is said as two dates; a single day with hours is said
+       * as one date and a time range. Both keep "in eleven days" at the end,
+       * where it finishes the sentence rather than interrupting it.
+       */
+      var when;
+      if (event.endsOn && event.endsOn !== event.startsOn) {
+        when = whenWording(event.startsOn, event.allDay ? null : event.startsAt,
+          fmtDate(event.endsOn, { day: 'numeric', month: 'long', year: 'numeric' }));
+      } else {
+        when = whenWording(event.startsOn, event.allDay ? null : event.startsAt,
+          event.allDay ? null : (event.endsAt || null));
+      }
+
+      var audience = (event.people || []).length || (event.departments || []).length
+        ? h('span', { class: 'selected' }, (event.people || []).map(function (u) {
+            return h('span', { class: 'chip who' }, [avatarNode(u, 'sm'), nameOf(u)]);
+          }).concat((event.departments || []).map(function (k) {
+            return h('span', { class: 'chip dept', text: deptLabel(k) });
+          })))
+        : vMuted(t('everyoneInFair'));
+
+      return h('div', { class: 'pane view-pane' }, [
+        h('div', { class: 'view-band' }, [
+          h('span', { class: 'vb-dot', style: 'background:' + colourHex(event.colour) }),
+          h('span', { class: 'vb-when', text: when }),
+          h('span', { class: 'grow' }),
+          event.allDay ? h('span', { class: 'vb-prio', text: t('allDay') }) : null,
+        ]),
+        event.description
+          ? h('p', { class: 'view-desc', text: event.description })
+          : h('p', { class: 'view-desc empty', text: t('noDescription') }),
+        h('div', { class: 'view-rows' }, [
+          vRow(t('place'), event.place ? h('span', { text: event.place }) : vMuted('\u2014')),
+          vRow(t('whoIsItFor'), audience),
+          vRow(t('createdBy'), h('span', { class: 'selected' },
+            [h('span', { class: 'chip who' }, [avatarNode(event.createdBy, 'sm'), nameOf(event.createdBy)])])),
+        ]),
+        !mayEdit ? h('div', { class: 'notice', text: t('eventViewOnly') }) : null,
+      ]);
+    }
+
+    function buildEventForm() {
+      return h('div', { class: 'pane' }, [
         h('div', { class: 'field' }, [h('label', { text: t('eventTitle') }), titleIn]),
         h('div', { class: 'field' }, [h('label', { text: t('description') }), descIn]),
         h('div', { class: 'two' }, [
@@ -1766,14 +2059,39 @@
         h('div', { class: 'field' }, [h('label', { text: t('whoIsItFor') }), whoBox]),
         h('div', { class: 'field' }, [h('label', { text: t('colour') }), swatches]),
         h('div', { class: 'field' }, [h('label', { text: t('remindWhen') }), notifyBox]),
-        event ? h('p', { class: 'hint', text: t('createdBy') + ': ' + nameOf(event.createdBy) }) : null,
-        (event && !mayEdit) ? h('div', { class: 'notice', text: t('eventViewOnly') }) : null,
-      ]),
-      h('footer', {}, [
-        mayEdit ? h('button', { class: 'btn primary', text: isNew ? t('addEvent') : t('save'), onclick: save }) : null,
-        h('button', { class: 'btn', text: mayEdit ? t('cancel') : t('close'), onclick: close }),
-        h('span', { class: 'grow' }),
-        (event && mayEdit) ? h('button', {
+      ]);
+    }
+
+    var mode = isNew ? 'edit' : 'view';
+    var bodyBox = h('div', { class: 'body' });
+    var footer = h('footer', {});
+
+    function paintEvent() {
+      clear(bodyBox);
+      bodyBox.appendChild(mode === 'view' ? buildEventView() : buildEventForm());
+      paintTimes();
+
+      clear(footer);
+      if (mode === 'view') {
+        footer.appendChild(h('button', { class: 'btn primary', text: t('close'), onclick: close }));
+        if (mayEdit) {
+          footer.appendChild(h('button', {
+            class: 'btn', text: '\u270e ' + t('editEvent'),
+            onclick: function () { mode = 'edit'; paintEvent(); },
+          }));
+        }
+        return;
+      }
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: isNew ? t('addEvent') : t('save'), onclick: save,
+      }));
+      footer.appendChild(h('button', {
+        class: 'btn', text: t('cancel'),
+        onclick: isNew ? close : function () { mode = 'view'; paintEvent(); },
+      }));
+      if (event) {
+        footer.appendChild(h('span', { class: 'grow' }));
+        footer.appendChild(h('button', {
           class: 'btn danger', text: t('deleteEvent'),
           onclick: function () {
             if (!confirm(t('confirmDeleteEvent'))) return;
@@ -1781,14 +2099,24 @@
               .then(function (d) { S.events = d.events; close(); renderPage(); })
               .catch(function (err) { alert(errText(err.code)); });
           },
-        }) : null,
+        }));
+      }
+    }
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
+    var modal = h('div', { class: 'modal' }, [
+      h('header', {}, [
+        h('h2', { text: isNew ? t('newEvent') : event.title }),
+        h('button', { class: 'btn ghost sm', text: '\u2715', onclick: close }),
       ]),
+      bodyBox,
+      footer,
     ]);
 
-    paintTimes();
+    paintEvent();
     veil.appendChild(modal);
     $('modal-root').appendChild(veil);
-    setTimeout(function () { if (mayEdit) titleIn.focus(); }, 30);
+    setTimeout(function () { if (isNew) titleIn.focus(); }, 30);
 
     function close() { veil.remove(); }
 
@@ -1939,7 +2267,7 @@
       var colour = colourHex(entry.event.colour);
       return h('button', {
         class: 'cal-chip event',
-        style: 'border-left-color:' + colour,
+        style: 'border-left-color:' + colour + ';--cc:' + colour,
         title: entry.event.title,
         onclick: function (e) { e.stopPropagation(); openEvent(entry.event); },
       }, [
@@ -1949,6 +2277,9 @@
     }
     return h('button', {
       class: 'cal-chip task s-' + entry.task.status,
+      // Same urgency ramp as the list, so a red day in the calendar and a red
+      // card in the list mean the same thing.
+      dataset: { urgency: urgencyOf(entry.task) },
       title: entry.task.title,
       onclick: function (e) { e.stopPropagation(); openTask(entry.task); },
     }, [

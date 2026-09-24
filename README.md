@@ -158,6 +158,30 @@ Sub-tasks work the same way: the owner breaks a task into parts and gives each p
 
 ---
 
+## Opening a task or an event
+
+Both open as something to **read**, not a form. The top band carries the two facts people came for — how it stands, and when it is due, said the way a person would say it ("20 พฤศจิกายน 2569 · อีก 11 วัน", "เลยกำหนด"). Underneath is the description, then who is on it, which departments it concerns, how many sub-tasks are done and how much work has been handed in. The sub-task and work counts are links: pressing one takes you to that tab.
+
+**แก้ไข turns the same pop-up into the form**, for the people allowed to change it — the person who created it, and Admin or Co-Admin. ยกเลิก takes you back to reading rather than closing the whole thing, so backing out of an edit does not lose your place.
+
+Anyone tagged in a task can move its **status straight from the read view**, in one tap, without going near the form. That is the change people make most often, so it is the one that costs the least. What they may not change is still simply absent — no greyed-out fields to puzzle over.
+
+A new task or event skips the read view entirely and opens as the form, because there is nothing to read yet.
+
+---
+
+## Colour
+
+Two different things are coloured, on purpose, and they never mean the same thing.
+
+**A task is coloured by how urgent it is** — you do not choose this, it follows the deadline. The stripe down the left edge runs red for past due, orange for due today, amber for close, green when there is still time, and no colour at all when nothing is pressing. Priority does not get a colour of its own; it lifts a task **up** the ramp, because "important and soon" is one feeling rather than two. A `ด่วนที่สุด` task due in two days sits with the things due today. Finished work drops off the scale completely and goes grey, whatever its deadline once was.
+
+The list is ordered the same way, most urgent at the top: overdue, then due today, then soon, then everything with time left. Within one band the earlier deadline comes first, then the louder priority. The calendar uses the same ramp, so a red day there and a red card in the list mean the same thing.
+
+**An event is coloured by whoever made it** — the colour picked in the form, carried through the upcoming strip, the calendar and the pop-up. A red task is late; a red event is just red.
+
+---
+
 ## Importing from a spreadsheet
 
 The "นำเข้าจากไฟล์" button takes a pasted CSV, a Google Sheet link, or a `.csv` file, and it now imports **two different things** — tasks or events. The switch at the top of the dialog picks which, and the column list underneath changes with it. Switching throws away whatever you had previewed, because the same column name means different things on the two sides.

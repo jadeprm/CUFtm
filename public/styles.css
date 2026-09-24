@@ -25,6 +25,15 @@
   --done-soft: #e3f3ec;
   --danger: #a32219;
   --danger-soft: #fdeceb;
+  /* How urgent a task is, as a ramp: past due, due now, due soon, time yet. */
+  --u-late: #b02a1f;
+  --u-late-soft: #fdeceb;
+  --u-now: #c2540a;
+  --u-now-soft: #fdf0e4;
+  --u-soon: #8a6a00;
+  --u-soon-soft: #fdf6dd;
+  --u-ahead: #1c7048;
+  --u-ahead-soft: #e6f4ec;
   --shadow-1: 0 1px 2px rgba(36,24,32,.06);
   --shadow-2: 0 1px 2px rgba(36,24,32,.06), 0 10px 30px -18px rgba(36,24,32,.35);
   --shadow-3: 0 20px 60px -20px rgba(36,24,32,.4);
@@ -51,11 +60,59 @@
     --done-soft: #12352a;
     --danger: #ff8a7a;
     --danger-soft: #35201c;
+    --u-late: #ff8a7a;
+    --u-late-soft: #3a1f1b;
+    --u-now: #ffb07a;
+    --u-now-soft: #3a2718;
+    --u-soon: #f0c05a;
+    --u-soon-soft: #372c14;
+    --u-ahead: #6fd0ab;
+    --u-ahead-soft: #16342a;
     --shadow-1: 0 1px 2px rgba(0,0,0,.5);
     --shadow-2: 0 1px 2px rgba(0,0,0,.5), 0 10px 30px -18px rgba(0,0,0,.9);
     --shadow-3: 0 20px 60px -20px rgba(0,0,0,.9);
   }
 }
+/**
+ * The same palette when dark is CHOSEN rather than inherited.
+ *
+ * The block above only applies when the operating system is already dark, so
+ * without this the moon button did nothing for anyone on a light machine.
+ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  
+  --bg: #14100f;
+  --surface: #1d1719;
+  --surface-2: #261e22;
+  --surface-3: #31262c;
+  --ink: #f2e8ed;
+  --ink-soft: #bda9b4;
+  --ink-faint: #8d7883;
+  --line: #382c32;
+  --line-soft: #291f25;
+  --accent: #ff7fb0;
+  --accent-ink: #2a0c1a;
+  --accent-soft: #3a1b2a;
+  --doing: #f0c05a;
+  --doing-soft: #382b12;
+  --done: #6fd0ab;
+  --done-soft: #12352a;
+  --danger: #ff8a7a;
+  --danger-soft: #35201c;
+  --u-late: #ff8a7a;
+  --u-late-soft: #3a1f1b;
+  --u-now: #ffb07a;
+  --u-now-soft: #3a2718;
+  --u-soon: #f0c05a;
+  --u-soon-soft: #372c14;
+  --u-ahead: #6fd0ab;
+  --u-ahead-soft: #16342a;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.5);
+  --shadow-2: 0 1px 2px rgba(0,0,0,.5), 0 10px 30px -18px rgba(0,0,0,.9);
+  --shadow-3: 0 20px 60px -20px rgba(0,0,0,.9);
+}
+
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
@@ -730,3 +787,109 @@ ul.events.past { opacity: .6; }
 li.task.pending, .event-card.pending { opacity: .6; }
 /* A count of sub-tasks or links found in an imported row. */
 .imp-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+
+/* ---------------------------------------------------------------------------
+   The read view.
+
+   A task or event opens as something to read: a band across the top carrying
+   the two facts people came for, the description in ordinary prose, then
+   labelled lines. Editing is a button away, so nothing here has to look like
+   a form — no boxes, no disabled controls pretending to be fields.
+   --------------------------------------------------------------------------- */
+.view-pane { display: flex; flex-direction: column; gap: 14px; }
+
+.view-band {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+}
+.vb-status, .vb-prio {
+  font-size: 12.5px; font-weight: 600; padding: 3px 10px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+}
+.vb-status.st-doing    { border-color: var(--doing); background: var(--doing-soft); color: var(--doing); }
+.vb-status.st-review   { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.vb-status.st-feedback { border-color: var(--done); background: var(--done-soft); color: var(--done); }
+.vb-status.st-done     { border-color: var(--done); background: var(--done); color: #fff; }
+.vb-prio.prio-high    { border-color: var(--doing); color: var(--doing); background: var(--doing-soft); }
+.vb-prio.prio-highest { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.vb-due, .vb-when { font-size: 13px; color: var(--ink-soft); font-weight: 500; }
+.vb-dot { width: 12px; height: 12px; border-radius: 4px; flex: none; }
+
+.view-desc { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+.view-desc.empty { color: var(--ink-faint); font-style: italic; }
+
+.view-rows { display: flex; flex-direction: column; }
+.vrow {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 9px 0; border-top: 1px solid var(--line-soft);
+}
+.vrow:last-child { border-bottom: 1px solid var(--line-soft); }
+.vk { flex: none; width: 8.5rem; font-size: 12.5px; color: var(--ink-soft); padding-top: 2px; }
+.vv { flex: 1; min-width: 0; font-size: 13.5px; }
+.vv .selected { display: flex; flex-wrap: wrap; gap: 5px; }
+.vmuted { color: var(--ink-faint); }
+
+/* A line that takes you to the tab it is summarising. */
+.vlink {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; color: var(--accent); text-align: left;
+}
+.vlink:hover { text-decoration: underline; }
+.vbar {
+  display: inline-block; width: 74px; height: 6px; flex: none;
+  border-radius: 999px; background: var(--surface-3); overflow: hidden;
+}
+.vbar i { display: block; height: 100%; background: var(--done); }
+
+.view-quick { padding-top: 2px; }
+
+@media (max-width: 560px) {
+  .vrow { flex-direction: column; gap: 4px; }
+  .vk { width: auto; }
+}
+/* A link styled as a button should not also look like a link. */
+a.btn { text-decoration: none; }
+
+/* ---------------------------------------------------------------------------
+   Urgency, as colour.
+
+   A stripe down the left edge and a faint wash behind it, on a ramp anyone
+   reads without a key: red is past due, orange is today, amber is close,
+   green means there is time yet, and no colour at all means nothing is
+   pressing. Priority moves a task up the ramp rather than adding a second
+   colour, because "important AND soon" is one feeling, not two.
+
+   Deliberately a stripe rather than a filled card: a page of filled cards is
+   a page where nothing stands out, which is the opposite of the point.
+   --------------------------------------------------------------------------- */
+li.task { border-left: 4px solid var(--line); }
+li.task[data-urgency="late"]  { border-left-color: var(--u-late);  background: var(--u-late-soft); }
+li.task[data-urgency="now"]   { border-left-color: var(--u-now);   background: var(--u-now-soft); }
+li.task[data-urgency="soon"]  { border-left-color: var(--u-soon);  background: var(--u-soon-soft); }
+li.task[data-urgency="ahead"] { border-left-color: var(--u-ahead); }
+li.task[data-urgency="none"]  { border-left-color: var(--line); }
+/* Finished work keeps its grey, whatever its deadline once was. */
+li.task[data-urgency="done"]  { border-left-color: var(--line); background: var(--surface-2); }
+
+/* The same ramp in the read view's band and on the calendar. */
+.vb-due.u-late  { color: var(--u-late); font-weight: 600; }
+.vb-due.u-now   { color: var(--u-now); font-weight: 600; }
+.vb-due.u-soon  { color: var(--u-soon); font-weight: 600; }
+
+.cal-chip.task[data-urgency="late"]  { border-left-color: var(--u-late); }
+.cal-chip.task[data-urgency="now"]   { border-left-color: var(--u-now); }
+.cal-chip.task[data-urgency="soon"]  { border-left-color: var(--u-soon); }
+.cal-chip.task[data-urgency="ahead"] { border-left-color: var(--u-ahead); }
+
+/* ---------------------------------------------------------------------------
+   An event wears the colour it was given.
+
+   Tasks are coloured by urgency, which the person does not choose; events are
+   coloured by the person who made them. Keeping the two systems visibly
+   different is the point — a red task is late, a red event is just red.
+   --------------------------------------------------------------------------- */
+.event-card { background: color-mix(in srgb, var(--c, var(--accent)) 9%, var(--surface)); }
+.event-card .ec-where { color: var(--ink-soft); }
+.cal-chip.event { background: color-mix(in srgb, var(--cc, var(--accent)) 12%, var(--surface)); }
