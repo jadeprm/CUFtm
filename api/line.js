@@ -5,7 +5,7 @@ import { assembled } from './tasks.js';
 import { assembledEvents, canSeeEvent } from './events.js';
 import {
   lineConfigured, verifySignature, reply, text, newLinkCode,
-  installRichMenu, removeRichMenu,
+  installRichMenu, removeRichMenu, taskLink, pageLink,
 } from '../lib/line.js';
 import { RICH_MENU_PNG_BASE64 } from '../lib/richmenu-image.js';
 import {
@@ -416,6 +416,8 @@ async function listTasks(sql, me, lineUserId, today, opts) {
     events.slice(0, 5).forEach((e, i) => lines.push(sayEvent(e, shown.length + i + 1, today)));
   }
   lines.push('', 'พิมพ์ "เสร็จ <เลข>" เพื่อปิดงาน');
+  const web = pageLink('work');
+  if (web) lines.push('', 'ดูทั้งหมดและแก้รายละเอียดบนเว็บ', web);
 
   await remember(sql, lineUserId, [
     ...shown.map((t) => ({ kind: 'task', id: t.id })),
@@ -654,7 +656,7 @@ async function step(sql, me, lineUserId, state, body) {
 
   if (result.cancel) {
     await clearFlow(sql, lineUserId);
-    return text('ยกเลิกแล้วค่ะ ไม่ได้บันทึกอะไร\\nกดปุ่มด้านล่างจอเมื่อต้องการเริ่มใหม่', []);
+    return text('ยกเลิกแล้วค่ะ ไม่ได้บันทึกอะไร\nกดปุ่มด้านล่างจอเมื่อต้องการเริ่มใหม่', []);
   }
 
   if (result.restart) {
@@ -669,7 +671,7 @@ async function step(sql, me, lineUserId, state, body) {
     const draft = result.draft || state.draft;
     await saveFlow(sql, lineUserId, 'add', state.step, draft);
     const q = ask(state.step, draft, context);
-    return text((result.note ? `${result.note}\\n\\n` : '') + q.text, q.labels);
+    return text((result.note ? `${result.note}\n\n` : '') + q.text, q.labels);
   }
 
   const draft = result.draft;
@@ -730,6 +732,7 @@ async function saveDraft(sql, me, lineUserId, draft, people) {
     const p = people.find((x) => x.username === u);
     return p ? (p.nickname || p.display_name || u) : u;
   });
+  const link = taskLink(id);
   return text([
     '✓ บันทึกงานแล้วค่ะ',
     '',
@@ -737,7 +740,10 @@ async function saveDraft(sql, me, lineUserId, draft, people) {
     draft.dueDate ? `กำหนดส่ง ${sayDate(draft.dueDate)}${draft.dueTime ? ` ${draft.dueTime} น.` : ''}` : 'ไม่มีกำหนดส่ง',
     `แจ้งเตือน ${names.length} คน`,
     who.length ? `ผู้รับผิดชอบ: ${who.join(', ')}` : '',
-  ].filter(Boolean).join('\\n'), ['เพิ่มงานอีก', 'ตรวจสอบงาน', 'จบ']);
+    link ? '' : null,
+    link ? 'เพิ่มงานย่อยหรือแนบไฟล์ได้ที่' : null,
+    link,
+  ].filter((x) => x !== null && x !== '').join('\n'), ['เพิ่มงานอีก', 'ตรวจสอบงาน', 'จบ']);
 }
 
 /**
@@ -765,7 +771,7 @@ async function startManage(sql, me, lineUserId, today) {
 
   await remember(sql, lineUserId, mine.map((t) => ({ kind: 'task', id: t.id })));
   await saveFlow(sql, lineUserId, 'manage', 'pick', {});
-  return text(lines.join('\\n'), [...mine.map((_, i) => String(i + 1)), 'จบ']);
+  return text(lines.join('\n'), [...mine.map((_, i) => String(i + 1)), 'จบ']);
 }
 
 async function manageStep(sql, me, lineUserId, state, body) {
@@ -793,12 +799,23 @@ async function manageStep(sql, me, lineUserId, state, body) {
     if (canSetStatus(me, task)) labels.push('เสร็จแล้ว', 'กำลังทำ', 'รอตรวจ');
     if (canDeleteTask(me, task)) labels.push('ลบงานนี้');
     labels.push('เลือกงานอื่น', 'จบ');
+    /**
+     * The chat is good at status and bad at everything else. Rather than
+     * building a clumsy half-version of sub-tasks and attachments here, the
+     * reply says what the website does better and links straight to this task.
+     */
+    const link = taskLink(task.id);
     return text([
       task.title,
       `กำหนดส่ง ${sayDate(task.dueDate, today)}${task.dueTime ? ` ${task.dueTime} น.` : ''}`,
+      (task.parts || []).length ? `งานย่อย ${task.parts.filter((p) => p.done).length}/${task.parts.length}` : '',
+      (task.links || []).length ? `ไฟล์งาน ${task.links.length}` : '',
       '',
       labels.length > 2 ? 'ต้องการทำอะไรกับงานนี้คะ' : 'ไม่มีสิทธิ์แก้งานนี้ค่ะ',
-    ].join('\\n'), labels);
+      link ? '' : null,
+      link ? 'แก้รายละเอียด งานย่อย หรือแนบไฟล์ ทำบนเว็บได้ที่' : null,
+      link,
+    ].filter((x) => x !== null && x !== '').join('\n'), labels);
   }
 
   // state.step === 'act'
@@ -815,13 +832,15 @@ async function manageStep(sql, me, lineUserId, state, body) {
     if (!canSetStatus(me, task)) return text('ไม่มีสิทธิ์เปลี่ยนสถานะงานนี้ค่ะ', ['จบ']);
     await sql`UPDATE tasks SET status = ${statusFor}, updated_at = now() WHERE id = ${task.id}`;
     await clearFlow(sql, lineUserId);
-    return text(`${task.title}\\n→ ${typed}`, ['จัดการงาน', 'ตรวจสอบงาน', 'จบ']);
+    const done = taskLink(task.id);
+    return text([`${task.title}`, `→ ${typed}`, done ? '' : null, done].filter(Boolean).join('\n'),
+      ['จัดการงาน', 'ตรวจสอบงาน', 'จบ']);
   }
 
   if (typed === 'ลบงานนี้') {
     if (!canDeleteTask(me, task)) return text('ไม่มีสิทธิ์ลบงานนี้ค่ะ', ['จบ']);
     await saveFlow(sql, lineUserId, 'manage', 'confirmDelete', state.draft);
-    return text(`จะลบงาน "${task.title}" ใช่ไหมคะ\\nลบแล้วกู้คืนไม่ได้`, ['ยืนยันลบ', 'ไม่ลบ', 'จบ']);
+    return text(`จะลบงาน "${task.title}" ใช่ไหมคะ\nลบแล้วกู้คืนไม่ได้`, ['ยืนยันลบ', 'ไม่ลบ', 'จบ']);
   }
 
   if (state.step === 'confirmDelete') {

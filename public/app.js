@@ -22,6 +22,7 @@
     scope: 'mine',      // 'mine' | 'all' — which half of the one work page
     filter: 'open',
     who: '',
+    openTaskId: null,    // a task a link asked for, opened once the data lands
     dept: '',            // teamspace filter; '' = everything I can see
     unit: '',            // section-within-a-department filter
     prio: '',            // priority filter
@@ -605,7 +606,9 @@
     });
   }
 
-  window.addEventListener('hashchange', function () { routeFromHash(); renderShell(); renderPage(); });
+  window.addEventListener('hashchange', function () {
+    routeFromHash(); renderShell(); renderPage(); flushPendingTask();
+  });
   function routeFromHash() {
     var raw = (location.hash || '#/mine').replace('#/', '');
 
@@ -621,6 +624,28 @@
       return;
     }
 
+    /**
+     * #/t/<id> opens one task directly, which is what a link from LINE points
+     * at. Like a notification, it opens the pop-up over the work page rather
+     * than being a page of its own — and it waits for the task list to arrive,
+     * because a link followed from a phone usually lands before the data does.
+     */
+    if (raw.indexOf('t/') === 0) {
+      /**
+       * Remembered rather than opened on the spot.
+       *
+       * This runs once before the first load has finished, when the task list
+       * is still empty — opening here would always fail. So the id is put
+       * aside and whoever finishes loading opens it, which works the same
+       * whether the link was followed cold or pasted into an open tab.
+       */
+      S.openTaskId = decodeURIComponent(raw.slice(2));
+      location.replace('#/work');
+      S.scope = 'all';
+      S.page = 'work';
+      return;
+    }
+
     var page = raw;
 
     // The old addresses still work: they pick the scope and land on the one
@@ -632,6 +657,36 @@
     if (['work', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     S.page = page;
+  }
+
+  /**
+   * Opens a task as soon as it exists, or gives up and says so.
+   *
+   * A link from a chat is followed cold: the page is still signing in and the
+   * task list is still on its way. Waiting a moment beats showing "not found"
+   * for a task that is merely half a second late.
+   */
+  /**
+   * Opens the task a link asked for.
+   *
+   * The list held here can be older than the link. Someone adds a task on
+   * their phone through LINE, then opens the link on a laptop tab that has
+   * been sitting open since this morning — the task is real, but this page has
+   * never heard of it. So a miss refetches once before giving up, and only a
+   * task that is genuinely gone or genuinely not theirs gets the message.
+   */
+  function flushPendingTask(refetched) {
+    var wanted = S.openTaskId;
+    if (!wanted) return;
+
+    var found = S.tasks.filter(function (x) { return x.id === wanted; })[0];
+    if (found) { S.openTaskId = null; openTask(found); return; }
+
+    if (refetched) { S.openTaskId = null; alert(t('taskNotFound')); return; }
+
+    api('/api/tasks')
+      .then(function (data) { S.tasks = data.tasks; renderPage(); flushPendingTask(true); })
+      .catch(function () { S.openTaskId = null; alert(t('taskNotFound')); });
   }
 
   /* ======================================================================
@@ -3771,6 +3826,8 @@
       routeFromHash();
       renderShell();
       renderPage();
+      // The list is loaded by now, so a link followed from LINE can open.
+      flushPendingTask();
       refreshSubscription();
       showPending();
     }).catch(function (err) {

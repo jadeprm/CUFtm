@@ -67,6 +67,7 @@ globalThis.fetch = async (url, init) => {
 // LINE, stubbed: real credentials so the signature code runs for real, but
 // every call to api.line.me is caught below and recorded instead of sent.
 process.env.LINE_CHANNEL_SECRET = 'test_channel_secret_0123456789';
+process.env.SITE_URL = process.env.SITE_URL || 'https://fair.test';
 process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test_access_token';
 process.env.LINE_DIGEST_HOUR = String(new Date().getUTCHours() + 7 >= 24
   ? new Date().getUTCHours() + 7 - 24 : new Date().getUTCHours() + 7);
@@ -2021,6 +2022,106 @@ ok('the third opens managing',
   lastReply().includes('เลือกงานที่ต้องการแก้') || lastReply().includes('ไม่มีงานที่ต้องจัดการ'),
   lastReply().split('\n')[0]);
 await lineApi(lineHook(sayToBot('Uwiz', 'จบ')));
+
+head('39. LINE: messages are readable, not escaped source code');
+
+/**
+ * Every check above asks "does the reply contain this phrase", which is true
+ * whether the line breaks are real or the two characters \n printed literally.
+ * A bug that made every multi-line message unreadable therefore passed the
+ * entire suite. This is the check that fails when that happens.
+ */
+lineSent.length = 0;
+const toExercise = [
+  'ช่วยเหลือ', 'งาน', 'วันนี้', 'สัปดาห์นี้', 'เลยกำหนด', 'กิจกรรม',
+  'ตรวจสอบงาน', 'จัดการงาน', '1', 'เสร็จแล้ว',
+  'เพิ่มงาน', 'งานตรวจการขึ้นบรรทัด', 'ข้าม', 'ไม่ใช่วันที่', 'พรุ่งนี้',
+  '09:00', 'ฉันเอง', '✓ เลือกเสร็จแล้ว', 'ไม่ต้องแท็กฝ่าย',
+  'ด่วน', 'กำลังทำ', 'เฉพาะวันครบกำหนด', '✓ บันทึกงาน',
+  'จัดการงาน', '1', 'ลบงานนี้', 'ไม่ลบ', 'จบ',
+];
+for (const line of toExercise) await lineApi(lineHook(sayToBot('Uwiz', line)));
+
+const escaped = lineSent.filter((m) => (m.text || '').includes('\\n'));
+ok(`no reply prints a literal \\n (checked ${lineSent.length} messages)`,
+  escaped.length === 0,
+  escaped.length ? escaped[0].text.slice(0, 90) : '');
+
+const escapedLabels = lineSent.filter((m) => (m.labels || []).some((l) => l.includes('\\n')));
+ok('no button label does either', escapedLabels.length === 0,
+  escapedLabels.length ? JSON.stringify(escapedLabels[0].labels) : '');
+
+// And the digest, which is built somewhere else entirely.
+await sql`DELETE FROM line_digests_sent`;
+await sql`UPDATE line_links SET digest = true WHERE line_user_id = 'Uwiz'`;
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานตรวจสรุป', dueDate: todayIsoForTest(), assignees: ['Jade_Pres'], notify: [] },
+});
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+const digestText = lineSent.find((m) => m.kind === 'push')?.text || '';
+ok('the daily digest has real line breaks too',
+  digestText.length > 0 && !digestText.includes('\\n') && digestText.includes('\n'),
+  digestText.slice(0, 70).replace(/\n/g, ' ⏎ '));
+
+head('40. LINE: links out to the website for what chat does badly');
+
+const SITE = process.env.SITE_URL;
+lineSent.length = 0;
+
+// A list of work offers the way through to the full page.
+await lineApi(lineHook(sayToBot('Uwiz', 'งาน')));
+ok('a task list links to the website', lastReply().includes(`${SITE}/#/work`),
+  lastReply().split('\n').slice(-1)[0]);
+
+// Picking a task in the manage menu links to THAT task, and names what the
+// website does that the chat cannot.
+await lineApi(lineHook(sayToBot('Uwiz', 'จัดการงาน')));
+await lineApi(lineHook(sayToBot('Uwiz', '1')));
+const managed = lastReply();
+ok('picking a task links straight to that task', /\/#\/t\/t_/.test(managed),
+  managed.split('\n').slice(-1)[0]);
+ok('...and says what the website is for',
+  managed.includes('งานย่อย') || managed.includes('แนบไฟล์'),
+  managed.replace(/\n/g, ' | ').slice(0, 140));
+await lineApi(lineHook(sayToBot('Uwiz', 'จบ')));
+
+// A task made through the wizard links to itself when saved.
+const walk = ['เพิ่มงาน', 'งานที่มีลิงก์', 'ข้าม', 'พรุ่งนี้', 'ข้าม', 'ฉันเอง',
+              '✓ เลือกเสร็จแล้ว', 'ไม่ต้องแท็กฝ่าย', 'ปกติ', 'ยังไม่เริ่ม',
+              'เฉพาะวันครบกำหนด', '✓ บันทึกงาน'];
+for (const w of walk) await lineApi(lineHook(sayToBot('Uwiz', w)));
+const saved = lastReply();
+ok('a newly saved task links to itself', /\/#\/t\/t_/.test(saved), saved.split('\n').slice(-1)[0]);
+
+// The link really points at the task that was just made.
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+const linked = r.data.tasks.find((t) => t.title === 'งานที่มีลิงก์');
+ok('...at the right id', saved.includes(`/#/t/${linked.id}`), linked?.id);
+
+// And the digest carries one too.
+await sql`DELETE FROM line_digests_sent`;
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+const dg = lineSent.find((m) => m.kind === 'push')?.text || '';
+ok('the daily digest links to the website', dg.includes(`${SITE}/#/work`), dg.split('\n').slice(-3)[0]);
+
+/**
+ * With no domain configured a link cannot be built, and the bot must simply
+ * leave it out — printing "null" or a bare "/#/work" into a chat would be
+ * worse than saying nothing at all.
+ */
+const keep = process.env.SITE_URL;
+delete process.env.SITE_URL;
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Uwiz', 'งาน')));
+const bare = lastReply();
+ok('with no site address the link is omitted entirely',
+  !bare.includes('null') && !bare.includes('undefined') && !/#\/work/.test(bare),
+  bare.split('\n').slice(-2).join(' | '));
+ok('...and the list itself still works', bare.includes('งานของฉัน') || bare.includes('ไม่มีรายการ'));
+process.env.SITE_URL = keep;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

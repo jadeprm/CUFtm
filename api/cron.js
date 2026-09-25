@@ -3,7 +3,7 @@ import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
 import { assembledEvents, audienceOf } from './events.js';
 import { withNode } from '../lib/http.js';
-import { lineConfigured, push, text as lineText } from '../lib/line.js';
+import { lineConfigured, push, text as lineText, pageLink } from '../lib/line.js';
 import { sayTask, sayDate, MENU as LINE_MENU } from '../lib/linecmd.js';
 
 /**
@@ -379,6 +379,8 @@ function digestText(tasks, events, today) {
     lines.push('');
   }
 
+  const web = pageLink('work');
+  if (web) lines.push('เปิดบนเว็บ: ' + web, '');
   lines.push('พิมพ์ "งาน" เพื่อดูทั้งหมด · "ปิดแจ้งเตือน" เพื่อหยุดสรุปนี้');
   return lines.join('\n');
 }

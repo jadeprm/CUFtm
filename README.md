@@ -250,6 +250,16 @@ Creating: `เพิ่มงาน ติดต่อสถานที่ 20/1
 
 Deleting always asks first, because a typo in a chat cannot be taken back.
 
+### Links back to the website
+
+A chat is good at "mark it done" and bad at sub-tasks, attachments and long descriptions, so rather than building clumsy half-versions of those in LINE, the bot links to the page that already does them properly.
+
+Every list of work ends with a link to the work page. Picking a task in จัดการงาน links **straight to that task** — the link opens the site and pops that task open, in read mode, over the work page. A newly saved task links to itself so sub-tasks or files can be added immediately. The daily digest carries a link too.
+
+The address comes from Vercel automatically. Set `SITE_URL` only if you move to a custom domain. If no address is known, the links are left out entirely rather than printing something broken.
+
+One thing this had to survive: a link opened on a laptop tab that has been sitting open all day, for a task added on a phone ten minutes ago. The page has never heard of that task, so a miss refetches the list once before saying anything — only a task that is genuinely gone, or genuinely not yours to see, gets "ไม่พบงานนี้".
+
 ### What the bot will not do
 
 It obeys exactly the same permission rules as the website, checked on the server, not in the interface. A task somebody cannot see never appears in their list; a task they do not own cannot be deleted by them; filing into a department they have no access to is refused. Being tagged in a task is enough to move its status, and nothing more — the same boundary as the browser.
