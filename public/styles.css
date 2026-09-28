@@ -983,3 +983,163 @@ li.task[data-urgency="done"]  { border-left-color: var(--line); background: var(
   border: 1px dashed var(--line); border-radius: 10px; background: #fff;
 }
 .modal.wide { width: min(58rem, 100%); }
+
+/* ---------------------------------------------------------------------------
+   Phones.
+
+   Most of this app is used walking between buildings, on a phone, in one hand
+   — so these are not cosmetic adjustments. Three things were actually broken
+   at 390px, and each one made a real task impossible rather than ugly:
+
+   the notification panel hung a third of its width off the left edge, so the
+   newest notifications could not be read at all; the status tabs were wider
+   than the screen, which made the WHOLE PAGE scroll sideways and pushed the
+   task cards half out of view; and several controls were smaller than a
+   fingertip, which is about 44px.
+   --------------------------------------------------------------------------- */
+@media (max-width: 560px) {
+  /**
+   * The bell panel, anchored to the screen rather than to the bell.
+   *
+   * It was positioned from the bell's right edge, which on a narrow screen
+   * put its left edge past zero — off the display. Pinning it to both sides
+   * of the screen means it is always fully visible, whatever it is hanging
+   * from, and it gets the full width to show a notification in.
+   */
+  .pop {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    top: 56px;
+    width: auto;
+    max-height: calc(100vh - 72px);
+    display: flex;
+    flex-direction: column;
+  }
+  .pop .items { max-height: none; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .pop .item { padding: 13px 14px; }
+  .pop .item b { font-size: 14.5px; }
+  .pop .item span { font-size: 13px; }
+
+  /**
+   * The status tabs scroll themselves instead of taking the page with them.
+   *
+   * Six tabs with counts do not fit across a phone and never will, so the
+   * strip becomes a sideways-scrolling row of its own — the page stays put,
+   * which is what stops the task list sliding off the screen.
+   */
+  .seg {
+    display: flex;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .seg::-webkit-scrollbar { display: none; }
+  .seg button { flex: 0 0 auto; padding: 9px 12px; font-size: 14px; }
+
+  /* Nothing may make the page itself scroll sideways. */
+  html, body { overflow-x: hidden; }
+  main { padding: 16px 14px 6rem; }
+
+  /* A fingertip is about 44px; these were 23. */
+  .lang-toggle button { min-height: 36px; min-width: 38px; }
+  #tabs a { padding: 10px 12px; }
+  .filters select { min-height: 40px; }
+  .btn.sm { min-height: 34px; }
+
+  /* A dialog on a phone is the screen, not a box floating in it. */
+  .veil .modal, .modal.wide {
+    width: 100%;
+    max-width: 100%;
+    max-height: 100vh;
+    border-radius: 14px 14px 0 0;
+  }
+  .veil { place-items: end center; padding: 0; }
+  .veil .modal footer { position: sticky; bottom: 0; background: var(--surface); }
+}
+
+/* ---------------------------------------------------------------------------
+   The profile menu.
+
+   Everything about "me" — the profile page, the theme, the language, signing
+   out — hangs off the face in the top corner instead of taking a tab and three
+   little switches across the top bar. On a phone that is the difference
+   between six tabs and three.
+   --------------------------------------------------------------------------- */
+button.avatar { border: none; padding: 0; cursor: pointer; font: inherit; }
+.pop.menu { width: min(16rem, 92vw); }
+.pop.menu header b { font-size: 14px; }
+.pop.menu .items { max-height: none; }
+.pop.menu .item {
+  display: block; width: 100%; text-align: start; background: none; border: none;
+  font: inherit; color: var(--ink); padding: 12px 14px; cursor: pointer;
+  text-decoration: none; border-bottom: 1px solid var(--line-soft);
+}
+.pop.menu .item:last-child { border-bottom: none; }
+.pop.menu .item:hover { background: var(--surface-2); }
+.pop.menu .item.danger { color: var(--danger); }
+
+@media (max-width: 720px) {
+  /* The switches live in the profile menu on a narrow screen; two copies of
+     the same control is how a top bar runs out of room. */
+  .topbar-right > .lang-toggle { display: none; }
+}
+
+/* A face people tap has to be tappable: 26px was smaller than a fingertip. */
+@media (max-width: 720px) {
+  .avatar, button.avatar { width: 38px; height: 38px; font-size: 13px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Navigation: across the top on a computer, along the bottom on a phone.
+
+   The top bar laid its tabs out in a row that had nowhere to go at 390px, so
+   they stacked into a column half a screen tall — the app opened showing its
+   own menu instead of anybody's work. Along the bottom is where a thumb
+   reaches and where every phone app puts this.
+   --------------------------------------------------------------------------- */
+#tabs .ti, #tabs .ts { display: none; }
+
+@media (max-width: 720px) {
+  #tabs {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 40;
+    display: flex;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    /* Clear of the iPhone's home indicator, which otherwise sits on top of
+       whichever tab is in the middle. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 -2px 12px rgba(20, 12, 16, .06);
+  }
+  #tabs a {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 2px 7px;
+    border-radius: 0;
+    background: none;
+    font-size: 11px;
+    line-height: 1.25;
+  }
+  #tabs a.on { background: none; color: var(--accent); }
+  #tabs .ti { display: block; font-size: 17px; line-height: 1; }
+  #tabs .tl { display: none; }
+  #tabs .ts {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The top bar keeps only what identifies the app and what interrupts you. */
+  .topbar-in { gap: 8px; }
+  .brand-sub, #brand-sub { display: none; }
+  main { padding-bottom: 5.5rem; }
+}

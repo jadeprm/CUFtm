@@ -82,6 +82,59 @@ async function handler(request) {
     });
   }
 
+  /**
+   * Why notifications are or are not arriving.
+   *
+   * Built because "notifications don't work" was impossible to answer from
+   * inside the app. Three different failures look identical from a phone:
+   * nothing is calling the hourly endpoint, nothing is due, or nobody has
+   * switched notifications on. This says which.
+   */
+  if (request.method === 'GET' && action === 'health') {
+    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+
+    const [lastCron] = await sql`SELECT value FROM meta WHERE key = 'last_cron'`;
+    const [{ subs }] = await sql`SELECT count(*)::int AS subs FROM push_subscriptions`;
+    const [{ people }] = await sql`
+      SELECT count(DISTINCT username)::int AS people FROM push_subscriptions`;
+    const [{ lines }] = await sql`SELECT count(*)::int AS lines FROM line_links`;
+    const [{ failing }] = await sql`
+      SELECT count(*)::int AS failing FROM push_subscriptions WHERE last_error IS NOT NULL`;
+
+    /**
+     * What the next run would actually send. A list of deadlines with nothing
+     * in the reminder window is the most common answer of all, and the least
+     * obvious one.
+     */
+    const soon = await sql`
+      SELECT t.id, t.title, t.due_date,
+             (t.due_date - (now() AT TIME ZONE 'Asia/Bangkok')::date) AS days,
+             (SELECT count(*)::int FROM task_people p WHERE p.task_id = t.id) AS people
+      FROM tasks t
+      WHERE t.due_date IS NOT NULL AND t.status <> 'done'
+      ORDER BY t.due_date
+      LIMIT 40`;
+
+    const due = soon.map((row) => {
+      const days = Number(row.days);
+      const kind = days === 7 ? '7d' : days === 3 ? '3d' : days === 1 ? '24h'
+        : days === 0 ? 'due' : days < 0 ? 'overdue' : null;
+      return { id: row.id, title: row.title, days, people: row.people, remindsToday: kind };
+    });
+
+    return json({
+      lastCron: lastCron?.value || null,
+      cronSecured: Boolean(process.env.CRON_SECRET),
+      pushSubscriptions: subs,
+      pushPeople: people,
+      pushFailing: failing,
+      lineConfigured: Boolean(process.env.LINE_CHANNEL_ACCESS_TOKEN && process.env.LINE_CHANNEL_SECRET),
+      lineLinked: lines,
+      dueSoon: due,
+      remindingToday: due.filter((d) => d.remindsToday).length,
+    });
+  }
+
   // ---- my own profile ----------------------------------------------------
   if (request.method === 'PATCH' && action === 'me') {
     const body = await request.json().catch(() => ({}));

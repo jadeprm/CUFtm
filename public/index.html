@@ -90,13 +90,36 @@
         <div><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span></div>
       </div>
 
+      <!--
+        Two labels per tab, one glyph.
+
+        On a computer these read as words across the top. On a phone the same
+        nav becomes the bar along the bottom, where a thumb reaches, and the
+        long Thai labels will not fit five across — so each tab carries a
+        short form as well and the stylesheet picks. Both are translated; the
+        short one is never an abbreviation of a word nobody chose.
+      -->
       <nav class="tabs" id="tabs">
-        <a href="#/work" data-page="work" data-t="navWork">งานและกิจกรรม</a>
-        <a href="#/calendar" data-page="calendar" data-t="navCalendar">ปฏิทิน</a>
-        <a href="#/docs" data-page="docs" data-t="navDocs">เอกสาร</a>
-        <a href="#/profile" data-page="profile" data-t="navProfile">โปรไฟล์</a>
-        <a href="#/announce" data-page="announce" data-t="navAnnounce" id="tab-announce" hidden>ส่งประกาศ</a>
-        <a href="#/admin" data-page="admin" data-t="navAdmin" id="tab-admin" hidden>จัดการผู้ใช้</a>
+        <a href="#/work" data-page="work">
+          <span class="ti" aria-hidden="true">✓</span>
+          <span class="tl" data-t="navWork">งานและกิจกรรม</span>
+          <span class="ts" data-t="navWorkShort">งาน</span></a>
+        <a href="#/calendar" data-page="calendar">
+          <span class="ti" aria-hidden="true">▦</span>
+          <span class="tl" data-t="navCalendar">ปฏิทิน</span>
+          <span class="ts" data-t="navCalendarShort">ปฏิทิน</span></a>
+        <a href="#/docs" data-page="docs">
+          <span class="ti" aria-hidden="true">▤</span>
+          <span class="tl" data-t="navDocs">เอกสาร</span>
+          <span class="ts" data-t="navDocsShort">เอกสาร</span></a>
+        <a href="#/announce" data-page="announce" id="tab-announce" hidden>
+          <span class="ti" aria-hidden="true">◈</span>
+          <span class="tl" data-t="navAnnounce">ส่งประกาศ</span>
+          <span class="ts" data-t="navAnnounceShort">ประกาศ</span></a>
+        <a href="#/admin" data-page="admin" id="tab-admin" hidden>
+          <span class="ti" aria-hidden="true">⚙</span>
+          <span class="tl" data-t="navAdmin">จัดการผู้ใช้</span>
+          <span class="ts" data-t="navAdminShort">ผู้ใช้</span></a>
       </nav>
 
       <div class="topbar-right">
@@ -121,8 +144,28 @@
           </div>
         </div>
 
-        <a href="#/profile" class="avatar" id="me-avatar" title="Profile"></a>
-        <button class="btn ghost sm" id="sign-out" data-t="signOut">ออกจากระบบ</button>
+        <!--
+          The profile picture IS the profile menu.
+
+          It used to be one more tab in a row of six, which on a phone left no
+          room for the ones people use every day. Everything about "me" now
+          hangs off the face in the corner, which is where people look for it.
+        -->
+        <div class="me" style="position:relative">
+          <button class="avatar" id="me-avatar" aria-haspopup="menu" aria-expanded="false"
+                  title="Profile"></button>
+          <div class="pop menu" id="me-pop" hidden>
+            <header>
+              <b id="me-name">—</b>
+            </header>
+            <div class="items">
+              <a href="#/profile" class="item" data-t="navProfile">โปรไฟล์</a>
+              <button class="item" id="me-theme">ธีม</button>
+              <button class="item" id="me-lang">ภาษา</button>
+              <button class="item danger" id="sign-out" data-t="signOut">ออกจากระบบ</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </header>

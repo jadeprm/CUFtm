@@ -68,7 +68,12 @@
 
   function setTheme(theme) {
     applyTheme(theme);
-    if (S.user) api('/api/users?do=me', { method: 'PATCH', body: { theme: S.theme } }).catch(function () {});
+    // The profile menu shows the current theme by name, so it has to be
+    // redrawn — otherwise the label and the screen disagree.
+    if (S.user) {
+      renderShell();
+      api('/api/users?do=me', { method: 'PATCH', body: { theme: S.theme } }).catch(function () {});
+    }
   }
 
   var t = function (key) {
@@ -560,6 +565,10 @@
     var av = clear($('me-avatar'));
     if (S.user.avatar) av.appendChild(h('img', { src: S.user.avatar, alt: '' }));
     else av.textContent = initials(S.user.displayName);
+    $('me-name').textContent = S.user.displayName || S.user.username;
+    $('me-theme').textContent = t('theme') + ': ' + t('theme' +
+      (S.theme || 'system').charAt(0).toUpperCase() + (S.theme || 'system').slice(1));
+    $('me-lang').textContent = t('language') + ': ' + (S.lang === 'th' ? 'ไทย' : 'English');
 
     $('bell-count').hidden = S.unread === 0;
     $('bell-count').textContent = S.unread;
@@ -569,15 +578,44 @@
     api('/api/auth?do=logout', { method: 'POST' }).then(function () { location.reload(); });
   });
 
-  $('bell-btn').addEventListener('click', function (e) {
-    e.stopPropagation();
-    var pop = $('bell-pop');
-    pop.hidden = !pop.hidden;
-    if (!pop.hidden) renderBell();
-  });
+  /**
+   * The two things that hang off the top bar: the bell and the profile menu.
+   *
+   * Opening one closes the other, and a tap anywhere else closes both — on a
+   * phone there is no room for two panels at once, and a panel left open over
+   * the task list is the thing people complain about rather than report.
+   */
+  function openPop(which) {
+    ['bell-pop', 'me-pop'].forEach(function (id) {
+      $(id).hidden = id !== which || !$(id).hidden;
+    });
+    $('me-avatar').setAttribute('aria-expanded', String(!$('me-pop').hidden));
+    if (!$('bell-pop').hidden) renderBell();
+  }
+
+  $('bell-btn').addEventListener('click', function (e) { e.stopPropagation(); openPop('bell-pop'); });
+  $('me-avatar').addEventListener('click', function (e) { e.stopPropagation(); openPop('me-pop'); });
+
   document.addEventListener('click', function (e) {
-    var pop = $('bell-pop');
-    if (!pop.hidden && !pop.contains(e.target) && e.target !== $('bell-btn')) pop.hidden = true;
+    ['bell-pop', 'me-pop'].forEach(function (id) {
+      var pop = $(id);
+      if (pop.hidden) return;
+      var owner = id === 'bell-pop' ? $('bell-btn') : $('me-avatar');
+      if (!pop.contains(e.target) && !owner.contains(e.target) && e.target !== owner) pop.hidden = true;
+    });
+    $('me-avatar').setAttribute('aria-expanded', String(!$('me-pop').hidden));
+  });
+
+  // Both cycle rather than open a sub-menu: there are only three themes and
+  // two languages, and a menu inside a menu on a phone is a trap.
+  $('me-theme').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var order = ['system', 'light', 'dark'];
+    setTheme(order[(order.indexOf(S.theme || 'system') + 1) % order.length]);
+  });
+  $('me-lang').addEventListener('click', function (e) {
+    e.stopPropagation();
+    setLang(S.lang === 'th' ? 'en' : 'th');
   });
   $('mark-read').addEventListener('click', function (e) {
     e.stopPropagation();
@@ -1584,7 +1622,16 @@
     return S.tasks.filter(function (task) {
       if (mineOnly && task.assignees.indexOf(S.user.username) === -1) return false;
       if (S.filter === 'open' && task.status === 'done') return false;
-      if (['todo', 'doing', 'done'].indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
+      /**
+       * Every status, from the one list.
+       *
+       * This used to name three of them by hand, so รอตรวจ and ตรวจแล้ว
+       * matched nothing and fell through with no filter applied at all —
+       * picking either tab showed the whole list, including finished work,
+       * while the count beside the tab was right. Reading the statuses from
+       * STATUS_LIST means a status can never be forgotten here again.
+       */
+      if (STATUS_LIST.indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
       if (S.who && task.assignees.indexOf(S.who) === -1) return false;
       if (S.prio && task.priority !== S.prio) return false;
       if (S.unit && task.unit !== S.unit) return false;
@@ -1660,7 +1707,10 @@
     };
 
     var seg = h('div', { class: 'seg' }, [
-      ['open', t('all')], ['todo', statusLabel('todo')], ['doing', statusLabel('doing')],
+      // Named for what it does. It was labelled ทั้งหมด ("everything") while
+      // quietly leaving out finished work, so its count never matched the sum
+      // of the tabs beside it and people reasonably read that as a bug.
+      ['open', t('filterOpen')], ['todo', statusLabel('todo')], ['doing', statusLabel('doing')],
       ['review', statusLabel('review')], ['feedback', statusLabel('feedback')], ['done', statusLabel('done')],
     ].map(function (pair) {
       return h('button', {
@@ -1915,7 +1965,7 @@
       unit: task ? (task.unit || null) : null,
       assignees: task ? task.assignees.slice() : [S.user.username],
       departments: task ? task.departments.map(function (d) { return { key: d.key, scope: d.scope }; }) : [],
-      notify: task ? task.notify.slice() : ['created', '7d', '24h', 'due'],
+      notify: task ? task.notify.slice() : ['created', '7d', '3d', '24h', 'due'],
     };
 
     /**
@@ -1971,7 +2021,8 @@
     }
 
     var notifyBox = h('div', { class: 'checks' }, [
-      ['created', 'notifyCreated'], ['7d', 'notify7d'], ['24h', 'notify24h'], ['due', 'notifyDue'],
+      ['created', 'notifyCreated'], ['7d', 'notify7d'], ['3d', 'notify3d'],
+      ['24h', 'notify24h'], ['due', 'notifyDue'],
     ].map(function (pair) {
       var cb = h('input', {
         type: 'checkbox', checked: draft.notify.indexOf(pair[0]) !== -1, disabled: !mayEdit,
@@ -2921,7 +2972,7 @@
       colour: event ? event.colour : 'plum',
       people: event ? (event.people || []).slice() : [],
       departments: event ? (event.departments || []).slice() : [],
-      notify: event ? event.notify.slice() : ['7d', '24h', 'due'],
+      notify: event ? event.notify.slice() : ['7d', '3d', '24h', 'due'],
       allDay: event ? event.allDay : true,
     };
 
@@ -3011,7 +3062,7 @@
     drawWho();
 
     var notifyBox = h('div', { class: 'checks' }, [
-      ['7d', 'notify7d'], ['24h', 'notify24h'], ['due', 'notifyEventDay'],
+      ['7d', 'notify7d'], ['3d', 'notify3d'], ['24h', 'notify24h'], ['due', 'notifyEventDay'],
     ].map(function (pair) {
       var cb = h('input', { type: 'checkbox', checked: draft.notify.indexOf(pair[0]) !== -1, disabled: !mayEdit });
       cb.addEventListener('change', function () {
@@ -3984,6 +4035,62 @@
       main.appendChild(h('div', { class: 'notice warn', text: t('sheetNotLinked') }));
     }
     main.appendChild(notice);
+
+    /**
+     * Why notifications are or are not arriving.
+     *
+     * "Notifications don't work" covers three completely different problems
+     * that look identical from a phone — nothing calls the hourly endpoint,
+     * nothing is due, or nobody has switched notifications on — so this says
+     * which one it is instead of leaving people to guess.
+     */
+    var health = h('div', { class: 'notice' , hidden: true });
+    main.appendChild(health);
+
+    api('/api/users?do=health').then(function (d) {
+      clear(health);
+      health.hidden = false;
+
+      var last = d.lastCron ? new Date(d.lastCron) : null;
+      var hoursAgo = last ? (Date.now() - last.getTime()) / 3600000 : Infinity;
+      var dead = hoursAgo > 2;
+      health.className = 'notice ' + (dead ? 'err' : 'ok');
+
+      var lines = [h('strong', { text: t('healthTitle') })];
+
+      lines.push(h('div', { text: t('healthLastRun') + ': ' + (last
+        ? last.toLocaleString(S.lang === 'th' ? 'th-TH' : 'en-GB') +
+          (dead ? '  —  ' + t('healthStale') : '')
+        : t('healthNeverRun')) }));
+
+      if (dead) lines.push(h('div', { text: '⚠ ' + t('healthNoPinger') }));
+
+      lines.push(h('div', { text: d.pushPeople
+        ? d.pushPeople + ' ' + t('healthPeople') + ' ' + t('healthPush') +
+          ' (' + d.pushSubscriptions + ' ' + t('healthDevices') + ')'
+        : '⚠ ' + t('healthPushNone') }));
+
+      lines.push(h('div', { text: d.lineConfigured
+        ? d.lineLinked + ' ' + t('healthLine')
+        : '⚠ ' + t('healthLineOff') }));
+
+      // The most common answer, and the least obvious one: nothing is due.
+      if (d.remindingToday) {
+        lines.push(h('div', { text: t('healthRemindToday') + ': ' + d.remindingToday }));
+      } else {
+        lines.push(h('div', { text: t('healthNothingDue') }));
+      }
+
+      var upcoming = (d.dueSoon || []).slice(0, 6).map(function (x) {
+        return h('div', { style: 'color:var(--ink-faint)', text:
+          '· ' + x.title + ' — ' +
+          (x.days < 0 ? t('healthOverdue') + ' ' + Math.abs(x.days) + ' ' + t('healthDays')
+            : x.days + ' ' + t('healthDays')) +
+          ' · ' + x.people + ' ' + t('healthPeople') +
+          (x.remindsToday ? '  ✓' : '') });
+      });
+      health.appendChild(h('div', {}, lines.concat(upcoming)));
+    }).catch(function () { health.hidden = true; });
 
     var rows = S.users.map(function (u) {
       var blocked = blockedReason(u);

@@ -21,7 +21,7 @@ import { withNode } from '../lib/http.js';
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
 const cleanDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
 const cleanTime = (v) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? '')) ? String(v) : null);
-const NOTIFY_KINDS = ['7d', '24h', 'due'];
+const NOTIFY_KINDS = ['7d', '3d', '24h', 'due'];
 
 /** See lib/db.js — reading a DATE through a timezone would shift it by a day. */
 function toIsoDate(value) {

@@ -12,7 +12,8 @@ import {
   stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
 } from '../lib/pdfsign.js';
 import { sendToMany, unreadCount } from '../lib/push.js';
-import { lineConfigured, push as linePush, text as lineText, pageLink } from '../lib/line.js';
+import { lineConfigured, push as linePush, pageLink } from '../lib/line.js';
+import { flex, listBubble } from '../lib/lineflex.js';
 
 /**
  * Documents that need signing.
@@ -397,11 +398,29 @@ async function tellPeople(sql, { usernames, title, body, docId, priority, urgent
     try {
       const links = await sql`
         SELECT line_user_id, username FROM line_links WHERE username = ANY(${people})`;
-      const lines = [clean(title, 200), clean(body, 500)];
-      if (link) lines.push('', `${link.replace(/#\/docs$/, '')}#/d/${docId}`);
-      const message = lines.filter(Boolean).join('\n');
+      /**
+       * A card, not a paragraph.
+       *
+       * The old message put the title, the reason and a raw URL in one block
+       * of grey text, which on a phone is the hardest possible way to read
+       * "this is waiting for you". The card leads with what happened and puts
+       * the two things a person can do next under their thumb.
+       */
+      const deep = link ? `${link.replace(/#\/docs$/, '')}#/d/${docId}` : null;
+      const card = flex(`${clean(title, 120)} — ${clean(body, 120)}`, listBubble({
+        title: clean(title, 200),
+        subtitle: clean(body, 500),
+        rows: [],
+        empty: null,
+        link: deep,
+        actions: [{
+          label: 'ดูเอกสาร', style: 'primary',
+          data: `doc:open:${docId}`, say: 'ขอดูเอกสารนี้',
+        }],
+      }), ['เอกสาร', 'เอกสารทั้งหมด', 'จบ']);
+
       for (const row of links) {
-        await linePush(row.line_user_id, lineText(message, ['เอกสาร', 'จบ'])).catch(() => {});
+        await linePush(row.line_user_id, card).catch(() => {});
       }
     } catch (error) {
       console.error('[documents] LINE failed:', String(error?.message || error).slice(0, 200));
@@ -866,4 +885,15 @@ async function removeDocument(sql, me, id) {
 }
 
 export default withNode(handler);
+/**
+ * The two actions the LINE bot needs.
+ *
+ * Exported rather than reimplemented so a signature given in a chat goes
+ * through exactly the same permission checks, the same stamping and the same
+ * notifications as one given on the website. There is one approval path in
+ * this app, not two that have to be kept in step.
+ */
+export const approveDocument = (sql, me, id) => approve(sql, me, { id });
+export const rejectDocument = (sql, me, id, comment) => reject(sql, me, { id, comment });
+
 export { rebuildSigned };

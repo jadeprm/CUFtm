@@ -19,7 +19,7 @@ import {
  * dates were understood.
  */
 
-const NOTIFY_KINDS = ['created', '7d', '24h', 'due'];
+const NOTIFY_KINDS = ['created', '7d', '3d', '24h', 'due'];
 const MAX_ROWS = 300;
 
 const clean = (v, max = 4000) => String(v ?? '').trim().slice(0, max);

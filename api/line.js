@@ -10,13 +10,16 @@ import {
 import { RICH_MENU_PNG_BASE64 } from '../lib/richmenu-image.js';
 import {
   readCommand, parseTaskLine, todayIso, addDays,
-  sayTask, sayEvent, sayDate, HELP, MENU,
+  sayTask, sayEvent, sayDate, HELP, MENU, MARK, PRIORITY_TH, STATUS_TH,
   canSeeTask, canSetStatus, canDeleteTask, canPostTo,
 } from '../lib/linecmd.js';
 import {
   ask, answer, nextStep, FIRST_STEP, isCancel,
   MENU_ADD, MENU_VIEW, MENU_MANAGE,
 } from '../lib/lineflow.js';
+import { canSeeDocument, canAct, pendingStep, progressOf } from '../lib/approval.js';
+import { approveDocument, rejectDocument } from './documents.js';
+import { flex, listBubble, documentBubble } from '../lib/lineflex.js';
 
 /**
  * The LINE Official Account.
@@ -177,9 +180,21 @@ async function handleEvent(sql, event) {
     return reply(token, text(known ? backAgain(known.username) : WELCOME, known ? MENU : []));
   }
 
-  if (event.type !== 'message' || event.message?.type !== 'text') return;
+  /**
+   * A button on a card.
+   *
+   * Postbacks rather than message actions, so tapping อนุมัติ does not write
+   * a command into the person's own chat history as if they had typed it.
+   * The data is turned into the same command string a typist would send, so
+   * there is one path through the code whichever way somebody acts.
+   */
+  const isPostback = event.type === 'postback';
+  if (!isPostback && (event.type !== 'message' || event.message?.type !== 'text')) return;
 
-  const body = String(event.message.text || '').trim();
+  const body = isPostback
+    ? fromPostback(event.postback?.data)
+    : String(event.message.text || '').trim();
+  if (!body) return;
   const [link] = await sql`
     SELECT l.*, u.display_name FROM line_links l
     JOIN users u ON u.username = l.username
@@ -207,6 +222,21 @@ async function handleEvent(sql, event) {
   if (flow) return reply(token, await step(sql, me, lineUserId, flow, body));
 
   return reply(token, await run(sql, me, lineUserId, body));
+}
+
+/**
+ * "doc:approve:doc_abc" → "อนุมัติ doc_abc".
+ *
+ * Rejecting is the exception: it needs a reason, and a button cannot carry one
+ * somebody has not written yet, so the button asks for it instead of doing it.
+ */
+function fromPostback(data) {
+  const [kind, verb, id] = String(data || '').split(':');
+  if (kind !== 'doc' || !id) return '';
+  if (verb === 'approve') return `อนุมัติ ${id}`;
+  if (verb === 'reject') return `ขอเหตุผล ${id}`;
+  if (verb === 'open') return `เอกสาร ${id}`;
+  return '';
 }
 
 const WELCOME = [
@@ -332,6 +362,13 @@ async function run(sql, me, lineUserId, body) {
     case 'events':
       return listEvents(sql, me, lineUserId, today);
 
+    case 'docs':       return listDocs(sql, me, lineUserId, { mine: true });
+    case 'docsAll':    return listDocs(sql, me, lineUserId, { mine: false });
+    case 'docOpen':    return openDoc(sql, me, lineUserId, command.rest);
+    case 'docApprove': return approveFromLine(sql, me, lineUserId, command.rest);
+    case 'docReject':  return rejectFromLine(sql, me, lineUserId, command.rest);
+    case 'docAskWhy':  return askWhy(sql, me, lineUserId, command.rest);
+
     case 'search':
       return listTasks(sql, me, lineUserId, today, {
         title: `ผลการค้นหา "${command.rest}"`,
@@ -406,24 +443,260 @@ async function listTasks(sql, me, lineUserId, today, opts) {
   }
 
   const shown = found.slice(0, LIST_LIMIT);
-  const lines = [opts.title, ''];
-  shown.forEach((t, i) => lines.push(sayTask(t, i + 1, today)));
-  if (found.length > shown.length) {
-    lines.push('', `…และอีก ${found.length - shown.length} งาน`);
-  }
-  if (events.length) {
-    lines.push('', 'กิจกรรม');
-    events.slice(0, 5).forEach((e, i) => lines.push(sayEvent(e, shown.length + i + 1, today)));
-  }
-  lines.push('', 'พิมพ์ "เสร็จ <เลข>" เพื่อปิดงาน');
-  const web = pageLink('work');
-  if (web) lines.push('', 'ดูทั้งหมดและแก้รายละเอียดบนเว็บ', web);
+  const shownEvents = events.slice(0, 5);
 
   await remember(sql, lineUserId, [
     ...shown.map((t) => ({ kind: 'task', id: t.id })),
-    ...events.slice(0, 5).map((e) => ({ kind: 'event', id: e.id })),
+    ...shownEvents.map((e) => ({ kind: 'event', id: e.id })),
   ]);
-  return text(lines.join('\n'), MENU);
+
+  /**
+   * One row per task rather than one paragraph per task: the marker, the
+   * title and the deadline line up, so ten of them can be scanned instead of
+   * read, and a late one is red before anybody has read a word.
+   */
+  const rows = shown.map((t, i) => ({
+    number: i + 1,
+    title: `${MARK[t.status] || '○'} ${t.title}`,
+    state: !t.dueDate ? null
+      : t.dueDate < today ? 'overdue'
+      : t.dueDate === today ? 'today' : null,
+    meta: [
+      sayDate(t.dueDate, today) + (t.dueTime ? ` ${t.dueTime} น.` : ''),
+      PRIORITY_TH[t.priority] || null,
+      t.status !== 'todo' ? STATUS_TH[t.status] : null,
+    ].filter(Boolean).join(' · '),
+  })).concat(shownEvents.map((e, i) => ({
+    number: shown.length + i + 1,
+    title: `◆ ${e.title}`,
+    meta: [
+      sayDate(e.startsOn, today) + (!e.allDay && e.startsAt ? ` ${e.startsAt} น.` : ''),
+      e.place || null,
+    ].filter(Boolean).join(' · '),
+  })));
+
+  const more = found.length > shown.length ? `แสดง ${shown.length} จาก ${found.length} งาน · ` : '';
+
+  return flex(`${opts.title} (${found.length})`, listBubble({
+    title: opts.title,
+    subtitle: `${more}พิมพ์ "เสร็จ <เลข>" เพื่อปิดงาน`,
+    rows,
+    link: pageLink('work'),
+    linkLabel: 'ดูทั้งหมดบนเว็บ',
+  }), MENU);
+}
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+const DOC_STAGE_TH = {
+  approving: 'กำลังรออนุมัติ',
+  secretary: 'รอเลขาฯ ส่ง',
+  done: 'อนุมัติครบแล้ว',
+  sent: 'ส่งแล้ว',
+  rejected: 'ถูกตีกลับ',
+};
+
+/** Everything about one document this person is allowed to know. */
+async function docsFor(sql, me) {
+  const docs = await sql`SELECT * FROM documents ORDER BY updated_at DESC LIMIT 100`;
+  const steps = await sql`SELECT * FROM doc_steps ORDER BY doc_id, position`;
+  const byDoc = new Map();
+  for (const s of steps) {
+    if (!byDoc.has(s.doc_id)) byDoc.set(s.doc_id, []);
+    byDoc.get(s.doc_id).push(s);
+  }
+  return docs
+    .map((doc) => ({ doc, steps: byDoc.get(doc.id) || [] }))
+    .filter(({ doc, steps: mine }) => canSeeDocument(me, doc, mine));
+}
+
+const shortWhen = (value) => {
+  if (!value) return '';
+  const iso = typeof value === 'string' ? value : new Date(value).toISOString();
+  return `${sayDate(iso.slice(0, 10))} ${iso.slice(11, 16)} น.`;
+};
+
+/**
+ * The document list.
+ *
+ * Two versions of the same thing: what is waiting on ME, and the status of
+ * everything I am entitled to watch. The second is what a secretary, an
+ * admin or the person who sent a letter actually wants — "where has my
+ * document got to" was previously a question only the website could answer.
+ */
+async function listDocs(sql, me, lineUserId, { mine }) {
+  const all = await docsFor(sql, me);
+  const names = await nameMap(sql);
+
+  const chosen = mine
+    ? all.filter(({ doc, steps }) => canAct(me, doc, steps))
+    : all;
+
+  if (!chosen.length) {
+    return flex(mine ? 'ไม่มีเอกสารรอคุณ' : 'ยังไม่มีเอกสาร', listBubble({
+      title: mine ? 'เอกสารที่รอคุณ' : 'สถานะเอกสาร',
+      subtitle: mine ? 'ตอนนี้ไม่มีเอกสารที่รอคุณลงนามค่ะ' : 'ยังไม่มีเอกสารในระบบค่ะ',
+      rows: [],
+      link: pageLink('docs'),
+    }), mine ? ['เอกสารทั้งหมด', ...MENU] : MENU);
+  }
+
+  const shown = chosen.slice(0, LIST_LIMIT);
+  await remember(sql, lineUserId, shown.map(({ doc }) => ({ kind: 'doc', id: doc.id })));
+
+  const rows = shown.map(({ doc, steps }, i) => {
+    const step = pendingStep(steps);
+    const waiting = step ? names[step.username] || step.username : null;
+    return {
+      number: i + 1,
+      title: doc.title,
+      state: doc.stage === 'rejected' ? 'rejected'
+        : doc.stage === 'sent' ? 'sent'
+        : canAct(me, doc, steps) ? 'today' : 'doing',
+      meta: [
+        DOC_STAGE_TH[doc.stage] || doc.stage,
+        canAct(me, doc, steps) ? '← ถึงคิวของคุณ' : (waiting ? `รอ ${waiting}` : null),
+      ].filter(Boolean).join(' · '),
+    };
+  });
+
+  return flex(mine ? 'เอกสารที่รอคุณ' : 'สถานะเอกสาร', listBubble({
+    title: mine ? 'เอกสารที่รอคุณ' : 'สถานะเอกสาร',
+    subtitle: chosen.length > shown.length
+      ? `แสดง ${shown.length} จาก ${chosen.length} ฉบับ · พิมพ์ "เอกสาร <เลข>" เพื่อดูรายละเอียด`
+      : 'พิมพ์ "เอกสาร <เลข>" เพื่อดูรายละเอียด',
+    rows,
+    link: pageLink('docs'),
+  }), [mine ? 'เอกสารทั้งหมด' : 'เอกสาร', ...MENU]);
+}
+
+/** One document, with its progress and whatever this person may do next. */
+async function openDoc(sql, me, lineUserId, rest) {
+  const found = await resolveDoc(sql, me, lineUserId, rest);
+  if (found.error) return text(found.error, MENU);
+
+  const { doc, steps } = found;
+  const names = await nameMap(sql);
+  const link = pageLink('docs');
+  const mayAct = canAct(me, doc, steps);
+
+  return flex(`${doc.title} — ${DOC_STAGE_TH[doc.stage] || doc.stage}`, documentBubble({
+    title: doc.title,
+    stage: doc.stage,
+    stageLabel: DOC_STAGE_TH[doc.stage] || doc.stage,
+    priority: doc.priority,
+    recipient: doc.recipient,
+    uploader: names[doc.created_by] || doc.created_by,
+    steps: progressOf(doc, steps).map((p) => ({
+      label: p.label,
+      who: p.username ? names[p.username] || p.username : '',
+      when: shortWhen(p.at),
+      state: p.state === 'done' ? 'approved' : p.state,
+      current: p.state === 'waiting' && p.username === (pendingStep(steps) || {}).username,
+      comment: p.comment,
+    })),
+    actions: mayAct ? [
+      { label: 'อนุมัติ', style: 'primary', colour: '#15803D',
+        data: `doc:approve:${doc.id}`, say: 'อนุมัติเอกสารนี้' },
+      { label: 'ตีกลับ', style: 'secondary',
+        data: `doc:reject:${doc.id}`, say: 'ขอตีกลับเอกสารนี้' },
+    ] : [],
+    link: link ? `${link.replace(/#\/docs$/, '')}#/d/${doc.id}` : null,
+  }), mayAct ? ['เอกสาร', 'เอกสารทั้งหมด', 'จบ'] : ['เอกสาร', 'เอกสารทั้งหมด', ...MENU]);
+}
+
+/**
+ * Turns "2" — or a document id straight from a button — into a document.
+ *
+ * The numbers come from the list this person was last shown, which is why a
+ * stale number cannot act on somebody else's document: the list was built
+ * from what they are allowed to see in the first place.
+ */
+async function resolveDoc(sql, me, lineUserId, rest) {
+  const raw = String(rest || '').trim();
+  // A button sends the id, and a reason may follow it — "doc_abc แก้วันที่" —
+  // so this reads the id off the front rather than expecting it alone.
+  let id = raw.match(/^doc_[a-z0-9]+/i)?.[0] || null;
+
+  if (!id) {
+    const position = Number(raw.match(/^\d{1,2}/)?.[0]);
+    if (!position) return { error: 'พิมพ์เลขที่เห็นในรายการด้วยค่ะ เช่น "เอกสาร 2"' };
+    const row = await recall(sql, lineUserId, position);
+    if (!row || row.kind !== 'doc') {
+      return { error: `ไม่พบเอกสารหมายเลข ${position} ในรายการล่าสุด\nพิมพ์ "เอกสาร" เพื่อดูรายการใหม่` };
+    }
+    id = row.ref_id;
+  }
+
+  const [doc] = await sql`SELECT * FROM documents WHERE id = ${id}`;
+  if (!doc) return { error: 'เอกสารนี้ถูกลบไปแล้วค่ะ' };
+  const steps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
+  if (!canSeeDocument(me, doc, steps)) return { error: 'คุณไม่มีสิทธิ์ดูเอกสารนี้ค่ะ' };
+  return { doc, steps };
+}
+
+const DOC_ERROR_TH = {
+  NOT_YOUR_TURN: 'ยังไม่ถึงคิวของคุณค่ะ',
+  NO_SIGNATURE: 'ต้องบันทึกลายเซ็นก่อนค่ะ — เปิดเว็บ → โปรไฟล์ → ลายเซ็น',
+  REASON_REQUIRED: 'ต้องใส่เหตุผลด้วยค่ะ เช่น "ตีกลับ 2 แก้วันที่ก่อน"',
+  NO_SUCH_DOCUMENT: 'ไม่พบเอกสารนี้ค่ะ',
+  REJECTED_FILE_REMOVED: 'เอกสารนี้ถูกตีกลับและลบไฟล์ไปแล้วค่ะ',
+};
+
+/**
+ * Signing from the chat.
+ *
+ * Hands straight to the website's own approve — same permission checks, same
+ * stamping of the PDF, same notifications to everyone downstream. A signature
+ * given on a phone is the same act as one given in a browser, so it must not
+ * be a second implementation that can drift.
+ */
+async function approveFromLine(sql, me, lineUserId, rest) {
+  const found = await resolveDoc(sql, me, lineUserId, rest);
+  if (found.error) return text(found.error, MENU);
+
+  const result = await (await approveDocument(sql, me, found.doc.id)).json();
+  if (result.error) return text(DOC_ERROR_TH[result.error] || `ทำรายการไม่สำเร็จ (${result.error})`, MENU);
+
+  return openDoc(sql, me, lineUserId, found.doc.id);
+}
+
+async function rejectFromLine(sql, me, lineUserId, rest) {
+  const raw = String(rest || '').trim();
+  const comment = raw.replace(/^(doc_[a-z0-9]+|\d{1,2})\s*/i, '').trim();
+  if (!comment) {
+    return text('ตีกลับต้องมีเหตุผลค่ะ เพื่อให้คนส่งรู้ว่าต้องแก้อะไร\nเช่น "ตีกลับ 2 แก้วันที่ก่อน"', MENU);
+  }
+
+  const found = await resolveDoc(sql, me, lineUserId, raw);
+  if (found.error) return text(found.error, MENU);
+
+  const result = await (await rejectDocument(sql, me, found.doc.id, comment)).json();
+  if (result.error) return text(DOC_ERROR_TH[result.error] || `ทำรายการไม่สำเร็จ (${result.error})`, MENU);
+
+  return text(`ตีกลับเรียบร้อยค่ะ\n${found.doc.title}\nเหตุผล: ${comment}\n\nระบบแจ้งผู้ส่งและเลขาฯ แล้ว`, MENU);
+}
+
+/** The ตีกลับ button: ask for the reason, then come back and do it. */
+async function askWhy(sql, me, lineUserId, rest) {
+  const found = await resolveDoc(sql, me, lineUserId, rest);
+  if (found.error) return text(found.error, MENU);
+  if (!canAct(me, found.doc, found.steps)) return text(DOC_ERROR_TH.NOT_YOUR_TURN, MENU);
+
+  await saveFlow(sql, lineUserId, 'rejectDoc', 'reason', { docId: found.doc.id });
+  return text(
+    `ตีกลับ: ${found.doc.title}\n\nพิมพ์เหตุผลที่ต้องแก้ค่ะ ระบบจะส่งให้ผู้ส่งและเลขาฯ พร้อมกัน`,
+    ['ยกเลิก']);
+}
+
+/** username → the name people actually call each other. */
+async function nameMap(sql) {
+  const rows = await sql`SELECT username, nickname, display_name FROM users`;
+  const out = {};
+  for (const r of rows) out[r.username] = r.nickname || r.display_name || r.username;
+  return out;
 }
 
 async function listEvents(sql, me, lineUserId, today) {
@@ -651,6 +924,23 @@ async function step(sql, me, lineUserId, state, body) {
   const context = { me, people };
 
   if (state.flow === 'manage') return manageStep(sql, me, lineUserId, state, body);
+
+  /**
+   * Waiting for the reason behind a ตีกลับ.
+   *
+   * The button cannot carry a reason nobody has written yet, so it asks for
+   * one and this is where the answer lands. The reason is not optional
+   * anywhere in this app: a document that comes back without one sends its
+   * author hunting for somebody to ask.
+   */
+  if (state.flow === 'rejectDoc') {
+    if (isCancel(body)) {
+      await clearFlow(sql, lineUserId);
+      return text('ยกเลิกแล้วค่ะ เอกสารยังอยู่ที่เดิม', MENU);
+    }
+    await clearFlow(sql, lineUserId);
+    return rejectFromLine(sql, me, lineUserId, `${state.draft.docId} ${body}`);
+  }
 
   const result = answer(state.step, state.draft, body, context);
 

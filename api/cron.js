@@ -3,8 +3,9 @@ import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
 import { assembledEvents, audienceOf } from './events.js';
 import { withNode } from '../lib/http.js';
-import { lineConfigured, push, text as lineText, pageLink } from '../lib/line.js';
-import { sayTask, sayDate, MENU as LINE_MENU } from '../lib/linecmd.js';
+import { lineConfigured, push, pageLink } from '../lib/line.js';
+import { flex, listBubble } from '../lib/lineflex.js';
+import { sayDate, MARK, PRIORITY_TH, MENU as LINE_MENU } from '../lib/linecmd.js';
 import { driveConfigured, archivePdf, archiveHolds } from '../lib/drive.js';
 
 
@@ -50,10 +51,20 @@ const toIsoDate = (value) => {
   ].join('-');
 };
 
+/**
+ * The reminder ladder.
+ *
+ * It used to be 7 days, 1 day, and the day itself — and nothing else, ever.
+ * A task due in four days got silence, and a task that went past its deadline
+ * got silence too, which is exactly the moment somebody needs telling. Three
+ * days and an overdue notice close both gaps.
+ */
 const MESSAGES = {
   '7d': { th: 'ครบกำหนดในอีก 7 วัน', en: 'Due in 7 days' },
+  '3d': { th: 'ครบกำหนดในอีก 3 วัน', en: 'Due in 3 days' },
   '24h': { th: 'ครบกำหนดพรุ่งนี้', en: 'Due tomorrow' },
   due: { th: 'ครบกำหนดวันนี้', en: 'Due today' },
+  overdue: { th: 'เลยกำหนดแล้ว', en: 'Now overdue' },
 };
 
 /** An event is not due — it happens. The wording follows. */
@@ -97,9 +108,22 @@ async function handler(request) {
 
     let kind = null;
     if (days === 7) kind = '7d';
+    else if (days === 3) kind = '3d';
     else if (days === 1) kind = '24h';
     else if (days === 0) kind = 'due';
-    if (!kind || !wants.includes(kind)) continue;
+    else if (days < 0) kind = 'overdue';
+    if (!kind) continue;
+
+    /**
+     * A task that has gone past its deadline is told once, on the first run
+     * after the day turns, and then left alone. Nagging every hour about the
+     * same late task would train people to ignore the bell, which costs more
+     * than the late task does.
+     *
+     * It is also not opt-out: somebody who switched off the advance warnings
+     * still needs to know when they have missed something.
+     */
+    if (kind !== 'overdue' && !wants.includes(kind)) continue;
 
     /**
      * A task due today at a set time waits until that hour before its final
@@ -138,9 +162,9 @@ async function handler(request) {
         title: task.title,
         when,
         kind,
-        // A deadline that has arrived is worth interrupting someone for; a
-        // reminder a week out is not.
-        level: kind === 'due' ? 'urgent' : 'normal',
+        // A deadline that has arrived, or has been missed, is worth
+        // interrupting someone for; a reminder a week out is not.
+        level: kind === 'due' || kind === 'overdue' ? 'urgent' : 'normal',
       });
     }
   }
@@ -184,8 +208,10 @@ async function handler(request) {
     const days = daysBetween(today, event.startsOn);
     let kind = null;
     if (days === 7) kind = '7d';
+    else if (days === 3) kind = '3d';
     else if (days === 1) kind = '24h';
     else if (days === 0) kind = 'due';
+    // An event that has happened is not late, it is over — no overdue notice.
     if (!kind || !event.notify.includes(kind)) continue;
 
     // A timed event on the day itself waits for a civilised hour rather than
@@ -251,6 +277,18 @@ async function handler(request) {
     roster = { error: error.message };
   }
   await sql`DELETE FROM sessions WHERE expires_at < now()`;
+
+  /**
+   * A record that this run happened.
+   *
+   * Without it, "notifications are not arriving" is unanswerable from inside
+   * the app — nobody can tell the difference between nothing being due and
+   * nothing ever calling this endpoint. The admin page reads it and says which
+   * it is.
+   */
+  await sql`
+    INSERT INTO meta (key, value) VALUES ('last_cron', ${new Date().toISOString()})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
 
   return json({
     ok: true,
@@ -404,9 +442,9 @@ async function sendDigests(sql, today) {
     const theirEvents = mine(events, link.username);
     if (!theirTasks.length && !theirEvents.length) continue;   // say nothing
 
-    const body = digestText(theirTasks, theirEvents, today);
+    const card = digestCard(theirTasks, theirEvents, today);
     try {
-      await push(link.line_user_id, lineText(body, LINE_MENU));
+      await push(link.line_user_id, card);
       await sql`INSERT INTO line_digests_sent (username, on_day)
                 VALUES (${link.username}, ${today}::date)
                 ON CONFLICT DO NOTHING`;
@@ -427,50 +465,69 @@ async function sendDigests(sql, today) {
   return { sent, considered: links.length, errors: errors.slice(0, 3) };
 }
 
-function digestText(tasks, events, today) {
+/**
+ * The morning digest, as a card.
+ *
+ * This is the one message everybody gets every day, so it is the one worth
+ * making readable: late work first and in red, then today, then the week, each
+ * as its own row rather than as another line in a paragraph. The count in the
+ * subtitle is what people actually read on the lock screen.
+ */
+function digestCard(tasks, events, today) {
   const overdue = tasks.filter((t) => toIsoDate(t.due_date) < today);
   const dueToday = tasks.filter((t) => toIsoDate(t.due_date) === today);
   const ahead = tasks.filter((t) => toIsoDate(t.due_date) > today);
 
-  const lines = ['สรุปงานของคุณวันนี้', ''];
+  const rows = [];
   let n = 0;
 
-  const block = (heading, rows) => {
-    if (!rows.length) return;
-    lines.push(heading);
-    rows.slice(0, 8).forEach((t) => {
+  const block = (heading, list, state) => {
+    for (const t of list.slice(0, 8)) {
       n += 1;
-      lines.push(sayTask({
-        title: t.title,
-        status: t.status,
-        priority: t.priority,
-        dueDate: toIsoDate(t.due_date),
-        dueTime: t.due_time,
-      }, n, today));
-    });
-    if (rows.length > 8) lines.push(`    …และอีก ${rows.length - 8} งาน`);
-    lines.push('');
+      rows.push({
+        number: n,
+        title: `${MARK[t.status] || '\u25cb'} ${t.title}`,
+        state,
+        meta: [
+          heading,
+          sayDate(toIsoDate(t.due_date), today) + (t.due_time ? ` ${t.due_time} \u0e19.` : ''),
+          PRIORITY_TH[t.priority] || null,
+        ].filter(Boolean).join(' \u00b7 '),
+      });
+    }
   };
 
-  block('⚠ เลยกำหนดแล้ว', overdue);
-  block('ครบกำหนดวันนี้', dueToday);
-  block('ใน 7 วันข้างหน้า', ahead);
+  block('เลยกำหนดแล้ว', overdue, 'overdue');
+  block('ครบกำหนดวันนี้', dueToday, 'today');
+  block('ใน 7 วันข้างหน้า', ahead, null);
 
-  if (events.length) {
-    lines.push('กิจกรรม');
-    events.slice(0, 5).forEach((e) => {
-      const when = sayDate(toIsoDate(e.starts_on), today) +
-        (!e.all_day && e.starts_at ? ` ${e.starts_at} น.` : '');
-      lines.push(`◆ ${e.title}`);
-      lines.push(`    ${[when, e.place].filter(Boolean).join(' · ')}`);
+  for (const e of events.slice(0, 5)) {
+    n += 1;
+    rows.push({
+      number: n,
+      title: `\u25c6 ${e.title}`,
+      meta: [
+        sayDate(toIsoDate(e.starts_on), today) +
+          (!e.all_day && e.starts_at ? ` ${e.starts_at} \u0e19.` : ''),
+        e.place || null,
+      ].filter(Boolean).join(' \u00b7 '),
     });
-    lines.push('');
   }
 
-  const web = pageLink('work');
-  if (web) lines.push('เปิดบนเว็บ: ' + web, '');
-  lines.push('พิมพ์ "งาน" เพื่อดูทั้งหมด · "ปิดแจ้งเตือน" เพื่อหยุดสรุปนี้');
-  return lines.join('\n');
+  const counts = [
+    overdue.length ? `เลยกำหนด ${overdue.length}` : null,
+    dueToday.length ? `วันนี้ ${dueToday.length}` : null,
+    ahead.length ? `สัปดาห์นี้ ${ahead.length}` : null,
+    events.length ? `กิจกรรม ${events.length}` : null,
+  ].filter(Boolean).join(' \u00b7 ');
+
+  return flex(`สรุปงานของคุณวันนี้ — ${counts}`, listBubble({
+    title: 'สรุปงานของคุณวันนี้',
+    subtitle: counts + ' \u00b7 พิมพ์ "ปิดแจ้งเตือน" เพื่อหยุดสรุปนี้',
+    rows,
+    link: pageLink('work'),
+    linkLabel: 'เปิดบนเว็บ',
+  }), LINE_MENU);
 }
 
 const addDaysIso = (iso, n) => {

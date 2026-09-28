@@ -24,7 +24,7 @@ import { withNode } from '../lib/http.js';
  */
 
 const SCOPES = ['all', 'heads', 'members'];
-const NOTIFY_KINDS = ['created', '7d', '24h', 'due'];
+const NOTIFY_KINDS = ['created', '7d', '3d', '24h', 'due'];
 
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
 const cleanDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
