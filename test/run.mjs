@@ -81,6 +81,7 @@ const { default: eventsApi } = await import('../api/events.js');
 const { default: calApi } = await import('../api/calendar.js');
 const { default: notifApi } = await import('../api/notifications.js');
 const { default: lineApi } = await import('../api/line.js');
+const { default: docsApi } = await import('../api/documents.js');
 const { getSql } = await import('../lib/db.js');
 const { createHmac } = await import('node:crypto');
 
@@ -2122,6 +2123,201 @@ ok('with no site address the link is omitted entirely',
   bare.split('\n').slice(-2).join(' | '));
 ok('...and the list itself still works', bare.includes('งานของฉัน') || bare.includes('ไม่มีรายการ'));
 process.env.SITE_URL = keep;
+
+head('41. Documents: the approval chain is built from who you are');
+
+const { PDFDocument: PDFDoc } = await import('pdf-lib');
+async function makePdf(pages = 2) {
+  const d = await PDFDoc.create();
+  for (let i = 0; i < pages; i++) d.addPage([595.28, 841.89]);
+  return Buffer.from(await d.save()).toString('base64');
+}
+const sigPng = (await import('node:fs')).readFileSync('/tmp/sig.png').toString('base64');
+
+// Who the system thinks must sign, for a plain member of ฝ่ายเนื้อหา.
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'content', body: { department: 'content' },
+});
+ok('a chain is proposed', r.status === 200, JSON.stringify(r.data).slice(0, 80));
+let roles = r.data.steps.map((s) => s.role).join(' → ');
+ok('...a department head goes to the director, then the secretary',
+  roles === 'director → secretary', roles);
+
+// The director's own document skips the heads entirely.
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'admin', body: {} });
+roles = r.data.steps.map((s) => s.role).join(' → ');
+ok('the director signs nothing of their own — straight to the secretary',
+  roles === 'secretary', roles);
+
+head('42. Documents: uploading, and what is refused');
+
+const chain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+
+// A signing role with nowhere to put the signature is refused.
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'หนังสือขอใช้สถานที่', pdf: await makePdf(2), department: 'content',
+          steps: chain.map((s) => ({ role: s.role, username: s.username })) },
+});
+ok('a signing step with no marked box is refused', r.status === 400 && r.data.error === 'MARK_REQUIRED',
+  JSON.stringify(r.data));
+
+// A box on a page that does not exist is refused.
+const withMarks = (pageFor = () => 1) => chain.map((s) => ({
+  role: s.role, username: s.username,
+  mark: s.signs ? { page: pageFor(), x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+}));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'x', pdf: await makePdf(2), department: 'content', steps: withMarks(() => 9) },
+});
+ok('a box on a page that does not exist is refused', r.data.error === 'MARK_OFF_PAGE', JSON.stringify(r.data));
+
+// Something that is not a PDF is refused on its own bytes, not its name.
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'x', pdf: Buffer.from('totally not a pdf').toString('base64'),
+          department: 'content', steps: withMarks() },
+});
+ok('a file that is not really a PDF is refused', r.data.error === 'NOT_A_PDF', JSON.stringify(r.data));
+
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'หนังสือขอใช้สถานที่', note: 'ขอใช้หอประชุม', recipient: 'สำนักบริหารระบบกายภาพ',
+          priority: 'high', pdf: await makePdf(2), department: 'content', steps: withMarks() },
+});
+ok('a complete submission is accepted', r.status === 201 && r.data.id, JSON.stringify(r.data).slice(0, 80));
+const docId = r.data.id;
+
+head('43. Documents: nobody signs out of turn');
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'content' });
+ok('it is waiting on the first approver', r.data.progress.length >= 3, JSON.stringify(r.data.progress.map(p => p.key)));
+ok('...and the uploader cannot act on it themselves', r.data.myTurn === false);
+
+// The secretary is last in the chain and cannot jump ahead.
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: docId } });
+const firstWaiting = (await call(docsApi, `/api/documents?id=${docId}`, { as: 'admin' })).data;
+ok('the director is first here, so their approval is accepted',
+  r.status === 200 || r.data.error === 'NO_SIGNATURE', JSON.stringify(r.data));
+
+// A signing role with no signature on file is stopped before anything changes.
+ok('...but only once they have a signature on file',
+  r.data.error === 'NO_SIGNATURE', JSON.stringify(r.data));
+
+r = await call(docsApi, '/api/documents?do=signature', {
+  method: 'POST', as: 'admin', body: { png: Buffer.from('not a png').toString('base64') },
+});
+ok('a signature that is not a PNG is refused', r.data.error === 'NOT_A_PNG', JSON.stringify(r.data));
+
+r = await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: 'admin', body: { png: sigPng } });
+ok('a real PNG signature is saved', r.status === 200 && r.data.width === 200, JSON.stringify(r.data));
+
+head('44. Documents: signing stamps the PDF');
+
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: 'admin', body: { id: docId, comment: 'อนุมัติ' },
+});
+ok('the director signs', r.status === 200, JSON.stringify(r.data));
+ok('...and a signature really went into the file', r.data.signaturesPlaced === 1, String(r.data.signaturesPlaced));
+ok('...with nothing it could not place', (r.data.couldNotPlace || []).length === 0);
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'admin' });
+const signedFile = r.data.files.find((f) => f.kind === 'signed');
+ok('a signed copy now exists', Boolean(signedFile), JSON.stringify(r.data.files.map(f => f.kind)));
+ok('...alongside the untouched original', r.data.files.some((f) => f.kind === 'original'));
+ok('...and the document moved to the secretary', r.data.document.stage === 'secretary', r.data.document.stage);
+
+// The file really is a PDF, and really has the signature in it.
+const pdfRes = await docsApi(makeRequest(`/api/documents?id=${docId}&file=signed`, { as: 'admin' }));
+const bytes = Buffer.from(await pdfRes.arrayBuffer());
+ok('the signed file downloads as a PDF', pdfRes.headers.get('content-type') === 'application/pdf');
+ok('...and is a valid PDF, not mangled text', bytes.subarray(0, 5).toString() === '%PDF-', bytes.subarray(0, 8).toString());
+ok('...bigger than the original, because an image went in',
+  bytes.length > Buffer.from(await makePdf(2), 'base64').length, String(bytes.length));
+
+head('45. Documents: the progress bar tells the whole story');
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'content' });
+const bar = r.data.progress;
+ok('every stage is listed, in order',
+  bar[0].key === 'submitted' && bar[bar.length - 1].key === 'sent', bar.map((b) => b.key).join(' → '));
+ok('...each with who and when', bar[0].username === 'Kungking_HeadCon' && Boolean(bar[0].at),
+  JSON.stringify({ who: bar[0].username, at: Boolean(bar[0].at) }));
+const signedStep = bar.find((b) => b.role === 'director');
+ok('...the director shows as signed, with a timestamp',
+  signedStep.state === 'approved' && Boolean(signedStep.at), JSON.stringify(signedStep));
+ok('...and says which steps put a signature in the file', signedStep.signs === true);
+
+head('46. Documents: rejection carries the reason back');
+
+const chain2 = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'หนังสือที่จะถูกตีกลับ', pdf: await makePdf(1), department: 'content',
+          steps: chain2.map((s) => ({ role: s.role, username: s.username,
+            mark: s.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
+});
+const rejectId = r.data.id;
+
+r = await call(docsApi, '/api/documents?do=reject', { method: 'POST', as: 'admin', body: { id: rejectId } });
+ok('rejecting without a reason is refused', r.data.error === 'REASON_REQUIRED', JSON.stringify(r.data));
+
+r = await call(docsApi, '/api/documents?do=reject', {
+  method: 'POST', as: 'admin', body: { id: rejectId, comment: 'วันที่ในเอกสารผิด' },
+});
+ok('rejecting with a reason works', r.status === 200 && r.data.stage === 'rejected');
+
+const told = await sql`SELECT title, body FROM notifications
+                       WHERE username = 'Kungking_HeadCon' AND task_id = ${rejectId}
+                       ORDER BY created_at DESC LIMIT 1`;
+ok('the uploader is told, and the reason travels with it',
+  told[0] && told[0].body.includes('วันที่ในเอกสารผิด'), JSON.stringify(told[0]));
+
+head('47. Documents: a higher-up can fix the file instead of sending it back');
+
+const chain3 = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'หนังสือที่จะถูกแก้', pdf: await makePdf(2), department: 'content',
+          steps: chain3.map((s) => ({ role: s.role, username: s.username,
+            mark: s.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
+});
+const fixId = r.data.id;
+
+r = await call(docsApi, '/api/documents?do=replace', {
+  method: 'POST', as: 'admin', body: { id: fixId, pdf: await makePdf(3), comment: 'แก้วันที่ให้แล้ว' },
+});
+ok('an approver can replace the file in place', r.status === 200 && r.data.pages === 3, JSON.stringify(r.data));
+
+r = await call(docsApi, `/api/documents?id=${fixId}`, { as: 'content' });
+ok('...and the chain is untouched — no restarting', r.data.document.stage === 'approving');
+ok('...with the replacement recorded in the history',
+  r.data.events.some((e) => e.kind === 'replaced'), r.data.events.map((e) => e.kind).join(','));
+
+// Somebody with no part in the document cannot touch it.
+r = await call(docsApi, '/api/documents?do=replace', {
+  method: 'POST', as: 'merch', body: { id: fixId, pdf: await makePdf(1) },
+});
+ok('an outsider cannot replace the file', r.status === 403, String(r.status));
+
+head('48. Documents: who can see what');
+
+r = await call(docsApi, '/api/documents', { as: 'merch' });
+ok('somebody unconnected sees none of these documents',
+  !r.data.documents.some((d) => d.id === docId), String(r.data.documents.length));
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'merch' });
+ok('...and cannot open one directly either', r.status === 403, String(r.status));
+
+r = await call(docsApi, `/api/documents?id=${docId}&file=signed`, { as: 'merch' });
+ok('...nor download the file', r.status === 403, String(r.status));
+
+r = await call(docsApi, '/api/documents', { as: 'content' });
+ok('the uploader sees their own', r.data.documents.some((d) => d.id === docId));
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

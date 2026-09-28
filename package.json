@@ -12,6 +12,12 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.1",
+    "pdf-lib": "^1.17.1",
     "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "pdfjs-dist": "^3.11.174",
+    "pg": "^8.23.0",
+    "playwright": "^1.63.0"
   }
 }

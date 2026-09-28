@@ -42,6 +42,12 @@ Viewer is all the sync needs. People you've explicitly shared it with can still 
 
 ---
 
+## Notification wording
+
+The line browsers show on every push — the app's name — comes from the PWA manifest and the browser stamps it on itself, as an anti-spoofing rule so people always know which site notified them. It cannot be removed. It has been shortened to **จุฬาฯแฟร์** so it reads as a small grey line rather than a long bilingual banner. On an iPhone lock screen it comes from the Home Screen name, which stays.
+
+---
+
 ## ⚠️ Deleting is not automatic
 
 Dragging a zip into GitHub **adds and overwrites files, but never removes** ones that are no longer in it. Retired files therefore pile up in the repo — and because Vercel turns every single file under `api/` into its own Serverless Function, and the Hobby plan allows twelve, those leftovers eventually fail a deploy with a message that does not say which files are to blame.
@@ -172,6 +178,54 @@ test/sw.mjs           service worker tests
 An Editor whose sheet row says `All` **sees** every task, but that is visibility only — they cannot edit other people's tasks. Editing authority comes from the access level and from owning the task, never from how much you can see.
 
 Sub-tasks work the same way: the owner breaks a task into parts and gives each part to someone, and only that person (or an admin) can tick their own part off.
+
+---
+
+## Documents for signing
+
+A new **เอกสาร** tab. Somebody uploads a PDF that needs signing, marks where each signature goes, and the system walks it up the chain, stamping signatures in as they are given.
+
+### The chain
+
+staff → หัวหน้าหน่วยย่อย → ประธานฝ่าย → ประธานโครงการ → เลขานุการ
+
+A document enters the chain **immediately above whoever uploaded it**, so nobody approves their own work: a department head's letter goes straight to the director, and the director's own letter goes straight to the secretary with no head signatures at all. Only **ประธานฝ่าย and ประธานโครงการ put a signature into the PDF** — the other steps approve without signing.
+
+The chain is **frozen when the document is submitted**. Who had to sign is a fact about that letter on that day; if somebody changes role in November, the letter they signed in September still says they signed it.
+
+The roster has no way of knowing who runs a section, so the system proposes the chain from your position and you confirm or change the actual people before sending. A wrong guess costs a tap, not a misdirected letter.
+
+### Marking where the signature goes
+
+After choosing the approvers you see the PDF itself and tap where each signature belongs, page by page. The position is stored as a **fraction of the page**, not as pixels — which is what makes it survive a phone in portrait, a desktop at any width, and A4 versus Letter. Measured end to end, a signature lands within about 2% of where it was tapped, and that residual is only because the image keeps its proportions and centres in the box rather than stretching to fill it.
+
+pdf.js is **shipped with the app** rather than loaded from a CDN. Marking a signature is the one thing this feature cannot do without, and a university network blocking a CDN — or an offline phone — would otherwise break it completely.
+
+### Signing
+
+A head or the director signs once in โปรไฟล์ → ลายเซ็น, either drawing it with a finger or mouse or uploading a photo of a real one. It is saved and reused, so every later document is one tap.
+
+The signed copy is **rebuilt from the untouched original every time**, never stamped on top of the previous copy. That way a mistake can be undone, and an approval that is reversed does not leave its signature behind in the file. Both versions stay available: ไฟล์ต้นฉบับ and ไฟล์ที่ลงนามแล้ว.
+
+A signing role with no signature saved is stopped **before** anything is written, and told to go and set one up — rather than the document advancing with an empty box where a name should be.
+
+### Progress
+
+Every document shows where it is: each stage with the date and time it happened, who the contact is at that stage, who has signed, and any comment. Nobody can sign out of turn — being named later in the chain is not permission to sign early.
+
+### When something is wrong
+
+Two ways out, and the second is usually better. **ตีกลับ** requires a reason, and that reason travels with the notification to the uploader so they are not left hunting for someone to ask. Or **อัปโหลดไฟล์แก้ไขแทน**: anyone in the chain can put a corrected file in place and the document carries on from where it was, without the uploader repeating every step. Signatures already given are re-stamped onto the new file, and everyone who had already signed is told, because the paper they signed has changed.
+
+### Notifications
+
+Whoever the document is now waiting on gets told, carrying its priority, through the bell, web push and LINE. **Secretaries are copied on every step** by design. The in-app notice is written first and always, because it is the only channel that cannot fail; push and LINE are best effort on top and can never stop a document advancing.
+
+### Storage, and the Drive archive
+
+While a document is in flight both versions live in the database — only a handful are ever open at once. The fields for archiving to Google Drive are in place; switching it on is a small change rather than a rebuild.
+
+Two rules for when it is: the database copy is deleted only after the app has **confirmed** the file is really in Drive, never just because an upload call returned, and once deleted the app serves the Drive link instead so nothing breaks. If you set it up, the OAuth app must be **published, not left in Testing** — a testing-mode refresh token expires every seven days and the archive would silently stop. Publishing is allowed without a security review because the `drive.file` scope is non-sensitive.
 
 ---
 

@@ -911,3 +911,75 @@ li.task[data-urgency="done"]  { border-left-color: var(--line); background: var(
   background: var(--surface-2); color: var(--accent);
 }
 .ok-line { margin: 0; color: var(--done); font-weight: 600; font-size: 13.5px; }
+
+/* ---------------------------------------------------------------------------
+   Documents for signing.
+   --------------------------------------------------------------------------- */
+.doc-list { display: flex; flex-direction: column; gap: 10px; }
+.doc-card {
+  text-align: left; cursor: pointer; width: 100%;
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 4px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--shadow-1); font: inherit; color: inherit;
+}
+.doc-card.mine { border-left-color: var(--accent); background: var(--accent-soft); }
+.doc-card.bad  { border-left-color: var(--danger); background: var(--danger-soft); }
+.doc-card:hover { box-shadow: var(--shadow-2); }
+.dc-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dc-title { font-weight: 600; font-size: 14.5px; }
+.dc-meta { font-size: 12.5px; color: var(--ink-soft); }
+.dc-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.dc-bar i { display: block; height: 100%; background: var(--done); }
+
+/* The progress list: one line per stage, each carrying when and who. */
+.doc-steps { list-style: none; margin: 4px 0; padding: 0; }
+.ds { display: flex; gap: 12px; padding: 8px 0; position: relative; }
+.ds::before {
+  content: ''; position: absolute; left: 6px; top: 22px; bottom: -8px;
+  width: 2px; background: var(--line);
+}
+.ds:last-child::before { display: none; }
+.ds-dot {
+  flex: none; width: 14px; height: 14px; border-radius: 50%; margin-top: 4px;
+  border: 2px solid var(--line); background: var(--surface); z-index: 1;
+}
+.ds.done .ds-dot, .ds.approved .ds-dot { border-color: var(--done); background: var(--done); }
+.ds.rejected .ds-dot { border-color: var(--danger); background: var(--danger); }
+.ds.waiting .ds-dot { border-color: var(--accent); background: var(--surface); }
+.ds-label { font-size: 13.5px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.ds-who { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-soft); margin-top: 2px; }
+.ds-when { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.ds-note { font-size: 12.5px; color: var(--danger); margin-top: 3px; }
+.ds.waiting .ds-label { color: var(--accent); }
+
+/* Choosing the chain. */
+.chain { display: flex; flex-direction: column; gap: 10px; }
+.chain-row { display: flex; gap: 10px; align-items: flex-start; }
+.chain-n {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; margin-top: 18px;
+  background: var(--surface-3); color: var(--ink-soft);
+  display: grid; place-items: center; font-size: 12px; font-weight: 600;
+}
+.chain-main { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.chain-main > label { font-size: 12.5px; font-weight: 500; color: var(--ink-soft); }
+
+/* Marking where a signature goes. */
+.pdf-sheet { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: crosshair; }
+.pdf-canvas { display: block; width: 100%; height: auto; background: #fff; }
+.pdf-overlay { position: absolute; inset: 0; pointer-events: none; }
+.pdf-pager { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.sig-box {
+  position: absolute; border: 2px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px; display: grid; place-items: center;
+}
+.sig-box.on { border-style: solid; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.sig-box span { font-size: 11px; font-weight: 600; color: var(--accent); }
+
+/* The signature pad. */
+.sig-pad {
+  width: 100%; height: auto; aspect-ratio: 3 / 1; touch-action: none;
+  border: 1px dashed var(--line); border-radius: 10px; background: #fff;
+}
+.modal.wide { width: min(58rem, 100%); }

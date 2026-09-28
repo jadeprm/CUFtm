@@ -23,6 +23,8 @@
     filter: 'open',
     who: '',
     openTaskId: null,    // a task a link asked for, opened once the data lands
+    openDocId: null,     // the same, for a document
+    docs: [],
     dept: '',            // teamspace filter; '' = everything I can see
     unit: '',            // section-within-a-department filter
     prio: '',            // priority filter
@@ -630,6 +632,13 @@
      * than being a page of its own — and it waits for the task list to arrive,
      * because a link followed from a phone usually lands before the data does.
      */
+    if (raw.indexOf('d/') === 0) {
+      S.openDocId = decodeURIComponent(raw.slice(2));
+      location.replace('#/docs');
+      S.page = 'docs';
+      return;
+    }
+
     if (raw.indexOf('t/') === 0) {
       /**
        * Remembered rather than opened on the spot.
@@ -654,7 +663,7 @@
     else if (page === 'mine') { S.scope = 'mine'; page = 'work'; }
     else if (page === 'events') page = 'work';
 
-    if (['work', 'calendar', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
+    if (['work', 'calendar', 'docs', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     S.page = page;
   }
@@ -689,6 +698,696 @@
       .catch(function () { S.openTaskId = null; alert(t('taskNotFound')); });
   }
 
+
+  /* ======================================================================
+     Documents for signing
+     ====================================================================== */
+
+  /**
+   * Rendering a PDF page in the browser, so a box can be drawn on it.
+   *
+   * pdf.js is fetched only when somebody actually opens a document — it is a
+   * large library and most visits to this app never touch a PDF, so loading it
+   * on every page would slow down the parts people use constantly.
+   */
+  var pdfjsReady = null;
+  function withPdfJs() {
+    if (pdfjsReady) return pdfjsReady;
+    pdfjsReady = new Promise(function (resolve, reject) {
+      /**
+       * Served from this site, not a CDN.
+       *
+       * Marking where a signature goes is the one thing this feature cannot do
+       * without, and a CDN is exactly the kind of thing a university network
+       * blocks or an offline phone cannot reach. Shipping the library means it
+       * works wherever the app itself works.
+       */
+      var base = './vendor';
+      var tag = document.createElement('script');
+      tag.src = base + '/pdf.min.js';
+      tag.onload = function () {
+        var lib = window.pdfjsLib;
+        if (!lib) { reject(new Error('pdfjs missing')); return; }
+        lib.GlobalWorkerOptions.workerSrc = base + '/pdf.worker.min.js';
+        resolve(lib);
+      };
+      tag.onerror = function () { reject(new Error('pdfjs blocked')); };
+      document.head.appendChild(tag);
+    });
+    return pdfjsReady;
+  }
+
+  /**
+   * Draws one page into a canvas and reports its on-screen size.
+   *
+   * The size matters as much as the picture: a box drawn on the page is stored
+   * as a fraction of it, and the fraction can only be worked out from where
+   * the click landed relative to the rendered page.
+   */
+  function renderPdfPage(lib, data, pageNumber, canvas, targetWidth) {
+    return lib.getDocument({ data: data.slice(0) }).promise.then(function (pdf) {
+      return pdf.getPage(Math.min(Math.max(1, pageNumber), pdf.numPages)).then(function (page) {
+        var natural = page.getViewport({ scale: 1 });
+        var scale = targetWidth / natural.width;
+        var viewport = page.getViewport({ scale: scale });
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        canvas.style.width = '100%';
+        canvas.style.height = 'auto';
+        return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport })
+          .promise.then(function () { return { pages: pdf.numPages }; });
+      });
+    });
+  }
+
+  function fileToBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result).split(',')[1] || ''); };
+      reader.onerror = function () { reject(new Error('read failed')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  var DOC_STAGE_TH = {
+    approving: 'กำลังรออนุมัติ', secretary: 'รอเลขาฯ ส่ง',
+    done: 'อนุมัติครบแล้ว', sent: 'ส่งแล้ว', rejected: 'ถูกตีกลับ',
+  };
+
+  function pageDocs(main) {
+    main.appendChild(h('div', { class: 'page-head' }, [
+      h('h1', { text: t('navDocs') }),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn primary', text: t('docNew'), onclick: function () { openDocUpload(); } }),
+    ]));
+
+    var list = h('div', { class: 'doc-list' });
+    main.appendChild(list);
+
+    function draw() {
+      clear(list);
+      if (!S.docs.length) {
+        list.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('docNone') })]));
+        return;
+      }
+      S.docs.forEach(function (doc) {
+        list.appendChild(docCard(doc));
+      });
+    }
+
+    api('/api/documents').then(function (data) {
+      S.docs = data.documents || [];
+      draw();
+      // A link from a notification asked for one in particular.
+      if (S.openDocId) {
+        var wanted = S.openDocId;
+        S.openDocId = null;
+        if (S.docs.some(function (d) { return d.id === wanted; })) openDoc(wanted);
+        else alert(t('docNotFound'));
+      }
+    }).catch(function (err) {
+      clear(list);
+      list.appendChild(h('div', { class: 'notice err', text: errText(err.code) }));
+    });
+
+    draw();
+  }
+
+  function docCard(doc) {
+    var waiting = doc.waitingOn ? nameOf(doc.waitingOn) : '—';
+    return h('button', {
+      class: 'doc-card' + (doc.myTurn ? ' mine' : '') + (doc.stage === 'rejected' ? ' bad' : ''),
+      onclick: function () { openDoc(doc.id); },
+    }, [
+      h('div', { class: 'dc-top' }, [
+        h('span', { class: 'dc-title', text: doc.title }),
+        doc.priority && doc.priority !== 'medium'
+          ? h('span', { class: 'chip prio prio-' + doc.priority, text: prioLabel(doc.priority) }) : null,
+        doc.myTurn ? h('span', { class: 'chip who', text: t('docYourTurn') }) : null,
+      ]),
+      h('div', { class: 'dc-bar' }, [
+        h('i', { style: 'width:' + Math.round((doc.progress || 0) * 100) + '%' }),
+      ]),
+      h('div', { class: 'dc-meta', text:
+        (DOC_STAGE_TH[doc.stage] || doc.stage) +
+        (doc.stage === 'approving' || doc.stage === 'secretary'
+          ? ' · ' + t('docWaitingOn') + ' ' + waiting : '') +
+        ' · ' + fmtDate(String(doc.createdAt).slice(0, 10)) }),
+    ]);
+  }
+
+
+  /**
+   * Submitting a document.
+   *
+   * Three stages in one dialog: what it is, who must sign it, and where their
+   * signatures go. The last one is the reason this is a dialog and not a form —
+   * the page has to be visible to point at.
+   */
+  function openDocUpload() {
+    var draft = { title: '', note: '', recipient: '', priority: 'medium',
+                  department: S.user.department || null, unit: null };
+    var pdfBase64 = null;
+    var pdfBytes = null;
+    var pages = 0;
+    var chain = [];
+    var people = [];
+    var stage = 'details';
+    var marking = null;          // which step we are placing a box for
+    var pageShown = 1;
+
+    var notice = h('div', { class: 'notice err', hidden: true });
+    var bodyBox = h('div', { class: 'body' });
+    var footer = h('footer', {});
+
+    function fail(message) {
+      notice.hidden = false;
+      notice.textContent = message;
+    }
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var modal = h('div', { class: 'modal wide' }, [
+      h('header', {}, [
+        h('h2', { text: t('docNew') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      bodyBox, footer,
+    ]);
+
+    /* ---- stage 1: what it is ---- */
+    function drawDetails() {
+      clear(bodyBox); clear(footer);
+      var title = h('input', { type: 'text', maxlength: '200', value: draft.title,
+        placeholder: t('docTitlePlaceholder') });
+      var note = h('textarea', { maxlength: '2000', rows: '2', placeholder: t('docNotePlaceholder') });
+      note.value = draft.note;
+      var recipient = h('input', { type: 'text', maxlength: '200', value: draft.recipient,
+        placeholder: t('docRecipientPlaceholder') });
+
+      var prio = h('div', { class: 'seg wrap' }, PRIORITY_LIST.slice().reverse().map(function (p) {
+        return h('button', {
+          type: 'button', class: 'prio-btn prio-' + p + (draft.priority === p ? ' on' : ''),
+          text: prioLabel(p),
+          onclick: function (e) {
+            draft.priority = p;
+            prio.querySelectorAll('button').forEach(function (b) { b.classList.remove('on'); });
+            e.target.classList.add('on');
+          },
+        });
+      }));
+
+      var deptSelect = h('select', {
+        onchange: function (e) { draft.department = e.target.value || null; draft.unit = null; },
+      }, [h('option', { value: '', text: t('noDepartment') })].concat(
+        myDepartments().map(function (d) {
+          return h('option', { value: d.key, text: deptOptionLabel(d), selected: draft.department === d.key });
+        })));
+
+      var fileInput = h('input', { type: 'file', accept: 'application/pdf,.pdf' });
+      var fileNote = h('p', { class: 'hint', text: t('docPdfHelp') });
+      fileInput.addEventListener('change', function () {
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        if (file.size > 3 * 1024 * 1024) {
+          fail(t('docTooBig'));
+          fileInput.value = '';
+          return;
+        }
+        notice.hidden = true;
+        fileToBase64(file).then(function (b64) {
+          pdfBase64 = b64;
+          pdfBytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
+          fileNote.textContent = file.name + ' · ' + Math.round(file.size / 1024) + ' KB';
+        }).catch(function () { fail(t('errGeneric')); });
+      });
+
+      bodyBox.appendChild(h('div', { class: 'pane' }, [
+        notice,
+        h('div', { class: 'field' }, [h('label', { text: t('docTitle') }), title]),
+        h('div', { class: 'field' }, [h('label', { text: t('docNote') }), note]),
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('docRecipient') }), recipient]),
+          h('div', { class: 'field' }, [h('label', { text: t('teamspace') }), deptSelect]),
+        ]),
+        h('div', { class: 'field' }, [h('label', { text: t('priority') }), prio]),
+        h('div', { class: 'field' }, [h('label', { text: t('docPdf') }), fileInput, fileNote]),
+      ]));
+
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: t('docNext'),
+        onclick: function () {
+          draft.title = title.value.trim();
+          draft.note = note.value.trim();
+          draft.recipient = recipient.value.trim();
+          if (!draft.title) { fail(t('docNeedTitle')); return; }
+          if (!pdfBase64) { fail(t('docNeedPdf')); return; }
+          notice.hidden = true;
+          loadChain();
+        },
+      }));
+      footer.appendChild(h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }));
+    }
+
+    function loadChain() {
+      api('/api/documents?do=propose', {
+        method: 'POST', body: { department: draft.department, unit: draft.unit },
+      }).then(function (data) {
+        chain = data.steps.map(function (s) {
+          return { role: s.role, roleLabel: s.roleLabel, username: s.username,
+                   options: s.options, signs: s.signs, mark: null };
+        });
+        people = data.people;
+        stage = 'who';
+        drawWho();
+      }).catch(function (err) { fail(errText(err.code)); });
+    }
+
+    /* ---- stage 2: who signs ---- */
+    function drawWho() {
+      clear(bodyBox); clear(footer);
+      var rows = chain.map(function (step, i) {
+        var choices = step.options.length ? step.options : people.map(function (p) { return p.username; });
+        var select = h('select', {
+          onchange: function (e) { step.username = e.target.value || null; },
+        }, [h('option', { value: '', text: t('docPickPerson') })].concat(
+          choices.map(function (u) {
+            var p = people.filter(function (x) { return x.username === u; })[0];
+            var label = (p ? (p.displayName || p.username) : u) + (p && p.position ? ' · ' + p.position : '');
+            return h('option', { value: u, text: label, selected: step.username === u });
+          })));
+
+        return h('div', { class: 'chain-row' }, [
+          h('span', { class: 'chain-n', text: String(i + 1) }),
+          h('div', { class: 'chain-main' }, [
+            h('label', {}, [step.roleLabel, step.signs
+              ? h('span', { class: 'chip unit', style: 'margin-left:6px', text: t('docSigns') }) : null]),
+            select,
+          ]),
+        ]);
+      });
+
+      bodyBox.appendChild(h('div', { class: 'pane' }, [
+        notice,
+        h('p', { class: 'hint', text: t('docChainHelp') }),
+        h('div', { class: 'chain' }, rows),
+      ]));
+
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: t('docNext'),
+        onclick: function () {
+          var blank = chain.filter(function (s) { return !s.username; });
+          if (blank.length) { fail(t('docPickEveryone')); return; }
+          notice.hidden = true;
+          stage = 'marks';
+          drawMarks();
+        },
+      }));
+      footer.appendChild(h('button', { class: 'btn', text: t('back'), onclick: drawDetails }));
+    }
+
+    /* ---- stage 3: where the signatures go ---- */
+    function drawMarks() {
+      clear(bodyBox); clear(footer);
+      var needMarks = chain.filter(function (s) { return s.signs; });
+      if (!needMarks.length) { submit(); return; }
+
+      marking = marking || needMarks[0];
+      var canvas = h('canvas', { class: 'pdf-canvas' });
+      var overlay = h('div', { class: 'pdf-overlay' });
+      var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
+      var pager = h('div', { class: 'pdf-pager' });
+
+      var who = h('div', { class: 'seg wrap' }, needMarks.map(function (step) {
+        return h('button', {
+          type: 'button', class: marking === step ? 'on' : '',
+          text: (step.mark ? '✓ ' : '') + nameOf(step.username),
+          onclick: function () { marking = step; drawMarks(); },
+        });
+      }));
+
+      function paintOverlay() {
+        clear(overlay);
+        chain.filter(function (s) { return s.mark && s.mark.page === pageShown; }).forEach(function (s) {
+          overlay.appendChild(h('div', {
+            class: 'sig-box' + (s === marking ? ' on' : ''),
+            style: 'left:' + (s.mark.x * 100) + '%;top:' + (s.mark.y * 100) + '%;' +
+                   'width:' + (s.mark.w * 100) + '%;height:' + (s.mark.h * 100) + '%',
+          }, [h('span', { text: nameOf(s.username) })]));
+        });
+      }
+
+      /**
+       * A tap puts the box's CENTRE where the finger went.
+       *
+       * Measured against the canvas rather than the window, and stored as a
+       * fraction of it, so the same box lands in the same place whether this
+       * was drawn on a phone or a desktop and whatever size the PDF's pages are.
+       */
+      function place(e) {
+        var rect = canvas.getBoundingClientRect();
+        if (!rect.width) return;
+        var point = e.touches && e.touches[0] ? e.touches[0] : e;
+        var w = 0.26;
+        var hh = 0.075;
+        var x = (point.clientX - rect.left) / rect.width - w / 2;
+        var y = (point.clientY - rect.top) / rect.height - hh / 2;
+        marking.mark = {
+          page: pageShown,
+          x: Math.max(0, Math.min(1 - w, x)),
+          y: Math.max(0, Math.min(1 - hh, y)),
+          w: w, h: hh,
+        };
+        paintOverlay();
+        drawFooter();
+      }
+      sheet.addEventListener('click', place);
+
+      bodyBox.appendChild(h('div', { class: 'pane' }, [
+        notice,
+        h('p', { class: 'hint', text: t('docMarkHelp') }),
+        who,
+        pager,
+        sheet,
+      ]));
+
+      function drawPager() {
+        clear(pager);
+        if (pages < 2) return;
+        pager.appendChild(h('button', {
+          class: 'btn sm', text: '‹', disabled: pageShown <= 1,
+          onclick: function () { pageShown--; show(); },
+        }));
+        pager.appendChild(h('span', { text: t('docPage') + ' ' + pageShown + ' / ' + pages }));
+        pager.appendChild(h('button', {
+          class: 'btn sm', text: '›', disabled: pageShown >= pages,
+          onclick: function () { pageShown++; show(); },
+        }));
+      }
+
+      function show() {
+        withPdfJs().then(function (lib) {
+          return renderPdfPage(lib, pdfBytes, pageShown, canvas, 900);
+        }).then(function (info) {
+          pages = info.pages;
+          drawPager();
+          paintOverlay();
+        }).catch(function () { fail(t('docPdfViewFailed')); });
+      }
+      show();
+
+      function drawFooter() {
+        clear(footer);
+        var ready = needMarks.every(function (s) { return s.mark; });
+        footer.appendChild(h('button', {
+          class: 'btn primary', text: t('docSubmit'), disabled: !ready, onclick: submit,
+        }));
+        footer.appendChild(h('button', { class: 'btn', text: t('back'), onclick: drawWho }));
+        if (!ready) {
+          footer.appendChild(h('span', { class: 'hint',
+            text: t('docMarkRemaining').replace('{n}',
+              String(needMarks.filter(function (s) { return !s.mark; }).length)) }));
+        }
+      }
+      drawFooter();
+    }
+
+    function submit() {
+      clear(footer);
+      footer.appendChild(h('span', { class: 'hint', text: t('docSending') }));
+      api('/api/documents?do=create', {
+        method: 'POST',
+        body: {
+          title: draft.title, note: draft.note, recipient: draft.recipient,
+          priority: draft.priority, department: draft.department, unit: draft.unit,
+          pdf: pdfBase64,
+          steps: chain.map(function (s) { return { role: s.role, username: s.username, mark: s.mark }; }),
+        },
+      }).then(function (data) {
+        veil.remove();
+        api('/api/documents').then(function (fresh) {
+          S.docs = fresh.documents || [];
+          renderPage();
+          openDoc(data.id);
+        });
+      }).catch(function (err) {
+        fail(err.data && err.data.error === 'FILE_TOO_BIG' ? t('docTooBig') : errText(err.code));
+        drawMarks();
+      });
+    }
+
+    drawDetails();
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+  }
+
+
+  /**
+   * One document: where it is, and what this person can do about it.
+   */
+  function openDoc(id) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var bodyBox = h('div', { class: 'body' });
+    var footer = h('footer', {});
+    var head2 = h('h2', { text: '…' });
+    var modal = h('div', { class: 'modal wide' }, [
+      h('header', {}, [head2, h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } })]),
+      bodyBox, footer,
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+
+    function load() {
+      api('/api/documents?id=' + encodeURIComponent(id)).then(draw)
+        .catch(function (err) {
+          clear(bodyBox);
+          bodyBox.appendChild(h('div', { class: 'notice err', text: errText(err.code) }));
+        });
+    }
+
+    function draw(data) {
+      var doc = data.document;
+      head2.textContent = doc.title;
+      clear(bodyBox); clear(footer);
+
+      var pane = h('div', { class: 'pane' });
+
+      pane.appendChild(h('div', { class: 'view-band' }, [
+        h('span', { class: 'vb-status st-' + (doc.stage === 'sent' || doc.stage === 'done' ? 'done'
+          : doc.stage === 'rejected' ? 'feedback' : 'doing'),
+          text: DOC_STAGE_TH[doc.stage] || doc.stage }),
+        doc.priority && doc.priority !== 'medium'
+          ? h('span', { class: 'vb-prio prio-' + doc.priority, text: prioLabel(doc.priority) }) : null,
+        h('span', { class: 'grow' }),
+        h('span', { class: 'vb-due', text: t('docSubmittedOn') + ' ' +
+          fmtDate(String(doc.createdAt).slice(0, 10), { day: 'numeric', month: 'long', year: 'numeric' }) }),
+      ]));
+
+      if (doc.note) pane.appendChild(h('p', { class: 'view-desc', text: doc.note }));
+
+      /**
+       * The progress bar, as a list rather than a strip.
+       *
+       * She asked for where the document is, when each step happened, who the
+       * contact is at each stage and who has signed — that is four facts per
+       * step, and a coloured strip can only show one of them.
+       */
+      var steps = h('ol', { class: 'doc-steps' }, data.progress.map(function (p) {
+        var when = p.at ? fmtDate(String(p.at).slice(0, 10), { day: 'numeric', month: 'short' }) +
+          ' ' + String(p.at).slice(11, 16) + ' น.' : '';
+        return h('li', { class: 'ds ' + p.state }, [
+          h('span', { class: 'ds-dot' }),
+          h('div', { class: 'ds-main' }, [
+            h('div', { class: 'ds-label' }, [
+              p.label,
+              p.signs ? h('span', { class: 'chip unit', text: t('docSigns') }) : null,
+            ]),
+            p.username ? h('div', { class: 'ds-who' }, [avatarNode(p.username, 'sm'), nameOf(p.username)]) : null,
+            when ? h('div', { class: 'ds-when', text: when }) : null,
+            p.comment ? h('div', { class: 'ds-note', text: '“' + p.comment + '”' }) : null,
+          ]),
+        ]);
+      }));
+      pane.appendChild(steps);
+
+      pane.appendChild(h('div', { class: 'view-rows' }, [
+        vRow(t('docRecipient'), doc.recipient ? h('span', { text: doc.recipient }) : vMuted('—')),
+        vRow(t('docUploader'), h('span', { class: 'selected' },
+          [h('span', { class: 'chip who' }, [avatarNode(doc.createdBy, 'sm'), nameOf(doc.createdBy)])])),
+        vRow(t('docFiles'), h('span', { class: 'selected' }, data.files.map(function (f) {
+          return h('a', {
+            class: 'chip dept', target: '_blank', rel: 'noopener',
+            href: '/api/documents?id=' + encodeURIComponent(doc.id) + '&file=' + f.kind,
+            text: (f.kind === 'signed' ? t('docSignedCopy') : t('docOriginal')) +
+              ' · ' + Math.round(f.size / 1024) + ' KB',
+          });
+        }))),
+      ]));
+
+      bodyBox.appendChild(pane);
+
+      /* ---- what this person can do ---- */
+      if (data.myTurn) {
+        footer.appendChild(h('button', {
+          class: 'btn primary', text: t('docApprove'),
+          onclick: function () { act('approve'); },
+        }));
+        footer.appendChild(h('button', {
+          class: 'btn danger', text: t('docReject'),
+          onclick: function () {
+            var why = prompt(t('docRejectWhy'));
+            if (why === null) return;
+            if (!why.trim()) { alert(t('docRejectWhy')); return; }
+            act('reject', { comment: why.trim() });
+          },
+        }));
+      }
+
+      if (data.maySend) {
+        footer.appendChild(h('button', {
+          class: 'btn primary', text: t('docMarkSent'),
+          onclick: function () {
+            if (!confirm(t('docMarkSentSure'))) return;
+            act('send', { to: doc.recipient });
+          },
+        }));
+      }
+
+      if (data.mayReplace) {
+        var replaceInput = h('input', { type: 'file', accept: 'application/pdf,.pdf', style: 'display:none' });
+        replaceInput.addEventListener('change', function () {
+          var file = replaceInput.files && replaceInput.files[0];
+          if (!file) return;
+          if (file.size > 3 * 1024 * 1024) { alert(t('docTooBig')); return; }
+          fileToBase64(file).then(function (b64) {
+            return api('/api/documents?do=replace', {
+              method: 'POST', body: { id: doc.id, pdf: b64 },
+            });
+          }).then(load).catch(function (err) { alert(errText(err.code)); });
+        });
+        footer.appendChild(replaceInput);
+        footer.appendChild(h('button', {
+          class: 'btn', text: t('docReplace'), onclick: function () { replaceInput.click(); },
+        }));
+      }
+
+      footer.appendChild(h('span', { class: 'grow' }));
+      footer.appendChild(h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }));
+    }
+
+    function act(what, extra) {
+      api('/api/documents?do=' + what, {
+        method: 'POST', body: Object.assign({ id: id }, extra || {}),
+      }).then(function () {
+        return api('/api/documents').then(function (fresh) {
+          S.docs = fresh.documents || [];
+          renderPage();
+        });
+      }).then(load).catch(function (err) {
+        // A head with no signature on file gets told exactly that, and where
+        // to fix it, rather than a generic failure.
+        if (err.data && err.data.error === 'NO_SIGNATURE') { alert(t('docNoSignature')); return; }
+        alert(errText(err.code));
+      });
+    }
+
+    load();
+  }
+
+  /**
+   * A person's signature, drawn or uploaded once.
+   *
+   * Drawing is the path that works on a phone with no scanner, uploading is
+   * the path that looks right for anyone who already has one. Both end up as
+   * the same PNG with a transparent background, because the signature is
+   * stamped over a printed page and a white rectangle would cover the text.
+   */
+  function signatureBox() {
+    var box = h('div', { class: 'push-box' });
+
+    function draw(state) {
+      clear(box);
+      if (state && state.has) {
+        box.appendChild(h('p', { class: 'ok-line', text: '✓ ' + t('sigSaved') }));
+      } else {
+        box.appendChild(h('p', { class: 'hint', text: t('sigNone') }));
+      }
+      box.appendChild(h('p', { class: 'hint', text: t('sigHelp') }));
+
+      var pad = h('canvas', { class: 'sig-pad', width: '600', height: '200' });
+      var ctx = pad.getContext('2d');
+      var drawing = false;
+      var used = false;
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#111111';
+
+      function at(e) {
+        var rect = pad.getBoundingClientRect();
+        var point = e.touches && e.touches[0] ? e.touches[0] : e;
+        return {
+          x: (point.clientX - rect.left) * (pad.width / rect.width),
+          y: (point.clientY - rect.top) * (pad.height / rect.height),
+        };
+      }
+      function start(e) { e.preventDefault(); drawing = true; used = true; var p = at(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+      function move(e) { if (!drawing) return; e.preventDefault(); var p = at(e); ctx.lineTo(p.x, p.y); ctx.stroke(); }
+      function stop() { drawing = false; }
+      pad.addEventListener('mousedown', start); pad.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', stop);
+      pad.addEventListener('touchstart', start, { passive: false });
+      pad.addEventListener('touchmove', move, { passive: false });
+      pad.addEventListener('touchend', stop);
+
+      box.appendChild(pad);
+
+      var upload = h('input', { type: 'file', accept: 'image/png,image/jpeg', style: 'display:none' });
+      upload.addEventListener('change', function () {
+        var file = upload.files && upload.files[0];
+        if (!file) return;
+        var img = new Image();
+        img.onload = function () {
+          // Redrawn through a canvas so an uploaded JPEG becomes the PNG the
+          // stamper expects, at a sane size.
+          var scale = Math.min(600 / img.width, 200 / img.height, 1);
+          var c = document.createElement('canvas');
+          c.width = Math.round(img.width * scale);
+          c.height = Math.round(img.height * scale);
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          save(c.toDataURL('image/png').split(',')[1]);
+        };
+        img.onerror = function () { alert(t('errGeneric')); };
+        img.src = URL.createObjectURL(file);
+      });
+
+      var row = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+        h('button', {
+          class: 'btn sm primary', text: t('sigSave'),
+          onclick: function () {
+            if (!used) { alert(t('sigDrawFirst')); return; }
+            save(pad.toDataURL('image/png').split(',')[1]);
+          },
+        }),
+        h('button', {
+          class: 'btn sm', text: t('sigClear'),
+          onclick: function () { ctx.clearRect(0, 0, pad.width, pad.height); used = false; },
+        }),
+        h('button', { class: 'btn sm', text: t('sigUpload'), onclick: function () { upload.click(); } }),
+        upload,
+      ]);
+      box.appendChild(row);
+    }
+
+    function save(base64) {
+      api('/api/documents?do=signature', { method: 'POST', body: { png: base64 } })
+        .then(function () { draw({ has: true }); })
+        .catch(function (err) { alert(errText(err.code)); });
+    }
+
+    api('/api/documents?do=signature').then(draw).catch(function () { draw({ has: false }); });
+    return box;
+  }
+
   /* ======================================================================
      Pages
      ====================================================================== */
@@ -696,6 +1395,7 @@
     var main = clear($('main'));
     if (S.page === 'work') return pageTasks(main);
     if (S.page === 'calendar') return pageCalendar(main);
+    if (S.page === 'docs') return pageDocs(main);
     if (S.page === 'profile') return pageProfile(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
@@ -2618,6 +3318,7 @@
 
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
+        h('div', { class: 'field' }, [h('label', { text: t('sigTitle') }), signatureBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
       ]),
       h('footer', {}, [
