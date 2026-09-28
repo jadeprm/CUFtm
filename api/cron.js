@@ -1,10 +1,12 @@
-import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
+import { getSql, json, noDatabase, hasDatabase, requestUrl, toBuffer } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
 import { assembledEvents, audienceOf } from './events.js';
 import { withNode } from '../lib/http.js';
 import { lineConfigured, push, text as lineText, pageLink } from '../lib/line.js';
 import { sayTask, sayDate, MENU as LINE_MENU } from '../lib/linecmd.js';
+import { driveConfigured, archivePdf, archiveHolds } from '../lib/drive.js';
+
 
 /**
  * The reminder run. Something external calls this every hour — see README,
@@ -237,6 +239,10 @@ async function handler(request) {
    */
   const digest = await sendDigests(sql, today);
 
+  // Finished documents move to Drive, and their database copy goes three days
+  // after that — see archiveDocuments().
+  const archive = await archiveDocuments(sql);
+
   // Keep the roster current, and tidy up expired sessions while we're here.
   let roster = null;
   try {
@@ -255,10 +261,92 @@ async function handler(request) {
     eventNotices,
     pushesSent: pushed,
     line: digest,
+    archive,
     roster,
     secured: Boolean(secret),
     ...(secret ? {} : { warning: 'Set CRON_SECRET in Vercel and add ?key=… to the ping URL.' }),
   });
+}
+
+/**
+ * Finished documents, moved out to Google Drive and then cleared from here.
+ *
+ * Two separate steps, deliberately days apart, because they answer different
+ * worries. A document that has been sent is copied to Drive on the next run —
+ * that is the archive, and it happens while the database copy is still there to
+ * prove it worked. Only three days later is the database copy deleted, and only
+ * after asking Drive whether it really still holds a file of the right size.
+ * The gap is the room to notice a bad archive before the other copy is gone.
+ *
+ * Everything here is best effort. An unreachable Drive leaves the document
+ * exactly where it is and the next run tries again; nothing is ever deleted on
+ * the strength of an upload that was not confirmed.
+ */
+const ARCHIVE_GRACE_DAYS = Number(process.env.DOC_ARCHIVE_DAYS || 3);
+
+async function archiveDocuments(sql) {
+  if (!driveConfigured()) return { skipped: 'not configured' };
+
+  const archived = [];
+  const failed = [];
+  const purged = [];
+
+  // Sent, and not yet in Drive. The signed copy is the one worth keeping; a
+  // document nobody had to sign is archived as its original.
+  const waiting = await sql`
+    SELECT id, title, recipient, department, created_by, sent_at
+    FROM documents
+    WHERE sent_at IS NOT NULL AND drive_file_id IS NULL
+    ORDER BY sent_at
+    LIMIT 20`;
+
+  for (const doc of waiting) {
+    const [file] = await sql`
+      SELECT kind, bytes, byte_size FROM doc_files
+      WHERE doc_id = ${doc.id} ORDER BY (kind = 'signed') DESC LIMIT 1`;
+    if (!file) { failed.push({ id: doc.id, reason: 'NO_FILE' }); continue; }
+
+    // The driver hands this back as a Date or as a string depending on where
+    // it is running, and String(aDate) is "Mon Sep 28 …" — not a name anybody
+    // wants a folder full of. Both forms go through the Bangkok formatter.
+    const when = todayInBangkok(new Date(doc.sent_at));
+    const result = await archivePdf(toBuffer(file.bytes), {
+      name: `${when} ${doc.title}`,
+      description: [doc.recipient ? `ถึง ${doc.recipient}` : '', `โดย ${doc.created_by}`]
+        .filter(Boolean).join(' · '),
+    });
+
+    if (!result.ok) { failed.push({ id: doc.id, reason: result.reason }); continue; }
+
+    await sql`
+      UPDATE documents
+      SET drive_file_id = ${result.id}, drive_url = ${result.url}, archived_at = now()
+      WHERE id = ${doc.id}`;
+    await sql`
+      INSERT INTO doc_events (id, doc_id, kind, username, detail)
+      VALUES (${'ev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)},
+              ${doc.id}, 'archived', NULL, ${result.url})`;
+    archived.push(doc.id);
+  }
+
+  // Old enough, and confirmed to be in Drive: the database copy can go.
+  const ripe = await sql`
+    SELECT d.id, d.drive_file_id,
+           (SELECT max(byte_size) FROM doc_files f WHERE f.doc_id = d.id) AS byte_size
+    FROM documents d
+    WHERE d.drive_file_id IS NOT NULL
+      AND d.archived_at < now() - (${ARCHIVE_GRACE_DAYS} || ' days')::interval
+      AND EXISTS (SELECT 1 FROM doc_files f WHERE f.doc_id = d.id)
+    LIMIT 20`;
+
+  for (const doc of ripe) {
+    const holds = await archiveHolds(doc.drive_file_id, Number(doc.byte_size || 0));
+    if (!holds.ok) { failed.push({ id: doc.id, reason: 'KEPT_' + holds.reason }); continue; }
+    await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id}`;
+    purged.push(doc.id);
+  }
+
+  return { archived, purged, failed, graceDays: ARCHIVE_GRACE_DAYS };
 }
 
 /**

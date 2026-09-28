@@ -16,6 +16,9 @@
     notifs: [],
     unread: 0,
     canManage: false,
+    canSetAccess: false,
+    sheetWritable: false,
+    adminNotice: null,   // survives the redraw a change on the admin page causes
     lastSync: null,
     sheetId: null,
     page: 'work',
@@ -25,6 +28,7 @@
     openTaskId: null,    // a task a link asked for, opened once the data lands
     openDocId: null,     // the same, for a document
     docs: [],
+    mayManageSecretaries: false,
     dept: '',            // teamspace filter; '' = everything I can see
     unit: '',            // section-within-a-department filter
     prio: '',            // priority filter
@@ -665,6 +669,9 @@
 
     if (['work', 'calendar', 'docs', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
+    // Leaving the admin page drops whatever it was last saying, so coming back
+    // to it tomorrow does not reopen with yesterday's message.
+    if (page !== 'admin') S.adminNotice = null;
     S.page = page;
   }
 
@@ -775,9 +782,15 @@
   };
 
   function pageDocs(main) {
+    var secBtn = h('button', {
+      class: 'btn', text: t('docSecretaries'), hidden: !S.mayManageSecretaries,
+      onclick: function () { openSecretaries(); },
+    });
+
     main.appendChild(h('div', { class: 'page-head' }, [
       h('h1', { text: t('navDocs') }),
       h('span', { class: 'grow' }),
+      secBtn,
       h('button', { class: 'btn primary', text: t('docNew'), onclick: function () { openDocUpload(); } }),
     ]));
 
@@ -797,6 +810,8 @@
 
     api('/api/documents').then(function (data) {
       S.docs = data.documents || [];
+      S.mayManageSecretaries = Boolean(data.mayManageSecretaries);
+      secBtn.hidden = !S.mayManageSecretaries;
       draw();
       // A link from a notification asked for one in particular.
       if (S.openDocId) {
@@ -836,6 +851,113 @@
     ]);
   }
 
+
+  /**
+   * The secretariat: who is in it, and how documents are shared out.
+   *
+   * Open to the head secretaries and the admins only — being an ordinary
+   * secretary means seeing every document, which is exactly why an ordinary
+   * secretary must not be able to appoint more of them.
+   */
+  function openSecretaries() {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var bodyBox = h('div', { class: 'body' });
+    var modal = h('div', { class: 'modal' }, [
+      h('header', {}, [
+        h('h2', { text: t('docSecretaries') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      bodyBox,
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }),
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+
+    function send(change) {
+      api('/api/documents?do=secretaries', { method: 'POST', body: change })
+        .then(draw).catch(function (err) { alert(errText(err.code)); });
+    }
+
+    function draw(data) {
+      clear(bodyBox);
+      var pane = h('div', { class: 'pane' });
+
+      pane.appendChild(h('p', { class: 'view-desc', text: t('docSecretariesHint') }));
+
+      // Who is in it now. Each name removes itself; the last one cannot.
+      var chips = h('div', { class: 'access-cell' }, data.secretaries.map(function (s) {
+        return h('span', {
+          class: 'chip who x', title: t('docRemoveSecretary'),
+          onclick: function () {
+            if (!confirm(t('docRemoveSecretarySure').replace('%s', s.displayName || s.username))) return;
+            send({ remove: s.username });
+          },
+        }, [
+          avatarNode(s.username, 'sm'),
+          (s.isHead ? '★ ' : '') + (s.displayName || s.username) + ' ✕',
+        ]);
+      }));
+
+      var add = h('select', {
+        class: 'add-dept',
+        onchange: function (e) {
+          var who = e.target.value;
+          e.target.value = '';
+          if (who) send({ add: who });
+        },
+      }, [h('option', { value: '', text: '+ ' + t('docAddSecretary') })]
+        .concat(data.candidates.map(function (p) {
+          return h('option', { value: p.username, text: (p.displayName || p.username) + (p.position ? ' · ' + p.position : '') });
+        })));
+      chips.appendChild(add);
+      pane.appendChild(vRow(t('docSecretaryList'), chips));
+
+      /**
+       * How a new document picks its secretary. Random spreads the load;
+       * "by department" honours the mapping below and falls back to random for
+       * any department nobody has been given.
+       */
+      var mode = h('select', {
+        class: 'add-dept',
+        onchange: function (e) { send({ mode: e.target.value }); },
+      }, [
+        h('option', { value: 'random', selected: data.mode === 'random', text: t('docAssignRandom') }),
+        h('option', { value: 'department', selected: data.mode === 'department', text: t('docAssignByDept') }),
+      ]);
+      pane.appendChild(vRow(t('docAssignMode'), mode));
+
+      if (data.mode === 'department') {
+        var table = h('div', { class: 'view-rows' }, S.departments.map(function (d) {
+          var pick = h('select', {
+            class: 'add-dept',
+            onchange: function (e) {
+              var body = { byDepartment: {} };
+              body.byDepartment[d.key] = e.target.value;
+              send(body);
+            },
+          }, [h('option', { value: '', text: t('docAssignNobody') })]
+            .concat(data.secretaries.map(function (s) {
+              return h('option', {
+                value: s.username, selected: data.byDepartment[d.key] === s.username,
+                text: s.displayName || s.username,
+              });
+            })));
+          return vRow(deptLabel(d.key), pick);
+        }));
+        pane.appendChild(table);
+      }
+
+      bodyBox.appendChild(pane);
+    }
+
+    api('/api/documents?do=secretaries').then(draw).catch(function (err) {
+      clear(bodyBox);
+      bodyBox.appendChild(h('div', { class: 'notice err', text: errText(err.code) }));
+    });
+  }
 
   /**
    * Submitting a document.
@@ -1220,7 +1342,13 @@
             text: (f.kind === 'signed' ? t('docSignedCopy') : t('docOriginal')) +
               ' · ' + Math.round(f.size / 1024) + ' KB',
           });
-        }))),
+        }).concat(doc.driveUrl ? [h('a', {
+          // Once a finished document has been filed in Drive, that copy is the
+          // one that lasts — so the link to it is shown here rather than
+          // leaving people to hunt through a folder for it.
+          class: 'chip dept', target: '_blank', rel: 'noopener',
+          href: doc.driveUrl, text: t('docInDrive'),
+        })] : []))),
       ]));
 
       bodyBox.appendChild(pane);
@@ -1267,6 +1395,56 @@
         footer.appendChild(replaceInput);
         footer.appendChild(h('button', {
           class: 'btn', text: t('docReplace'), onclick: function () { replaceInput.click(); },
+        }));
+      }
+
+      /**
+       * Moving it to a different secretary. Only while it is still with them:
+       * once a document has been sent, who handled it is history.
+       */
+      if (data.mayAssign) {
+        var secStep = data.steps.filter(function (s) { return s.role === 'secretary'; })[0];
+        if (secStep && secStep.state === 'waiting') {
+          api('/api/documents?do=secretaries').then(function (list) {
+            var pick = h('select', {
+              class: 'add-dept',
+              onchange: function (e) {
+                if (!e.target.value || e.target.value === secStep.username) return;
+                api('/api/documents?do=assign', {
+                  method: 'POST', body: { id: doc.id, username: e.target.value },
+                }).then(load).catch(function (err) { alert(errText(err.code)); });
+              },
+            }, list.secretaries.map(function (s) {
+              return h('option', {
+                value: s.username, selected: s.username === secStep.username,
+                text: s.displayName || s.username,
+              });
+            }));
+            pane.appendChild(h('div', { class: 'view-rows' }, [vRow(t('docSecretary'), pick)]));
+          }).catch(function () {});
+        }
+      }
+
+      /**
+       * Withdrawing it. The uploader may while nobody above them has acted;
+       * after that it is not theirs alone to erase. Everything goes — the file
+       * with it — so the confirmation says so plainly.
+       */
+      if (data.mayDelete) {
+        footer.appendChild(h('button', {
+          class: 'btn danger', text: t('docDelete'),
+          onclick: function () {
+            if (!confirm(t('docDeleteSure'))) return;
+            api('/api/documents?id=' + encodeURIComponent(doc.id), { method: 'DELETE' })
+              .then(function () {
+                veil.remove();
+                return api('/api/documents').then(function (fresh) {
+                  S.docs = fresh.documents || [];
+                  renderPage();
+                });
+              })
+              .catch(function (err) { alert(errText(err.code)); });
+          },
         }));
       }
 
@@ -3746,7 +3924,26 @@
 
   /* ---------- admin ----------------------------------------------------- */
   function pageAdmin(main) {
+    /**
+     * The message survives the redraw.
+     *
+     * Every change here re-renders the whole page, so a notice built as a
+     * local element would be thrown away in the same breath as it was set —
+     * which is why an admin could change something and see nothing said about
+     * it, success or failure. It lives in the page state instead.
+     */
     var notice = h('div', { class: 'notice', hidden: true });
+    if (S.adminNotice) {
+      notice.hidden = false;
+      notice.className = 'notice ' + S.adminNotice.kind;
+      notice.textContent = S.adminNotice.text;
+    }
+    var say = function (kind, text) {
+      S.adminNotice = { kind: kind, text: text };
+      notice.hidden = false;
+      notice.className = 'notice ' + kind;
+      notice.textContent = text;
+    };
 
     main.appendChild(h('div', { class: 'page-head' }, [
       h('h1', { text: t('adminTitle') }),
@@ -3756,19 +3953,16 @@
           e.target.disabled = true;
           api('/api/users?do=sync', { method: 'POST' }).then(function (data) {
             S.users = data.users;
-            notice.hidden = false;
             var parts = ['+' + data.added + ' / ~' + data.updated +
               (data.deactivated.length ? ' / -' + data.deactivated.length : '')];
             if (data.pinned) parts.push(data.pinned + ' ' + t('syncPinned'));
             (data.unreadable || []).forEach(function (u) {
               parts.push(u.username + ': ' + t('syncUnreadable') + ' \u2014 ' + u.cells.join(', '));
             });
-            notice.className = 'notice ' + ((data.unreadable || []).length ? 'warn' : 'ok');
-            notice.textContent = parts.join('  \u00b7  ');
+            say((data.unreadable || []).length ? 'warn' : 'ok', parts.join('  \u00b7  '));
             renderPage();
           }).catch(function (err) {
-            notice.hidden = false; notice.className = 'notice err';
-            notice.textContent = (err.data && err.data.message) || errText(err.code);
+            say('err', (err.data && err.data.message) || errText(err.code));
             e.target.disabled = false;
           });
         },
@@ -3784,6 +3978,11 @@
       t('adminSheetNote') + '  ·  ' + t('lastSync') + ': ' +
       (S.lastSync ? new Date(S.lastSync).toLocaleString(S.lang === 'th' ? 'th-TH' : 'en-GB') : t('never')),
     ]));
+    // Said once, up front: without the write-back set up, an access change
+    // here never reaches the spreadsheet everyone else reads.
+    if (S.canSetAccess && !S.sheetWritable) {
+      main.appendChild(h('div', { class: 'notice warn', text: t('sheetNotLinked') }));
+    }
     main.appendChild(notice);
 
     var rows = S.users.map(function (u) {
@@ -3806,7 +4005,7 @@
             h('small', { style: 'color:var(--ink-faint)', text: u.username }),
           ]),
         ])]),
-        h('td', {}, [h('span', { class: 'badge ' + u.access, text: t('access' + u.access.charAt(0).toUpperCase() + u.access.slice(1)) })]),
+        h('td', {}, [accessLevelCell(u, blocked)]),
         h('td', { text: u.position || '—' }),
         h('td', {}, [deptCell]),
         h('td', { style: 'text-align:center' }, [headCb]),
@@ -3837,6 +4036,47 @@
         h('tbody', {}, rows),
       ]),
     ]));
+
+    /**
+     * The access level — Admin, Co-Admin or Editor.
+     *
+     * Only an admin sees a dropdown here; everyone else sees the badge, which
+     * is what the server enforces anyway. Changing it writes back to the
+     * Google Sheet, so the two do not drift apart — and when that write cannot
+     * be made, the row says so rather than letting an admin believe the sheet
+     * was updated.
+     */
+    function accessLevelCell(u, blocked) {
+      var badge = h('span', {
+        class: 'badge ' + u.access,
+        text: t('access' + u.access.charAt(0).toUpperCase() + u.access.slice(1)),
+      });
+      if (blocked || !S.canSetAccess) return badge;
+
+      var box = h('div', { class: 'access-cell' });
+      var pick = h('select', {
+        class: 'add-dept',
+        onchange: function (e) {
+          var want = e.target.value;
+          if (want === u.access) return;
+          manage(u, { access: want });
+        },
+      }, ['admin', 'coadmin', 'editor'].map(function (level) {
+        return h('option', {
+          value: level, selected: level === u.access,
+          text: t('access' + level.charAt(0).toUpperCase() + level.slice(1)),
+        });
+      }));
+      box.appendChild(pick);
+
+      if (u.accessPinned) {
+        box.appendChild(h('small', {
+          class: 'from-sheet', style: 'color:var(--warn,#b26a00)',
+          text: t('pinnedHere'), title: t('accessPinnedHint'),
+        }));
+      }
+      return box;
+    }
 
     /**
      * Department access for one person.
@@ -3918,10 +4158,14 @@
         .then(function (data) {
           var i = S.users.findIndex(function (u) { return u.username === data.user.username; });
           if (i !== -1) S.users[i] = data.user;
+          // Say what happened to the sheet, every time something was meant to
+          // reach it. Silence here is how an admin ends up trusting a change
+          // that only exists in one of the two places.
+          if (data.sheet) say(data.sheet.ok ? 'ok' : 'warn', data.sheet.ok ? t('sheetWrote') : t('sheetNotWrote'));
           renderPage();
         })
         .catch(function (err) {
-          notice.hidden = false; notice.className = 'notice err'; notice.textContent = errText(err.code);
+          say('err', errText(err.code));
           renderPage();
         });
     }
@@ -4515,6 +4759,8 @@
       S.departments = res[0].departments;
       S.users = res[1].users;
       S.canManage = res[1].canManage;
+      S.canSetAccess = Boolean(res[1].canSetAccess);
+      S.sheetWritable = Boolean(res[1].sheetWritable);
       S.lastSync = res[1].lastSync;
       S.sheetId = res[1].sheetId;
       S.tasks = res[2].tasks;

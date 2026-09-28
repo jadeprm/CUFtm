@@ -4,7 +4,8 @@ import {
   departmentsByUser, departmentsOf, setDepartments,
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
-import { isDepartment, expandAccess } from '../lib/departments.js';
+import { writeAccess, sheetWriteConfigured } from '../lib/sheets.js';
+import { isDepartment, expandAccess, departmentByKey } from '../lib/departments.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -19,6 +20,16 @@ import { withNode } from '../lib/http.js';
 
 const MAX_AVATAR = 200_000; // ~200 KB of data URL; the page downsizes before sending
 
+/**
+ * How a set of department grants should read in the sheet's Department column.
+ *
+ * Thai labels, because that is what the column already contains and what Jade
+ * reads — and every one of them is a spelling `parseDepartmentList` knows, so
+ * what this writes comes back meaning the same thing on the next sync.
+ */
+const sheetDepartments = (keys, all) =>
+  all ? ['All'] : keys.map((key) => departmentByKey(key)?.th || key);
+
 const directoryRow = (u, grants = {}) => ({
   username: u.username,
   nickname: u.nickname,
@@ -29,6 +40,7 @@ const directoryRow = (u, grants = {}) => ({
   departments: grants[u.username] || u.departments || [],
   allDepartments: Boolean(u.all_departments),
   deptsPinned: Boolean(u.depts_pinned),
+  accessPinned: Boolean(u.access_pinned),
   isHead: u.is_head,
   unit: u.unit || null,
   avatar: u.avatar || null,
@@ -61,6 +73,10 @@ async function handler(request) {
     return json({
       users: rows.map((u) => directoryRow(u, grants)),
       canManage: canManageAccounts(me),
+      canSetAccess: me.access === ACCESS.ADMIN,
+      // Whether an access change made here can reach the sheet. The page says
+      // so up front rather than letting an admin find out afterwards.
+      sheetWritable: sheetWriteConfigured(),
       lastSync: meta?.value || null,
       sheetId: SHEET_ID,
     });
@@ -162,6 +178,14 @@ async function handler(request) {
      * switch; it is stored as a flag rather than as a row per department so a
      * new department does not have to be granted to the directors by hand.
      */
+    /**
+     * Whichever of access level and departments this request changed is
+     * written back to the sheet once, at the end, rather than twice here: one
+     * call to Google instead of two, and no window where the sheet holds a
+     * half-applied change.
+     */
+    let sheetPlan = null;
+
     if (body.departments !== undefined || body.allDepartments !== undefined) {
       const wanted = Array.isArray(body.departments)
         ? [...new Set(body.departments.map((d) => String(d)))]
@@ -175,10 +199,11 @@ async function handler(request) {
           ? Boolean(target.all_departments)
           : Boolean(body.allDepartments);
 
-      await sql`UPDATE users SET all_departments = ${all}, depts_pinned = true, updated_at = now()
+      await sql`UPDATE users SET all_departments = ${all}, updated_at = now()
                 WHERE username = ${target.username}`;
       await setDepartments(sql, target.username, expandAccess(wanted));
 
+      sheetPlan = { ...(sheetPlan || {}), departments: sheetDepartments(wanted, all) };
       sets.push(all ? 'access: all departments' : `access: ${wanted.length} department(s)`);
     }
 
@@ -190,7 +215,7 @@ async function handler(request) {
      * mistaken click permanently detaches someone from the roster.
      */
     if (body.followSheet) {
-      await sql`UPDATE users SET depts_pinned = false, updated_at = now()
+      await sql`UPDATE users SET depts_pinned = false, access_pinned = false, updated_at = now()
                 WHERE username = ${target.username}`;
       sets.push('following the sheet again');
     }
@@ -226,19 +251,84 @@ async function handler(request) {
     }
 
     /**
-     * Access level is not settable here on purpose: the Google Sheet is the
-     * master for it. Editing it in the app would be silently undone by the
-     * next sync, which is worse than refusing.
+     * Access level, changed here and pushed back to the Google Sheet.
+     *
+     * The sheet stays the master list — this writes to it rather than working
+     * around it, so the next sync reads back the same answer instead of
+     * quietly restoring the old one.
      */
     if (body.access !== undefined) {
-      return json({ error: 'ACCESS_FROM_SHEET' }, 400);
+      const wanted = String(body.access);
+      if (!Object.values(ACCESS).includes(wanted)) return json({ error: 'BAD_ACCESS' }, 400);
+
+      /**
+       * Only a full admin may set access. A co-admin can act on editors, and
+       * if that included the access level they could promote an editor to
+       * admin and act through them — the exact power the co-admin rule exists
+       * to withhold.
+       */
+      if (me.access !== ACCESS.ADMIN) return json({ error: 'ONLY_ADMIN_SETS_ACCESS' }, 403);
+
+      /**
+       * There must always be someone left who can manage accounts. Without
+       * this, one careless demotion locks everybody out of the admin page with
+       * no way back in from inside the app.
+       */
+      if (target.access === ACCESS.ADMIN && wanted !== ACCESS.ADMIN) {
+        const [{ count }] = await sql`
+          SELECT count(*)::int AS count FROM users
+          WHERE access = 'admin' AND active = true AND suspended = false`;
+        if (count <= 1) return json({ error: 'LAST_ADMIN' }, 400);
+      }
+
+      await sql`UPDATE users SET access = ${wanted}, updated_at = now()
+                WHERE username = ${target.username}`;
+
+      sheetPlan = { ...(sheetPlan || {}), access: wanted };
+      sets.push(`access level: ${wanted}`);
     }
 
     if (!sets.length) return json({ error: 'NOTHING_TO_DO' }, 400);
 
+    /**
+     * The write back to the Google Sheet.
+     *
+     * Deliberately last and deliberately not fatal: the change has already
+     * taken effect in the app, and an admin who has just moved somebody should
+     * see that happen even when Google is having a bad morning. What they get
+     * instead is an honest note that the sheet did not receive it.
+     *
+     * Whichever part did not get through is pinned so the hourly sync leaves
+     * it alone; whichever part did is unpinned, because the sheet now says the
+     * same thing and there is nothing left to protect the record from.
+     */
+    let sheetResult = null;
+    if (sheetPlan) {
+      /**
+       * Only the cells this request actually changed. Rewriting the Department
+       * cell during an access change would quietly restandardise somebody's
+       * hand-written "Oper 1" into the app's own spelling — a change nobody
+       * asked for, in a column people maintain themselves.
+       */
+      sheetResult = await writeAccess(
+        target.username,
+        sheetPlan.access ?? null,
+        sheetPlan.departments ?? null,
+      );
+
+      const stuck = !sheetResult.ok;
+      if (sheetPlan.access !== undefined) {
+        await sql`UPDATE users SET access_pinned = ${stuck} WHERE username = ${target.username}`;
+      }
+      if (sheetPlan.departments !== undefined) {
+        await sql`UPDATE users SET depts_pinned = ${stuck} WHERE username = ${target.username}`;
+      }
+      sets.push(sheetResult.ok ? 'sheet updated' : 'sheet not updated');
+    }
+
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${target.username}`;
     fresh.departments = await departmentsOf(sql, target.username);
-    return json({ user: directoryRow(fresh), did: sets });
+    return json({ user: directoryRow(fresh), did: sets, sheet: sheetResult });
   }
 
   /**

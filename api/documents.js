@@ -1,10 +1,12 @@
-import { getSql } from '../lib/db.js';
+import { getSql, toBuffer } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
-import { isDepartment, matchUnit } from '../lib/departments.js';
+import { isDepartment, matchUnit, departmentByKey } from '../lib/departments.js';
+import { writeAccess } from '../lib/sheets.js';
 import {
   proposeChain, pendingStep, canAct, canReplaceFile, canSeeDocument,
   progressOf, progressFraction, signsPdf, isSecretary, ROLE_TH,
+  isHeadSecretary, canManageSecretaries, canDeleteDocument, pickSecretary,
 } from '../lib/approval.js';
 import {
   stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
@@ -47,16 +49,6 @@ const PRIORITIES = ['low', 'medium', 'high', 'highest'];
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const clean = (v, max = 400) => String(v ?? '').trim().slice(0, max);
 
-/** bytea comes back as a Buffer, or as a \\x… string depending on the driver. */
-function toBuffer(value) {
-  if (!value) return null;
-  if (Buffer.isBuffer(value)) return value;
-  if (value instanceof Uint8Array) return Buffer.from(value);
-  const text = String(value);
-  if (text.startsWith('\\x')) return Buffer.from(text.slice(2), 'hex');
-  return Buffer.from(text, 'binary');
-}
-
 function fromBase64(value, limit) {
   const raw = String(value || '').replace(/^data:[^,]*,/, '');
   if (!raw) return { error: 'EMPTY_FILE' };
@@ -79,6 +71,7 @@ async function handler(request) {
 
   if (request.method === 'GET') {
     if (action === 'signature') return mySignature(sql, me);
+    if (action === 'secretaries') return listSecretaries(sql, me);
     if (id && url.searchParams.get('file')) {
       return downloadFile(sql, me, id, url.searchParams.get('file'));
     }
@@ -86,6 +79,7 @@ async function handler(request) {
     return listDocuments(sql, me);
   }
 
+  if (request.method === 'DELETE' && id) return removeDocument(sql, me, id);
   if (request.method !== 'POST') return json({ error: 'UNKNOWN_ACTION' }, 400);
   const body = await request.json().catch(() => ({}));
 
@@ -97,6 +91,8 @@ async function handler(request) {
     case 'reject':    return reject(sql, me, body);
     case 'replace':   return replaceFile(sql, me, body);
     case 'send':      return markSent(sql, me, body);
+    case 'secretaries': return changeSecretaries(sql, me, body);
+    case 'assign':      return reassignSecretary(sql, me, body);
     default:          return json({ error: 'UNKNOWN_ACTION' }, 400);
   }
 }
@@ -178,6 +174,7 @@ async function listDocuments(sql, me) {
   return json({
     documents: visible,
     isSecretary: isSecretary(me),
+    mayManageSecretaries: canManageSecretaries(me),
     mine: visible.filter((d) => d.myTurn).length,
   });
 }
@@ -201,6 +198,8 @@ async function oneDocument(sql, me, id) {
     myTurn: canAct(me, doc, steps),
     mayReplace: canReplaceFile(me, doc, steps),
     maySend: isSecretary(me) && doc.stage === 'secretary',
+    mayDelete: canDeleteDocument(me, doc, steps),
+    mayAssign: canManageSecretaries(me) && doc.stage !== 'sent',
   });
 }
 
@@ -216,6 +215,8 @@ async function downloadFile(sql, me, id, kind) {
   if (!buffer) {
     // Cleared after archiving: the copy in Drive is the one that exists now.
     if (doc.drive_url) return json({ error: 'ARCHIVED', driveUrl: doc.drive_url }, 410);
+    // Cleared on rejection: the record survives so the reason can be read.
+    if (doc.stage === 'rejected') return json({ error: 'REJECTED_FILE_REMOVED' }, 410);
     return json({ error: 'NO_FILE' }, 404);
   }
 
@@ -258,7 +259,11 @@ async function propose(sql, me, body) {
   const people = asPeople(await rosterFor(sql));
   const department = isDepartment(body.department) ? body.department : (me.department || null);
   const unit = department ? matchUnit(department, body.unit) : null;
-  const chain = proposeChain(me, { people, department, unit });
+  const rule = await secretaryRule(sql);
+  const chain = proposeChain(me, {
+    people, department, unit,
+    secretaryPick: (options) => pickSecretary(options, { ...rule, department }),
+  });
 
   return json({
     department,
@@ -552,6 +557,18 @@ async function reject(sql, me, body) {
   await note(sql, doc.id, 'rejected', me.username, comment);
 
   /**
+   * The file goes, the reason stays.
+   *
+   * A rejected document is dead — keeping the PDF only occupies space and
+   * leaves a copy of something nobody approved. But the record and the reason
+   * are what the uploader needs to fix it and what the committee needs to
+   * remember, so those are kept for good. Deleting both would answer "why?"
+   * with silence.
+   */
+  await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id}`;
+  await note(sql, doc.id, 'files_removed', null, 'ลบไฟล์ออกจากระบบแล้ว เก็บเฉพาะประวัติและเหตุผล');
+
+  /**
    * The reason travels with the notice. A bare "rejected" would send the
    * uploader hunting for someone to ask, which is the whole problem this is
    * meant to solve.
@@ -652,5 +669,201 @@ async function markSent(sql, me, body) {
   return json({ ok: true, stage: 'sent' });
 }
 
+
+// ---------------------------------------------------------------------------
+// Secretaries
+// ---------------------------------------------------------------------------
+
+/** How new documents are shared out, and the department mapping behind it. */
+async function secretaryRule(sql) {
+  const [row] = await sql`SELECT value FROM meta WHERE key = 'doc_secretary_mode'`;
+  const prefs = await sql`SELECT department, username FROM secretary_prefs`;
+  const byDepartment = {};
+  for (const p of prefs) byDepartment[p.department] = p.username;
+  return { mode: row?.value === 'department' ? 'department' : 'random', byDepartment };
+}
+
+async function listSecretaries(sql, me) {
+  const people = asPeople(await rosterFor(sql));
+  const secs = people.filter((p) => isSecretary(p));
+  const rule = await secretaryRule(sql);
+
+  return json({
+    mayManage: canManageSecretaries(me),
+    amHead: isHeadSecretary(me),
+    mode: rule.mode,
+    byDepartment: rule.byDepartment,
+    secretaries: secs.map((p) => ({
+      username: p.username,
+      displayName: p.display_name,
+      nickname: p.nickname,
+      position: p.position,
+      isHead: Boolean(p.is_head),
+    })),
+    // Anyone who could be brought in, for the "add somebody" picker.
+    candidates: people
+      .filter((p) => !isSecretary(p))
+      .map((p) => ({ username: p.username, displayName: p.display_name, position: p.position })),
+  });
+}
+
+/**
+ * Bringing a secretary in, letting one go, and setting how documents are shared.
+ *
+ * Restricted to the head secretaries and the admins. Being an ordinary
+ * secretary means watching every document, which is exactly why an ordinary
+ * secretary must not be able to appoint more of them.
+ */
+async function changeSecretaries(sql, me, body) {
+  if (!canManageSecretaries(me)) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  const touched = [];
+
+  if (body.add) {
+    const [person] = await sql`
+      SELECT username FROM users WHERE username = ${clean(body.add, 64)} AND active = true`;
+    if (!person) return json({ error: 'NO_SUCH_USER' }, 400);
+    await sql`INSERT INTO user_departments (username, department)
+              VALUES (${person.username}, 'secretariat') ON CONFLICT DO NOTHING`;
+    // Somebody with no teamspace at all would otherwise be a secretary with
+    // nowhere to file their own work.
+    await sql`UPDATE users SET department = 'secretariat', updated_at = now()
+              WHERE username = ${person.username} AND department IS NULL`;
+    touched.push(person.username);
+  }
+
+  if (body.remove) {
+    const target = clean(body.remove, 64);
+    const people = asPeople(await rosterFor(sql));
+    const left = people.filter((p) => isSecretary(p) && p.username !== target);
+    // Removing the last secretary would leave every document with nowhere to
+    // finish, so the last one cannot be removed.
+    if (!left.length) return json({ error: 'LAST_SECRETARY' }, 400);
+    await sql`DELETE FROM user_departments
+              WHERE username = ${target} AND department = 'secretariat'`;
+    await sql`DELETE FROM secretary_prefs WHERE username = ${target}`;
+
+    /**
+     * The home teamspace counts as being in the secretariat too, so clearing
+     * only the grant would leave somebody who had been "removed" still seeing
+     * every document. It moves to whatever else they have, or to nothing.
+     */
+    const rest = await sql`
+      SELECT department FROM user_departments WHERE username = ${target} LIMIT 1`;
+    await sql`UPDATE users SET department = ${rest[0]?.department ?? null}, updated_at = now()
+              WHERE username = ${target} AND department = 'secretariat'`;
+    touched.push(target);
+  }
+
+  /**
+   * Whoever was moved is written back to the roster sheet, for the same reason
+   * the admin page does it: the hourly sync reads that sheet, and a change it
+   * has never heard of is a change that quietly disappears. If Google cannot
+   * be reached the person is pinned instead, which holds the change here.
+   */
+  for (const username of touched) {
+    const [row] = await sql`SELECT all_departments FROM users WHERE username = ${username}`;
+    const keys = (await sql`SELECT department FROM user_departments WHERE username = ${username}`)
+      .map((d) => d.department);
+    const labels = row.all_departments ? ['All'] : keys.map((k) => departmentByKey(k)?.th || k);
+    // Departments only: nobody's access level changed here.
+    const wrote = await writeAccess(username, null, labels);
+    await sql`UPDATE users SET depts_pinned = ${!wrote.ok} WHERE username = ${username}`;
+  }
+
+  if (body.mode === 'random' || body.mode === 'department') {
+    await sql`INSERT INTO meta (key, value) VALUES ('doc_secretary_mode', ${body.mode})
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
+  }
+
+  if (body.byDepartment && typeof body.byDepartment === 'object') {
+    for (const [dept, username] of Object.entries(body.byDepartment)) {
+      if (!isDepartment(dept)) continue;
+      if (!username) {
+        await sql`DELETE FROM secretary_prefs WHERE department = ${dept}`;
+        continue;
+      }
+      await sql`
+        INSERT INTO secretary_prefs (department, username, set_by, updated_at)
+        VALUES (${dept}, ${clean(username, 64)}, ${me.username}, now())
+        ON CONFLICT (department) DO UPDATE
+          SET username = EXCLUDED.username, set_by = EXCLUDED.set_by, updated_at = now()`;
+    }
+  }
+
+  return listSecretaries(sql, me);
+}
+
+/**
+ * Moving a document to a different secretary.
+ *
+ * Only while it is still with them — once a document is sent, who handled it
+ * is history and must not be rewritten.
+ */
+async function reassignSecretary(sql, me, body) {
+  if (!canManageSecretaries(me)) return json({ error: 'NOT_ALLOWED' }, 403);
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+  if (doc.stage === 'sent') return json({ error: 'ALREADY_SENT' }, 400);
+
+  const step = steps.find((s) => s.role === 'secretary');
+  if (!step) return json({ error: 'NO_SECRETARY_STEP' }, 400);
+  if (step.state !== 'waiting') return json({ error: 'ALREADY_ACTED' }, 400);
+
+  const people = asPeople(await rosterFor(sql));
+  const target = people.find((p) => p.username === clean(body.username, 64) && isSecretary(p));
+  if (!target) return json({ error: 'NOT_A_SECRETARY' }, 400);
+
+  const before = step.username;
+  await sql`UPDATE doc_steps SET username = ${target.username} WHERE id = ${step.id}`;
+  await note(sql, doc.id, 'reassigned', me.username, `${before} → ${target.username}`);
+
+  await tellPeople(sql, {
+    usernames: [target.username],
+    docId: doc.id,
+    priority: doc.priority,
+    title: `เอกสารถูกมอบหมายให้คุณ: ${doc.title}`,
+    body: `${me.display_name || me.username} มอบหมายให้คุณดูแลเอกสารนี้`,
+  });
+
+  return json({ ok: true, secretary: target.username, was: before });
+}
+
+// ---------------------------------------------------------------------------
+// Throwing one away
+// ---------------------------------------------------------------------------
+
+/**
+ * Deleting a document outright.
+ *
+ * Everything goes — the file, the chain, the history — because the uploader
+ * asking for it back means it should never have been sent. The row cascades,
+ * so no orphaned steps or events survive.
+ */
+async function removeDocument(sql, me, id) {
+  const found = await loadFor(sql, id);
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+
+  if (!canDeleteDocument(me, doc, steps)) {
+    // Naming the reason matters: "somebody already signed it" is a different
+    // problem from "this was never yours".
+    const mine = (doc.created_by === me.username);
+    return json({ error: mine ? 'ALREADY_ACTED_ON' : 'NOT_ALLOWED' }, 403);
+  }
+
+  const watchers = await secretaries(sql);
+  await sql`DELETE FROM documents WHERE id = ${id}`;
+  await tellPeople(sql, {
+    usernames: watchers,
+    docId: id,
+    priority: doc.priority,
+    title: `เอกสารถูกยกเลิก: ${doc.title}`,
+    body: `${me.display_name || me.username} ยกเลิกเอกสารนี้`,
+  });
+  return json({ ok: true, deleted: true });
+}
+
 export default withNode(handler);
-export { rebuildSigned, toBuffer };
+export { rebuildSigned };
