@@ -20,9 +20,12 @@ const publicUser = (u) => ({
   username: u.username,
   nickname: u.nickname,
   displayName: u.display_name || u.sheet_name || u.username,
+  fullName: u.full_name || null,
   position: u.position,
   access: u.access,
   department: u.department,
+  // The section they run, which is what scopes a unit editor.
+  unit: u.unit || null,
   departments: u.departments || [],
   allDepartments: Boolean(u.all_departments),
   isHead: u.is_head,

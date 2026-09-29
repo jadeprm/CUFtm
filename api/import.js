@@ -500,9 +500,10 @@ async function handler(request) {
             .filter((k) => ['7d', '24h', 'due'].includes(k)).join(',');
 
           await sql`
-            INSERT INTO events (id, title, description, starts_on, starts_at, ends_on, ends_at,
+            INSERT INTO events (id, code, title, description, starts_on, starts_at, ends_on, ends_at,
                                 all_day, place, department, colour, notify, created_by)
-            VALUES (${id}, ${title}, ${clean(row.description, 4000)},
+            VALUES (${id}, 'E' || lpad(nextval('event_code_seq')::text, 4, '0'),
+            ${title}, ${clean(row.description, 4000)},
                     ${startsOn},
                     ${allDay ? null : (/^\d{2}:\d{2}$/.test(row.startsAt || '') ? row.startsAt : null)},
                     ${endsOn},
@@ -549,9 +550,10 @@ async function handler(request) {
         const homeKey = home ? home.key : (me.department || null);
         const unit = homeKey ? matchUnit(homeKey, row.unit) : null;
         await sql`
-          INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+          INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                              department, unit, created_by, notify)
-          VALUES (${id}, ${title}, ${clean(row.description, 4000)},
+          VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+            ${title}, ${clean(row.description, 4000)},
                   ${/^\d{4}-\d{2}-\d{2}$/.test(row.dueDate || '') ? row.dueDate : null},
                   ${/^\d{2}:\d{2}$/.test(row.dueTime || '') ? row.dueTime : null},
                   ${STATUSES.includes(row.status) ? row.status : 'todo'},

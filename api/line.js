@@ -316,6 +316,21 @@ async function run(sql, me, lineUserId, body) {
       ['งานของฉัน', 'วันนี้', 'สัปดาห์นี้', 'เลยกำหนด', 'กิจกรรม', 'จบ']);
   }
   if (MENU_MANAGE.includes(typed)) return startManage(sql, me, lineUserId, today);
+  /**
+   * A bare code, typed or pasted on its own — "T0042".
+   *
+   * Nobody is going to type "หา T0042" when the code is already the whole
+   * message, and a code is distinctive enough that it cannot be mistaken for
+   * anything else somebody might say.
+   */
+  if (/^[TE]\d{3,6}$/i.test(typed)) {
+    return listTasks(sql, me, lineUserId, today, {
+      title: `รหัส ${typed.toUpperCase()}`,
+      where: (t) => (t.code || '').toLowerCase() === typed.toLowerCase(),
+      alsoEvents: (e) => (e.code || '').toLowerCase() === typed.toLowerCase(),
+    });
+  }
+
   if (['จบ', 'จบการทำงาน', 'ปิดเมนู', 'done', 'exit'].includes(typed.toLowerCase())) {
     await sql`DELETE FROM line_flows WHERE line_user_id = ${lineUserId}`;
     return text('เรียบร้อยค่ะ 👋\nกดปุ่มด้านล่างจอเมื่อต้องการเริ่มใหม่', []);
@@ -369,11 +384,19 @@ async function run(sql, me, lineUserId, body) {
     case 'docReject':  return rejectFromLine(sql, me, lineUserId, command.rest);
     case 'docAskWhy':  return askWhy(sql, me, lineUserId, command.rest);
 
-    case 'search':
+    case 'search': {
+      // The short code counts as a search term, because a code is exactly what
+      // somebody pastes into a chat when they mean one particular task.
+      const q = command.rest.toLowerCase();
       return listTasks(sql, me, lineUserId, today, {
         title: `ผลการค้นหา "${command.rest}"`,
-        where: (t) => t.title.toLowerCase().includes(command.rest.toLowerCase()),
+        where: (t) => (t.code || '').toLowerCase() === q ||
+          t.title.toLowerCase().includes(q) ||
+          (t.description || '').toLowerCase().includes(q),
+        alsoEvents: (e) => (e.code || '').toLowerCase() === q ||
+          e.title.toLowerCase().includes(q),
       });
+    }
 
     case 'addTask':   return addTask(sql, me, command.rest, today);
     case 'addEvent':  return addEvent(sql, me, command.rest, today);
@@ -752,9 +775,10 @@ async function addTask(sql, me, body, today) {
   const assignees = parsed.assignees.length ? parsed.assignees : [me.username];
 
   await sql`
-    INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+    INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                        department, created_by, notify)
-    VALUES (${id}, ${parsed.title.slice(0, 200)}, ${''},
+    VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+            ${parsed.title.slice(0, 200)}, ${''},
             ${parsed.dueDate}, ${parsed.dueTime}, 'todo',
             ${parsed.priority || 'medium'}, ${department}, ${me.username}, ${'7d,24h,due'})`;
 
@@ -792,9 +816,10 @@ async function addEvent(sql, me, body, today) {
 
   const id = `e_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   await sql`
-    INSERT INTO events (id, title, description, starts_on, starts_at, ends_on, ends_at,
+    INSERT INTO events (id, code, title, description, starts_on, starts_at, ends_on, ends_at,
                         all_day, place, department, colour, notify, created_by)
-    VALUES (${id}, ${parsed.title.slice(0, 200)}, ${''},
+    VALUES (${id}, 'E' || lpad(nextval('event_code_seq')::text, 4, '0'),
+            ${parsed.title.slice(0, 200)}, ${''},
             ${parsed.dueDate}, ${parsed.dueTime}, ${null}, ${null},
             ${!parsed.dueTime}, ${''}, ${me.department || null}, 'plum',
             ${'7d,24h,due'}, ${me.username})`;
@@ -988,9 +1013,10 @@ async function saveDraft(sql, me, lineUserId, draft, people) {
   const notify = draft.notify === undefined ? '7d,24h,due' : draft.notify;
 
   await sql`
-    INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+    INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                        department, unit, created_by, notify)
-    VALUES (${id}, ${draft.title.slice(0, 200)}, ${draft.description || ''},
+    VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+            ${draft.title.slice(0, 200)}, ${draft.description || ''},
             ${draft.dueDate || null}, ${draft.dueTime || null},
             ${draft.status || 'todo'}, ${draft.priority || 'medium'},
             ${department}, ${draft.unit || null}, ${me.username}, ${notify})`;

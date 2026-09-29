@@ -1,5 +1,5 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
-import { currentUser } from '../lib/auth.js';
+import { currentUser, canEditTasks, cannotAssign } from '../lib/auth.js';
 import { isDepartment, matchUnit } from '../lib/departments.js';
 import {
   isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet,
@@ -86,6 +86,8 @@ export async function assembled(sql) {
 
   return rows.map((t) => ({
     id: t.id,
+    // The short code people quote to each other: T0042.
+    code: t.code || null,
     title: t.title,
     description: t.description,
     dueDate: toIsoDate(t.due_date),
@@ -447,6 +449,16 @@ async function handler(request) {
     }
 
     if (request.method === 'POST') {
+      /**
+       * A member does not hand work out.
+       *
+       * That is the whole distinction between the two new levels: a unit
+       * editor runs a section and gives work to the people in it, a member
+       * does the work they are given. Refusing here rather than only hiding
+       * the button is what makes it a rule instead of a suggestion.
+       */
+      if (!canEditTasks(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
+
       const body = await request.json().catch(() => ({}));
       const title = clean(body.title, 200);
       if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
@@ -476,15 +488,31 @@ async function handler(request) {
       const unit = department ? matchUnit(department, body.unit) : null;
 
       await sql`
-        INSERT INTO tasks (id, title, description, due_date, due_time, status, priority,
+        INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                            department, unit, created_by, notify)
-        VALUES (${id}, ${title}, ${clean(body.description, 4000)},
+        VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+                ${title}, ${clean(body.description, 4000)},
                 ${cleanDate(body.dueDate)}, ${cleanTime(body.dueTime)},
                 ${isStatus(body.status) ? body.status : 'todo'},
                 ${isPriority(body.priority) ? body.priority : 'medium'},
                 ${department}, ${unit}, ${me.username}, ${notify})`;
 
       const { assignees, departments } = readTags(body);
+
+      /**
+       * Checked against the people the tags actually reach, not against the
+       * names typed in the request. Tagging a whole department is a way of
+       * assigning everybody in it, so a unit editor who tags ฝ่ายเนื้อหา is
+       * refused for the same reason as one who names those people directly.
+       */
+      const willGetIt = await expandPeople(sql, assignees, departments);
+      const roster = await sql`SELECT username, unit FROM users WHERE active = true`;
+      const blocked = cannotAssign(me, willGetIt, roster);
+      if (blocked) {
+        await sql`DELETE FROM tasks WHERE id = ${id}`;
+        return json({ error: blocked, unit: me.unit || null }, 403);
+      }
+
       const expanded = await writeTags(sql, id, assignees, departments);
 
       if (notify.includes('created')) {
@@ -582,6 +610,14 @@ async function handler(request) {
           assignees: body.assignees ?? current.map((r) => r.username),
           departments: body.departments ?? [],
         });
+
+        // The same rule as creating: a unit editor cannot widen a task they
+        // own to reach people outside their section.
+        const willGetIt = await expandPeople(sql, assignees, departments);
+        const roster = await sql`SELECT username, unit FROM users WHERE active = true`;
+        const blocked = cannotAssign(me, willGetIt, roster);
+        if (blocked) return json({ error: blocked, unit: me.unit || null }, 403);
+
         const expanded = await writeTags(sql, id, assignees, departments);
 
         const added = expanded.filter((u) => !before.has(u));

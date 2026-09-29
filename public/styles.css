@@ -1143,3 +1143,40 @@ button.avatar { border: none; padding: 0; cursor: pointer; font: inherit; }
   .brand-sub, #brand-sub { display: none; }
   main { padding-bottom: 5.5rem; }
 }
+
+/* ---------------------------------------------------------------------------
+   The short code, and searching by it.
+
+   A code is something to quote, not to read: small, grey and monospaced so the
+   characters cannot be misread over the phone, and out of the way of the title
+   it belongs to.
+   --------------------------------------------------------------------------- */
+.t-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--ink-faint); margin-right: 7px;
+  letter-spacing: .02em;
+}
+.filters input.search {
+  flex: 1 1 14rem; min-width: 10rem; max-width: 22rem;
+  padding: 7px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  font-size: 14px; font-family: inherit;
+}
+.filters input.search:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+@media (max-width: 720px) {
+  .filters input.search { flex: 1 1 100%; max-width: none; min-height: 40px; }
+}
+.view-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; color: var(--ink-soft);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 2px 7px; cursor: pointer;
+}
+
+/* The avatar cropper: a round window over the picture, dragged and zoomed. */
+.crop-canvas {
+  width: 100%; max-width: 320px; aspect-ratio: 1; touch-action: none; cursor: grab;
+  border-radius: 12px; background: var(--surface-2); display: block;
+}
+.crop-canvas:active { cursor: grabbing; }
+.crop-zoom { width: 100%; max-width: 320px; accent-color: var(--accent); }

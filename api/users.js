@@ -5,7 +5,9 @@ import {
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
 import { writeAccess, sheetWriteConfigured } from '../lib/sheets.js';
-import { isDepartment, expandAccess, departmentByKey } from '../lib/departments.js';
+import {
+  isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
+} from '../lib/departments.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -34,6 +36,8 @@ const directoryRow = (u, grants = {}) => ({
   username: u.username,
   nickname: u.nickname,
   displayName: u.display_name || u.sheet_name || u.username,
+  // The name that goes on a letter, as opposed to the one on a task board.
+  fullName: u.full_name || null,
   position: u.position,
   access: u.access,
   department: u.department,
@@ -139,6 +143,18 @@ async function handler(request) {
   if (request.method === 'PATCH' && action === 'me') {
     const body = await request.json().catch(() => ({}));
     const patch = {};
+
+    /**
+     * Their own full name — firstname lastname, as it goes on a document.
+     *
+     * Theirs to set, not an admin's: a name is the one field nobody else
+     * should be correcting on somebody's behalf.
+     */
+    if (body.fullName !== undefined) {
+      const full = String(body.fullName ?? '').trim().slice(0, 120);
+      await sql`UPDATE users SET full_name = ${full || null}, updated_at = now()
+                WHERE username = ${me.username}`;
+    }
 
     if (body.displayName !== undefined) {
       const name = String(body.displayName).trim().slice(0, 80);
@@ -291,10 +307,28 @@ async function handler(request) {
       sets.push('home teamspace set');
     }
 
+    /**
+     * The section inside a department.
+     *
+     * Only a name the org chart lists for one of the departments this person
+     * has been granted is accepted. A free-text box would fill the roster with
+     * three spellings of เวที within a week, and a unit editor's whole scope
+     * hangs off this value matching the people in their section exactly.
+     */
     if (body.unit !== undefined) {
-      const unit = body.unit === null ? null : String(body.unit).slice(0, 80);
+      const unit = body.unit === null || body.unit === '' ? null : String(body.unit).slice(0, 80);
+
+      if (unit !== null) {
+        const granted = Boolean(target.all_departments)
+          ? DEPARTMENT_KEYS
+          : expandAccess(await departmentsOf(sql, target.username));
+        const known = granted.some((key) => matchUnit(key, unit) === unit);
+        if (!known) return json({ error: 'UNIT_NOT_IN_DEPARTMENT', unit }, 400);
+      }
+
       await sql`UPDATE users SET unit = ${unit}, updated_at = now() WHERE username = ${target.username}`;
-      sets.push('unit set');
+      sheetPlan = { ...(sheetPlan || {}), unit: unit || '' };
+      sets.push(unit ? `unit: ${unit}` : 'unit cleared');
     }
 
     if (body.isHead !== undefined) {
@@ -367,6 +401,7 @@ async function handler(request) {
         target.username,
         sheetPlan.access ?? null,
         sheetPlan.departments ?? null,
+        sheetPlan.unit,
       );
 
       const stuck = !sheetResult.ok;
@@ -382,6 +417,67 @@ async function handler(request) {
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${target.username}`;
     fresh.departments = await departmentsOf(sql, target.username);
     return json({ user: directoryRow(fresh), did: sets, sheet: sheetResult });
+  }
+
+  /**
+   * Removing an account for good.
+   *
+   * Only for somebody already out of the committee — off the sheet, or
+   * suspended. Deleting a working account would be a mistake with no undo, and
+   * an active member is removed by taking them off the sheet, which is where
+   * membership is decided.
+   *
+   * What goes: the account, its password, its sessions, its notifications, its
+   * LINE link, its devices, and its department grants. What stays: everything
+   * the committee needs — the tasks and events they made, the documents they
+   * sent and the signatures already on them. A record with a hole where a name
+   * used to be is worse than one that mentions somebody who has left.
+   */
+  if (request.method === 'DELETE' && action === 'user') {
+    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+
+    const name = url.searchParams.get('username') || '';
+    const [target] = await sql`SELECT * FROM users WHERE lower(username) = ${name.toLowerCase()}`;
+
+    const blocked = cannotActOn(me, target);
+    if (blocked) return json({ error: blocked }, blocked === 'NO_SUCH_USER' ? 404 : 403);
+    if (target.username === me.username) return json({ error: 'CANNOT_DELETE_YOURSELF' }, 400);
+    if (target.active && !target.suspended) return json({ error: 'ONLY_INACTIVE_OR_SUSPENDED' }, 400);
+
+    /**
+     * Their work is handed to the person doing the removing rather than
+     * deleted with them — a task cascade would take the committee's work with
+     * the account, which is never what "remove this person" means.
+     */
+    const kept = { tasks: 0, events: 0, documents: 0 };
+    const tasks = await sql`
+      UPDATE tasks SET created_by = ${me.username}, updated_at = now()
+      WHERE created_by = ${target.username} RETURNING id`;
+    kept.tasks = tasks.length;
+    const events = await sql`
+      UPDATE events SET created_by = ${me.username}, updated_at = now()
+      WHERE created_by = ${target.username} RETURNING id`;
+    kept.events = events.length;
+    const docs = await sql`
+      SELECT count(*)::int AS n FROM documents WHERE created_by = ${target.username}`;
+    kept.documents = docs[0].n;
+    await sql`UPDATE documents SET created_by = ${me.username} WHERE created_by = ${target.username}`;
+
+    // Everything that is only about them, gone before the row itself.
+    await sql`DELETE FROM task_people WHERE username = ${target.username}`;
+    await sql`DELETE FROM event_people WHERE username = ${target.username}`;
+    await sql`DELETE FROM reminders_sent WHERE username = ${target.username}`;
+    await sql`DELETE FROM notifications WHERE username = ${target.username}`;
+    await sql`DELETE FROM users WHERE username = ${target.username}`;
+
+    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const grants = await departmentsByUser(sql);
+    return json({
+      ok: true,
+      removed: target.username,
+      kept,
+      users: rows.map((u) => directoryRow(u, grants)),
+    });
   }
 
   /**

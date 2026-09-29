@@ -29,9 +29,11 @@
     openDocId: null,     // the same, for a document
     docs: [],
     mayManageSecretaries: false,
+    registerReady: false,   // is the เลขรันเอกสาร spreadsheet connected
     dept: '',            // teamspace filter; '' = everything I can see
     unit: '',            // section-within-a-department filter
     prio: '',            // priority filter
+    q: '',               // what is typed in the search box
     seesEverything: false,
     myDepartments: [],   // every teamspace I may work in
     push: {
@@ -208,6 +210,37 @@
     return text;
   }
   /** One labelled line of a read-only summary. */
+  /**
+   * The short code, as something to copy.
+   *
+   * People pass these around in LINE, so one tap to copy is the difference
+   * between a code that gets used and one that gets retyped wrongly.
+   */
+  function codeChip(code) {
+    var chip = h('button', { class: 'view-code', text: code, title: t('copyCode') });
+    chip.addEventListener('click', function () {
+      var done = function () {
+        var was = chip.textContent;
+        chip.textContent = t('codeCopied');
+        setTimeout(function () { chip.textContent = was; }, 1200);
+      };
+      // Clipboard access is refused in some browsers and on insecure origins,
+      // so the fallback selects the text for the person to copy themselves.
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(done).catch(function () { select(chip); });
+      } else select(chip);
+
+      function select(node) {
+        var range = document.createRange();
+        range.selectNodeContents(node);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    });
+    return chip;
+  }
+
   function vRow(label, value) {
     return h('div', { class: 'vrow' }, [
       h('div', { class: 'vk', text: label }),
@@ -593,6 +626,21 @@
     if (!$('bell-pop').hidden) renderBell();
   }
 
+  /**
+   * Escape closes whatever is on top.
+   *
+   * Every dialog in this app already closes on a click outside, but on a
+   * keyboard that means aiming at the dark part of the screen. Escape is what
+   * people press, and until now nothing happened.
+   */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    var veils = document.querySelectorAll('#modal-root .veil');
+    if (veils.length) { veils[veils.length - 1].remove(); return; }
+    ['bell-pop', 'me-pop'].forEach(function (id) { $(id).hidden = true; });
+    $('me-avatar').setAttribute('aria-expanded', 'false');
+  });
+
   $('bell-btn').addEventListener('click', function (e) { e.stopPropagation(); openPop('bell-pop'); });
   $('me-avatar').addEventListener('click', function (e) { e.stopPropagation(); openPop('me-pop'); });
 
@@ -710,6 +758,10 @@
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
     if (page !== 'admin') S.adminNotice = null;
+    // Going somewhere closes whatever was hanging off the top bar. A profile
+    // menu left open over the page you just navigated to is a menu the person
+    // has to dismiss before they can read anything.
+    ['bell-pop', 'me-pop'].forEach(function (id) { if ($(id)) $(id).hidden = true; });
     S.page = page;
   }
 
@@ -825,9 +877,35 @@
       onclick: function () { openSecretaries(); },
     });
 
+    /**
+     * Pushes the roster's full names into the register's รายชื่อผู้รับผิดชอบ
+     * lists — the other half of linking the two.
+     *
+     * A button rather than something automatic: it is forty-odd writes to the
+     * committee's own spreadsheet, and doing that every time somebody edits
+     * their profile would be rude to the sheet and slow for them.
+     */
+    var namesBtn = h('button', {
+      class: 'btn', text: t('docSyncNames'),
+      hidden: !(S.mayManageSecretaries && S.registerReady),
+      onclick: function (e) {
+        e.target.disabled = true;
+        api('/api/documents?do=names', { method: 'POST' }).then(function (d) {
+          var said = t('docSyncNamesDone').replace('%n', String(d.written.length));
+          if (d.withoutFullName.length) {
+            said += '  \u00b7  ' + t('docSyncNamesMissing')
+              .replace('%n', String(d.withoutFullName.length));
+          }
+          alert(said);
+          e.target.disabled = false;
+        }).catch(function (err) { alert(errText(err.code)); e.target.disabled = false; });
+      },
+    });
+
     main.appendChild(h('div', { class: 'page-head' }, [
       h('h1', { text: t('navDocs') }),
       h('span', { class: 'grow' }),
+      namesBtn,
       secBtn,
       h('button', { class: 'btn primary', text: t('docNew'), onclick: function () { openDocUpload(); } }),
     ]));
@@ -849,7 +927,10 @@
     api('/api/documents').then(function (data) {
       S.docs = data.documents || [];
       S.mayManageSecretaries = Boolean(data.mayManageSecretaries);
+      S.registerReady = Boolean(data.registerReady);
+      if (data.myFullName && !S.user.fullName) S.user.fullName = data.myFullName;
       secBtn.hidden = !S.mayManageSecretaries;
+      namesBtn.hidden = !(S.mayManageSecretaries && S.registerReady);
       draw();
       // A link from a notification asked for one in particular.
       if (S.openDocId) {
@@ -873,6 +954,9 @@
       onclick: function () { openDoc(doc.id); },
     }, [
       h('div', { class: 'dc-top' }, [
+        // The committee's own number, once it has one — that is what people
+        // quote to each other and to whoever received the letter.
+        doc.docNumber ? h('span', { class: 't-code', text: doc.docNumber }) : null,
         h('span', { class: 'dc-title', text: doc.title }),
         doc.priority && doc.priority !== 'medium'
           ? h('span', { class: 'chip prio prio-' + doc.priority, text: prioLabel(doc.priority) }) : null,
@@ -1006,7 +1090,7 @@
    */
   function openDocUpload() {
     var draft = { title: '', note: '', recipient: '', priority: 'medium',
-                  department: S.user.department || null, unit: null };
+                  department: S.user.department || null, unit: S.user.unit || null };
     var pdfBase64 = null;
     var pdfBytes = null;
     var pages = 0;
@@ -1056,8 +1140,33 @@
         });
       }));
 
+      /**
+       * The section, beside the ฝ่าย.
+       *
+       * Not decoration: the committee numbers letters per section, so this is
+       * what decides whether a letter is อบจ.จฬฟ. 03-001 or 03.01-001. It
+       * defaults to the uploader's own section, which is right almost always.
+       */
+      var unitSelect = h('select', {});
+      function fillUnits() {
+        clear(unitSelect);
+        var dept = S.departments.filter(function (d) { return d.key === draft.department; })[0];
+        unitSelect.appendChild(h('option', { value: '', text: t('noUnit') }));
+        (dept && dept.units ? dept.units : []).forEach(function (name) {
+          unitSelect.appendChild(h('option', {
+            value: name, text: name, selected: draft.unit === name,
+          }));
+        });
+        unitSelect.disabled = !(dept && dept.units && dept.units.length);
+      }
+      unitSelect.addEventListener('change', function () { draft.unit = unitSelect.value || null; });
+
       var deptSelect = h('select', {
-        onchange: function (e) { draft.department = e.target.value || null; draft.unit = null; },
+        onchange: function (e) {
+          draft.department = e.target.value || null;
+          draft.unit = null;
+          fillUnits();
+        },
       }, [h('option', { value: '', text: t('noDepartment') })].concat(
         myDepartments().map(function (d) {
           return h('option', { value: d.key, text: deptOptionLabel(d), selected: draft.department === d.key });
@@ -1081,17 +1190,42 @@
         }).catch(function () { fail(t('errGeneric')); });
       });
 
+      /**
+       * The uploader's own name, asked for once.
+       *
+       * It goes in the ผู้รับผิดชอบ column of the committee's register, where
+       * a username or "Kungking - Head Content" would be no use to whoever
+       * reads the book of letters later. Asked here because this is where it
+       * is needed, shown as already answered once it has been given, and kept
+       * on the profile afterwards.
+       */
+      var fullName = h('input', {
+        type: 'text', maxlength: '120', value: S.user.fullName || '',
+        placeholder: t('fullNamePlaceholder'),
+      });
+
       bodyBox.appendChild(h('div', { class: 'pane' }, [
         notice,
+        h('div', { class: 'field' }, [
+          h('label', { text: t('docResponsible') }),
+          fullName,
+          h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('fullNameWhy') }),
+        ]),
         h('div', { class: 'field' }, [h('label', { text: t('docTitle') }), title]),
         h('div', { class: 'field' }, [h('label', { text: t('docNote') }), note]),
+        h('div', { class: 'field' }, [h('label', { text: t('docRecipient') }), recipient]),
         h('div', { class: 'two' }, [
-          h('div', { class: 'field' }, [h('label', { text: t('docRecipient') }), recipient]),
           h('div', { class: 'field' }, [h('label', { text: t('teamspace') }), deptSelect]),
+          h('div', { class: 'field' }, [
+            h('label', { text: t('unit') }),
+            unitSelect,
+            h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('docUnitWhy') }),
+          ]),
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('priority') }), prio]),
         h('div', { class: 'field' }, [h('label', { text: t('docPdf') }), fileInput, fileNote]),
       ]));
+      fillUnits();
 
       footer.appendChild(h('button', {
         class: 'btn primary', text: t('docNext'),
@@ -1099,8 +1233,13 @@
           draft.title = title.value.trim();
           draft.note = note.value.trim();
           draft.recipient = recipient.value.trim();
+          draft.fullName = fullName.value.trim();
+          if (!draft.fullName) { fail(t('docNeedFullName')); fullName.focus(); return; }
           if (!draft.title) { fail(t('docNeedTitle')); return; }
           if (!pdfBase64) { fail(t('docNeedPdf')); return; }
+          // Remembered locally as well, so the field is pre-filled next time
+          // even before the page has been reloaded.
+          S.user.fullName = draft.fullName;
           notice.hidden = true;
           loadChain();
         },
@@ -1278,6 +1417,7 @@
         method: 'POST',
         body: {
           title: draft.title, note: draft.note, recipient: draft.recipient,
+          fullName: draft.fullName,
           priority: draft.priority, department: draft.department, unit: draft.unit,
           pdf: pdfBase64,
           steps: chain.map(function (s) { return { role: s.role, username: s.username, mark: s.mark }; }),
@@ -1617,6 +1757,21 @@
     if (S.page === 'announce') return pageAnnounce(main);
   }
 
+  /**
+   * Does this task or event match what was typed in the search box?
+   *
+   * The code is matched on its own so that typing T0042 finds exactly that one
+   * and not every task whose description happens to contain those characters.
+   */
+  function matchesQuery(item) {
+    var q = (S.q || '').trim().toLowerCase();
+    if (!q) return true;
+    if ((item.code || '').toLowerCase() === q) return true;
+    return [item.code, item.title, item.description, item.place]
+      .filter(Boolean)
+      .some(function (field) { return String(field).toLowerCase().indexOf(q) !== -1; });
+  }
+
   /* ---------- tasks ----------------------------------------------------- */
   function visibleTasks(mineOnly) {
     return S.tasks.filter(function (task) {
@@ -1632,6 +1787,7 @@
        * STATUS_LIST means a status can never be forgotten here again.
        */
       if (STATUS_LIST.indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
+      if (!matchesQuery(task)) return false;
       if (S.who && task.assignees.indexOf(S.who) === -1) return false;
       if (S.prio && task.priority !== S.prio) return false;
       if (S.unit && task.unit !== S.unit) return false;
@@ -1686,9 +1842,14 @@
         });
       })),
       h('span', { class: 'grow' }),
-      h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }),
-      h('button', { class: 'btn', text: t('newEvent'), onclick: function () { openEvent(null); } }),
-      h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }),
+      /**
+       * A member sees no way to create work, because there is none: the
+       * server refuses it either way, and offering a button that always ends
+       * in an error is worse than not offering it.
+       */
+      mayCreate() ? h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }) : null,
+      mayCreate() ? h('button', { class: 'btn', text: t('newEvent'), onclick: function () { openEvent(null); } }) : null,
+      mayCreate() ? h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }) : null,
     ]));
 
     eventStrip(main, mineOnly);
@@ -1773,8 +1934,37 @@
 
     // The three dropdowns are one group, so they wrap together onto a second
     // line rather than splitting up awkwardly on a narrow window.
+    /**
+     * Search.
+     *
+     * Matches the short code, the title and the description, so "T0042" finds
+     * one thing and "เวที" finds everything about the stage. A code is matched
+     * whole and case-insensitively, which is what makes it something people
+     * can read out over the phone.
+     *
+     * Deliberately filters what is already loaded rather than asking the
+     * server: the whole list is here anyway, and a round trip per keystroke
+     * would make it feel slower, not faster.
+     */
+    var searchBox = h('input', {
+      type: 'search', class: 'search', value: S.q,
+      placeholder: t('searchPlaceholder'), 'aria-label': t('searchPlaceholder'),
+    });
+    searchBox.addEventListener('input', function () {
+      S.q = searchBox.value;
+      clearTimeout(searchBox._t);
+      // Redrawing on every keystroke loses focus and feels jumpy; a short
+      // pause is the difference between searching and fighting the box.
+      searchBox._t = setTimeout(function () {
+        renderPage();
+        var again = document.querySelector('input.search');
+        if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      }, 220);
+    });
+
     main.appendChild(h('div', { class: 'filters' }, [
       seg, h('span', { class: 'grow' }),
+      searchBox,
       h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
     ]));
 
@@ -1808,7 +1998,9 @@
     var coming = S.events.filter(function (e) {
       if ((e.endsOn || e.startsOn) < today) return false;
       if (mineOnly && (e.people || []).length && e.people.indexOf(S.user.username) === -1) return false;
-      return true;
+      // A search covers events as well as tasks — asking for E0007 and being
+      // shown the whole calendar would not be a search.
+      return matchesQuery(e);
     });
 
     if (!coming.length) return;
@@ -1890,6 +2082,8 @@
         },
       }),
       h('div', { class: 't-title' }, [
+        // The code first, small and grey: something to quote, not to read.
+        task.code ? h('span', { class: 't-code', text: task.code }) : null,
         task.title,
         /**
          * The person's own piece, on the card.
@@ -2168,6 +2362,8 @@
       h('header', {}, [
         // An existing task is named by its own title, not by the word "task".
         h('h2', { text: isNew ? t('newTask') : task.title }),
+        // The code, where somebody can copy it to paste into a chat.
+        (!isNew && task.code) ? codeChip(task.code) : null,
         h('button', { class: 'btn ghost sm', text: '✕', onclick: close }),
       ]),
       h('div', { class: 'body' }, [
@@ -2625,7 +2821,10 @@
       function fill() {
         clear(options);
         var q = search.value.trim().toLowerCase();
-        var matches = S.users.filter(function (u) { return u.active; }).filter(function (u) {
+        // A unit editor is only offered their own section — the server
+        // refuses the rest, so listing them would be an invitation to fail.
+        var matches = S.users.filter(function (u) { return u.active && assignableTo(u); })
+          .filter(function (u) {
           return !q || u.displayName.toLowerCase().indexOf(q) !== -1 ||
             u.username.toLowerCase().indexOf(q) !== -1 ||
             (u.nickname || '').toLowerCase().indexOf(q) !== -1 ||
@@ -3184,6 +3383,7 @@
     var modal = h('div', { class: 'modal' }, [
       h('header', {}, [
         h('h2', { text: isNew ? t('newEvent') : event.title }),
+        (!isNew && event.code) ? codeChip(event.code) : null,
         h('button', { class: 'btn ghost sm', text: '\u2715', onclick: close }),
       ]),
       bodyBox,
@@ -3472,6 +3672,11 @@
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('profile') })]));
 
     var nameInput = h('input', { type: 'text', value: S.user.displayName, maxlength: '80' });
+    // firstname lastname, as it appears on a document rather than on a card.
+    var fullNameInput = h('input', {
+      type: 'text', value: S.user.fullName || '', maxlength: '120',
+      placeholder: t('fullNamePlaceholder'),
+    });
     var avatarPreview = h('span', { class: 'avatar lg' });
     var pendingAvatar;
 
@@ -3486,10 +3691,14 @@
     fileInput.addEventListener('change', function () {
       var file = fileInput.files && fileInput.files[0];
       if (!file) return;
-      shrinkImage(file).then(function (dataUrl) {
+      // The picture is shown as it will be saved, and the person decides which
+      // part of it that is. A blind centre crop takes the top of somebody's
+      // head off often enough that it was worth a dialog.
+      openCropper(file, function (dataUrl) {
         pendingAvatar = dataUrl;
         paintAvatar(dataUrl);
-      }).catch(function () { alert(t('errGeneric')); });
+      });
+      fileInput.value = '';
     });
 
     var notice = h('div', { class: 'notice ok', hidden: true });
@@ -3509,6 +3718,11 @@
           ]),
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('displayName') }), nameInput]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('fullName') }),
+          fullNameInput,
+          h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('fullNameWhy') }),
+        ]),
         h('div', { class: 'field' }, [
           h('label', { text: t('username') }),
           h('input', { type: 'text', value: S.user.username, disabled: true }),
@@ -3554,10 +3768,14 @@
         h('button', {
           class: 'btn primary', text: t('save'),
           onclick: function () {
-            var body = { displayName: nameInput.value.trim() };
+            var body = {
+              displayName: nameInput.value.trim(),
+              fullName: fullNameInput.value.trim(),
+            };
             if (pendingAvatar !== undefined) body.avatar = pendingAvatar;
             api('/api/users?do=me', { method: 'PATCH', body: body }).then(function (data) {
               S.user.displayName = data.user.displayName;
+              S.user.fullName = data.user.fullName;
               S.user.avatar = data.user.avatar;
               var i = S.users.findIndex(function (u) { return u.username === S.user.username; });
               if (i !== -1) S.users[i] = data.user;
@@ -3951,6 +4169,140 @@
    * A phone photo is several megabytes; this makes it roughly 10 KB, which is
    * small enough to live in the database and means no file storage to set up.
    */
+  /**
+   * Choosing which part of a picture becomes the avatar.
+   *
+   * A square window over the image, which the person drags to move and a
+   * slider zooms. Everything outside the window is dimmed, so what will be
+   * kept is what is bright — no separate preview to compare against, and no
+   * guessing.
+   *
+   * Built by hand rather than pulled from a library: this is one canvas, two
+   * event handlers and a bit of arithmetic, and a dependency loaded from a
+   * CDN would also be one more thing that stops working on a university
+   * network that blocks it.
+   */
+  function openCropper(file, done) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var canvas = h('canvas', { class: 'crop-canvas', width: '320', height: '320' });
+    var zoom = h('input', { type: 'range', min: '100', max: '400', value: '100', class: 'crop-zoom' });
+    var hint = h('p', { class: 'hint', text: t('cropHint') });
+
+    var img = new Image();
+    var view = { scale: 1, x: 0, y: 0, min: 1 };
+    var BOX = 320;
+
+    img.onerror = function () { veil.remove(); alert(t('errGeneric')); };
+    img.onload = function () {
+      // The smallest zoom that still covers the square — anything less would
+      // leave a transparent edge, which is never what anybody wants.
+      view.min = Math.max(BOX / img.width, BOX / img.height);
+      view.scale = view.min;
+      view.x = (BOX - img.width * view.scale) / 2;
+      view.y = (BOX - img.height * view.scale) / 2;
+      zoom.min = '100';
+      zoom.max = '400';
+      zoom.value = '100';
+      draw();
+    };
+
+    var reader = new FileReader();
+    reader.onerror = function () { veil.remove(); alert(t('errGeneric')); };
+    reader.onload = function () { img.src = reader.result; };
+    reader.readAsDataURL(file);
+
+    function clamp() {
+      var w = img.width * view.scale;
+      var h2 = img.height * view.scale;
+      view.x = Math.min(0, Math.max(BOX - w, view.x));
+      view.y = Math.min(0, Math.max(BOX - h2, view.y));
+    }
+
+    function draw() {
+      clamp();
+      var ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, BOX, BOX);
+      ctx.drawImage(img, view.x, view.y, img.width * view.scale, img.height * view.scale);
+
+      // A round window, because that is the shape an avatar is shown in.
+      ctx.save();
+      ctx.fillStyle = 'rgba(20,12,16,.55)';
+      ctx.beginPath();
+      ctx.rect(0, 0, BOX, BOX);
+      ctx.arc(BOX / 2, BOX / 2, BOX / 2 - 6, 0, Math.PI * 2, true);
+      ctx.fill('evenodd');
+      ctx.restore();
+    }
+
+    zoom.addEventListener('input', function () {
+      var before = view.scale;
+      view.scale = view.min * (Number(zoom.value) / 100);
+      // Zoom towards the middle of the window rather than the corner, so the
+      // face somebody has just centred stays centred.
+      view.x = BOX / 2 - (BOX / 2 - view.x) * (view.scale / before);
+      view.y = BOX / 2 - (BOX / 2 - view.y) * (view.scale / before);
+      draw();
+    });
+
+    var dragging = null;
+    var start = function (e) {
+      var p = e.touches ? e.touches[0] : e;
+      dragging = { x: p.clientX - view.x, y: p.clientY - view.y };
+      e.preventDefault();
+    };
+    var move = function (e) {
+      if (!dragging) return;
+      var p = e.touches ? e.touches[0] : e;
+      view.x = p.clientX - dragging.x;
+      view.y = p.clientY - dragging.y;
+      draw();
+      e.preventDefault();
+    };
+    var end = function () { dragging = null; };
+
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('touchstart', start, { passive: false });
+    window.addEventListener('mousemove', move);
+    canvas.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('mouseup', end);
+    canvas.addEventListener('touchend', end);
+
+    function close() {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', end);
+      veil.remove();
+    }
+
+    var modal = h('div', { class: 'modal', style: 'width:min(24rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('cropTitle') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: close }),
+      ]),
+      h('div', { class: 'body', style: 'align-items:center' }, [canvas, zoom, hint]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: close }),
+        h('button', {
+          class: 'btn primary', text: t('usePicture'),
+          onclick: function () {
+            // Saved at 192px from the window as it stands, so what was on
+            // screen is exactly what is stored.
+            var out = document.createElement('canvas');
+            out.width = 192; out.height = 192;
+            var ctx = out.getContext('2d');
+            var k = 192 / BOX;
+            ctx.drawImage(img, view.x * k, view.y * k,
+              img.width * view.scale * k, img.height * view.scale * k);
+            close();
+            done(out.toDataURL('image/jpeg', 0.82));
+          },
+        }),
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+  }
+
   function shrinkImage(file) {
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
@@ -4128,6 +4480,15 @@
               class: 'btn sm ' + (u.suspended ? '' : 'danger'), text: u.suspended ? t('restore') : t('suspend'),
               onclick: function () { manage(u, { suspended: !u.suspended }); },
             }),
+            /**
+             * Only offered once somebody is already out — off the sheet or
+             * suspended. There is no undo, and an active member is removed by
+             * taking them off the sheet, which is where membership is decided.
+             */
+            (!u.active || u.suspended) ? h('button', {
+              class: 'btn sm danger', text: t('deleteUser'),
+              onclick: function () { removeUser(u); },
+            }) : null,
           ])]),
       ]);
     });
@@ -4168,7 +4529,7 @@
           if (want === u.access) return;
           manage(u, { access: want });
         },
-      }, ['admin', 'coadmin', 'editor'].map(function (level) {
+      }, ['admin', 'coadmin', 'editor', 'unitlead', 'inner'].map(function (level) {
         return h('option', {
           value: level, selected: level === u.access,
           text: t('access' + level.charAt(0).toUpperCase() + level.slice(1)),
@@ -4257,7 +4618,60 @@
           })
         : h('small', { class: 'from-sheet', text: t('fromSheet') }));
 
+      /**
+       * The section, after the departments and only once there are some.
+       *
+       * It is offered from the departments this person has actually been
+       * granted, so a section can never be set to one belonging to a
+       * department they cannot see — which is what a unit editor's whole
+       * scope is measured against.
+       */
+      var sections = [];
+      (u.allDepartments ? S.departments.map(function (d) { return d.key; }) : granted)
+        .forEach(function (key) {
+          var dept = S.departments.filter(function (d) { return d.key === key; })[0];
+          (dept && dept.units ? dept.units : []).forEach(function (name) {
+            if (sections.indexOf(name) === -1) sections.push(name);
+          });
+        });
+
+      if (sections.length) {
+        var unitSel = h('select', {
+          class: 'add-dept unit',
+          title: t('unitPickerHint'),
+          onchange: function (e) { send({ unit: e.target.value || null }); },
+        }, [h('option', { value: '', text: t('noUnit'), selected: !u.unit })]
+          .concat(sections.map(function (name) {
+            return h('option', { value: name, text: name, selected: u.unit === name });
+          })));
+        box.appendChild(unitSel);
+      }
+
       return box;
+    }
+
+    function removeUser(target) {
+      // Two sentences, then the name typed out. Deleting somebody is rare
+      // enough that a moment's friction costs nothing and a mistaken click
+      // costs an account.
+      if (!confirm(t('deleteUserSure').replace('%s', target.displayName))) return;
+      var typed = prompt(t('deleteUserType').replace('%s', target.username));
+      if (typed === null) return;
+      if (typed.trim().toLowerCase() !== target.username.toLowerCase()) {
+        say('err', t('deleteUserMismatch'));
+        renderPage();
+        return;
+      }
+
+      api('/api/users?do=user&username=' + encodeURIComponent(target.username), { method: 'DELETE' })
+        .then(function (data) {
+          S.users = data.users;
+          var moved = data.kept.tasks + data.kept.events + data.kept.documents;
+          say('ok', t('deleteUserDone').replace('%s', data.removed) +
+            (moved ? '  \u00b7  ' + t('deleteUserKept').replace('%n', String(moved)) : ''));
+          renderPage();
+        })
+        .catch(function (err) { say('err', errText(err.code)); renderPage(); });
     }
 
     function manage(target, changes) {
@@ -4282,6 +4696,19 @@
    * Mirrors the server's rule so the interface doesn't offer buttons that
    * would be refused. The server decides; this only keeps the UI honest.
    */
+  /**
+   * Mirrors lib/auth.js canEditTasks. The server is what enforces it; this is
+   * only so the page does not offer what would be refused.
+   */
+  function mayCreate() { return S.user && S.user.access !== 'inner'; }
+
+  /** The people a unit editor may put work on: their own section, and themselves. */
+  function assignableTo(person) {
+    if (!S.user || S.user.access !== 'unitlead') return true;
+    if (person.username === S.user.username) return true;
+    return Boolean(S.user.unit) && person.unit === S.user.unit;
+  }
+
   function blockedReason(target) {
     if (S.user.access === 'admin') return null;
     if (S.user.access === 'coadmin') {

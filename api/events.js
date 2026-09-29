@@ -1,5 +1,5 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
-import { currentUser } from '../lib/auth.js';
+import { currentUser, canEditTasks } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
 import { accessSet, seesEverything, EVENT_COLOURS, isColour } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
@@ -48,6 +48,7 @@ export async function assembledEvents(sql) {
 
   return rows.map((e) => ({
     id: e.id,
+    code: e.code || null,
     title: e.title,
     description: e.description,
     startsOn: toIsoDate(e.starts_on),
@@ -159,6 +160,9 @@ async function handler(request) {
     }
 
     if (request.method === 'POST') {
+      // Same rule as tasks: a member attends events, they do not schedule them.
+      if (!canEditTasks(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
+
       const body = await request.json().catch(() => ({}));
       const title = clean(body.title, 200);
       if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
@@ -176,9 +180,10 @@ async function handler(request) {
         .filter((k) => NOTIFY_KINDS.includes(k)).join(',');
 
       await sql`
-        INSERT INTO events (id, title, description, starts_on, starts_at, ends_on, ends_at,
+        INSERT INTO events (id, code, title, description, starts_on, starts_at, ends_on, ends_at,
                             all_day, place, department, colour, notify, created_by)
-        VALUES (${id}, ${title}, ${clean(body.description, 4000)},
+        VALUES (${id}, 'E' || lpad(nextval('event_code_seq')::text, 4, '0'),
+                ${title}, ${clean(body.description, 4000)},
                 ${startsOn}, ${allDay ? null : cleanTime(body.startsAt)},
                 ${endsOn}, ${allDay ? null : cleanTime(body.endsAt)},
                 ${allDay}, ${clean(body.place, 200)},

@@ -7,6 +7,7 @@ import { lineConfigured, push, pageLink } from '../lib/line.js';
 import { flex, listBubble } from '../lib/lineflex.js';
 import { sayDate, MARK, PRIORITY_TH, MENU as LINE_MENU } from '../lib/linecmd.js';
 import { driveConfigured, archivePdf, archiveHolds } from '../lib/drive.js';
+import { updateStatus as updateRegisterStatus, REGISTER_STATUS } from '../lib/docregister.js';
 
 
 /**
@@ -332,7 +333,7 @@ async function archiveDocuments(sql) {
   // Sent, and not yet in Drive. The signed copy is the one worth keeping; a
   // document nobody had to sign is archived as its original.
   const waiting = await sql`
-    SELECT id, title, recipient, department, created_by, sent_at
+    SELECT id, title, recipient, department, created_by, sent_at, doc_tab, doc_number
     FROM documents
     WHERE sent_at IS NOT NULL AND drive_file_id IS NULL
     ORDER BY sent_at
@@ -364,6 +365,12 @@ async function archiveDocuments(sql) {
       INSERT INTO doc_events (id, doc_id, kind, username, detail)
       VALUES (${'ev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)},
               ${doc.id}, 'archived', NULL, ${result.url})`;
+
+    // The committee's register says so too, so somebody reading the book can
+    // see that the letter is filed and not only that it went out.
+    await updateRegisterStatus({
+      tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.archived,
+    });
     archived.push(doc.id);
   }
 

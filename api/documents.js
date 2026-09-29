@@ -4,6 +4,10 @@ import { withNode } from '../lib/http.js';
 import { isDepartment, matchUnit, departmentByKey } from '../lib/departments.js';
 import { writeAccess } from '../lib/sheets.js';
 import {
+  registerDocument, updateStatus as updateRegisterStatus, writeNames,
+  REGISTER_STATUS, registerConfigured,
+} from '../lib/docregister.js';
+import {
   proposeChain, pendingStep, canAct, canReplaceFile, canSeeDocument,
   progressOf, progressFraction, signsPdf, isSecretary, ROLE_TH,
   isHeadSecretary, canManageSecretaries, canDeleteDocument, pickSecretary,
@@ -93,6 +97,7 @@ async function handler(request) {
     case 'replace':   return replaceFile(sql, me, body);
     case 'send':      return markSent(sql, me, body);
     case 'secretaries': return changeSecretaries(sql, me, body);
+    case 'names':       return syncNames(sql, me);
     case 'assign':      return reassignSecretary(sql, me, body);
     default:          return json({ error: 'UNKNOWN_ACTION' }, 400);
   }
@@ -104,7 +109,7 @@ async function handler(request) {
 
 const rosterFor = (sql) => sql`
   SELECT u.username, u.display_name, u.nickname, u.position, u.access,
-         u.department, u.unit, u.is_head, u.active, u.suspended,
+         u.full_name, u.department, u.unit, u.is_head, u.active, u.suspended,
          COALESCE((SELECT json_agg(d.department) FROM user_departments d
                    WHERE d.username = u.username), '[]') AS depts
   FROM users u WHERE u.active = true AND u.suspended = false`;
@@ -133,6 +138,8 @@ const shapeDoc = (d) => ({
   sentBy: d.sent_by,
   driveUrl: d.drive_url,
   archivedAt: d.archived_at,
+  docNumber: d.doc_number || null,
+  docTab: d.doc_tab || null,
 });
 
 const shapeStep = (s) => ({
@@ -176,6 +183,8 @@ async function listDocuments(sql, me) {
     documents: visible,
     isSecretary: isSecretary(me),
     mayManageSecretaries: canManageSecretaries(me),
+    registerReady: registerConfigured(),
+    myFullName: me.full_name || null,
     mine: visible.filter((d) => d.myTurn).length,
   });
 }
@@ -281,6 +290,22 @@ async function propose(sql, me, body) {
 async function createDocument(sql, me, body) {
   const title = clean(body.title, 200);
   if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
+
+  /**
+   * The uploader's full name, asked for once.
+   *
+   * It goes in the ผู้รับผิดชอบ column of the committee's register, where
+   * "Kungking_HeadCon" would be no use to anybody reading a book of letters.
+   * Taken here rather than on the profile page because this is the moment it
+   * is actually needed, and saved so nobody is asked twice.
+   */
+  const fullName = clean(body.fullName, 120);
+  if (fullName) {
+    await sql`UPDATE users SET full_name = ${fullName}, updated_at = now()
+              WHERE username = ${me.username}`;
+    me.full_name = fullName;
+  }
+  if (!me.full_name) return json({ error: 'FULL_NAME_REQUIRED' }, 400);
 
   const got = fromBase64(body.pdf, MAX_PDF);
   if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, 400);
@@ -496,6 +521,22 @@ async function approve(sql, me, body) {
   await note(sql, doc.id, signsPdf(step.role) ? 'signed' : 'approved', me.username,
     clean(body.comment, 1000));
 
+  /**
+   * The committee's เลขรันเอกสาร, issued once every signature is in.
+   *
+   * This is the last moment the number can still be written on the letter, and
+   * the first moment the letter is certain to go out — so the book gets no
+   * gaps from documents that were rejected along the way, and the secretary
+   * has the number in hand before they send anything.
+   *
+   * Best effort on purpose: an unreachable spreadsheet must not strand a
+   * signed document, so it is recorded as unnumbered and the secretary is told.
+   */
+  let numbering = null;
+  if (next && next.role === 'secretary' && !doc.doc_number) {
+    numbering = await issueNumber(sql, doc);
+  }
+
   const watchers = await secretaries(sql);
   if (next) {
     await tellPeople(sql, {
@@ -504,7 +545,9 @@ async function approve(sql, me, body) {
       priority: doc.priority,
       title: `${urgencyTag(doc.priority)}${next.role === 'secretary' ? 'เอกสารพร้อมส่ง' : 'เอกสารรออนุมัติ'}: ${doc.title}`,
       body: next.role === 'secretary'
-        ? 'ลงนามครบแล้ว รอเลขานุการส่งให้ผู้รับ'
+        ? (numbering?.ok
+            ? `ลงนามครบแล้ว เลขที่ ${numbering.number} — รอเลขานุการส่งให้ผู้รับ`
+            : 'ลงนามครบแล้ว รอเลขานุการส่งให้ผู้รับ')
         : `${me.display_name || me.username} อนุมัติแล้ว ถึงคิวของคุณ`,
     });
   } else {
@@ -523,7 +566,41 @@ async function approve(sql, me, body) {
     signaturesPlaced: stamped.placed.length,
     couldNotPlace: stamped.skipped,
     waitingOn: next ? next.username : null,
+    numbering,
   });
+}
+
+/**
+ * Takes the next number for this document's ฝ่าย and writes its row.
+ *
+ * The register is the committee's own spreadsheet and the master for the
+ * numbering; this only ever adds a line to it. The responsible person is the
+ * uploader, by their full name, because that is who the recipient will ask
+ * about the letter.
+ */
+async function issueNumber(sql, doc) {
+  const [uploader] = await sql`
+    SELECT full_name, display_name, username FROM users WHERE username = ${doc.created_by}`;
+  const dept = departmentByKey(doc.department);
+
+  const result = await registerDocument({
+    department: dept ? dept.th : null,
+    unit: doc.unit || null,
+    title: doc.title,
+    status: REGISTER_STATUS.secretary,
+    responsible: uploader?.full_name || uploader?.display_name || doc.created_by,
+  });
+
+  if (result.ok) {
+    await sql`
+      UPDATE documents SET doc_number = ${result.number}, doc_tab = ${result.tab},
+                           doc_code = ${result.code}, numbered_at = now()
+      WHERE id = ${doc.id}`;
+    await note(sql, doc.id, 'numbered', null, result.number);
+  } else {
+    await note(sql, doc.id, 'number_failed', null, result.reason || 'unknown');
+  }
+  return result;
 }
 
 /**
@@ -586,6 +663,19 @@ async function reject(sql, me, body) {
    */
   await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id}`;
   await note(sql, doc.id, 'files_removed', null, 'ลบไฟล์ออกจากระบบแล้ว เก็บเฉพาะประวัติและเหตุผล');
+
+  /**
+   * A number is only issued once every signature is in, so a rejection
+   * normally happens before there is anything in the register. If one was
+   * issued — a document sent back after it reached the secretary — the row
+   * stays and says so, because a number that has been handed out cannot be
+   * quietly taken back out of the book.
+   */
+  if (doc.doc_number) {
+    await updateRegisterStatus({
+      tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.rejected,
+    });
+  }
 
   /**
    * The reason travels with the notice. A bare "rejected" would send the
@@ -677,6 +767,12 @@ async function markSent(sql, me, body) {
     WHERE id = ${doc.id}`;
   await note(sql, doc.id, 'sent', me.username, clean(body.to || doc.recipient, 200));
 
+  // The register's สถานะ follows the document. Best effort, like the rest of
+  // the spreadsheet work: a letter that has gone out has gone out.
+  const registered = await updateRegisterStatus({
+    tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.sent,
+  });
+
   await tellPeople(sql, {
     usernames: [doc.created_by],
     docId: doc.id,
@@ -685,7 +781,7 @@ async function markSent(sql, me, body) {
     body: `${me.display_name || me.username} ส่งให้ ${clean(body.to || doc.recipient, 120) || 'ผู้รับ'} เรียบร้อย`,
   });
 
-  return json({ ok: true, stage: 'sent' });
+  return json({ ok: true, stage: 'sent', number: doc.doc_number || null, registered });
 }
 
 
@@ -715,6 +811,7 @@ async function listSecretaries(sql, me) {
     secretaries: secs.map((p) => ({
       username: p.username,
       displayName: p.display_name,
+      fullName: p.full_name || null,
       nickname: p.nickname,
       position: p.position,
       isHead: Boolean(p.is_head),
@@ -847,6 +944,56 @@ async function reassignSecretary(sql, me, body) {
   });
 
   return json({ ok: true, secretary: target.username, was: before });
+}
+
+/**
+ * Pushes the roster's full names into the register's รายชื่อผู้รับผิดชอบ lists.
+ *
+ * One tab per ฝ่าย and unit, each getting the people who belong to it. This is
+ * the other half of "link the names to the sheet and the web system": the
+ * register stops being a place where everybody types their name differently,
+ * and starts being a list picked from the same roster the app uses.
+ *
+ * Deliberately a button rather than something that runs on every change: it is
+ * forty-odd writes to somebody else's spreadsheet, and doing that every time a
+ * person edits their profile would be rude to the sheet and slow for them.
+ */
+async function syncNames(sql, me) {
+  if (!canManageSecretaries(me)) return json({ error: 'NOT_ALLOWED' }, 403);
+  if (!registerConfigured()) return json({ error: 'REGISTER_NOT_CONFIGURED' }, 400);
+
+  const people = asPeople(await rosterFor(sql));
+  const withNames = people.filter((p) => p.full_name);
+
+  const done = [];
+  const missed = [];
+
+  // Every section that has somebody in it, then every department.
+  const units = new Map();
+  for (const person of withNames) {
+    const key = `${person.department || ''}|${person.unit || ''}`;
+    if (!units.has(key)) units.set(key, []);
+    units.get(key).push(person.full_name);
+  }
+
+  for (const [key, names] of units) {
+    const [department, unit] = key.split('|');
+    const dept = departmentByKey(department);
+    const result = await writeNames({
+      department: dept ? dept.th : null,
+      unit: unit || null,
+      names,
+    });
+    if (result.ok) done.push({ tab: result.tab, listed: result.listed });
+    else missed.push({ department: dept ? dept.th : department, unit, reason: result.reason });
+  }
+
+  return json({
+    ok: true,
+    written: done,
+    missed,
+    withoutFullName: people.filter((p) => !p.full_name).map((p) => p.username),
+  });
 }
 
 // ---------------------------------------------------------------------------
