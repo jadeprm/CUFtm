@@ -62,7 +62,7 @@ async function handler(request) {
       configured: lineConfigured(),
       linked: rows.length > 0,
       displayName: rows[0]?.display_name || null,
-      digest: rows[0]?.digest !== false,
+      digest: rows[0]?.digest === true,
       linkedAt: rows[0]?.linked_at || null,
       canManageMenu: me.access === 'admin' || me.access === 'coadmin',
       menuInstalled: Boolean(menu?.value),
@@ -268,6 +268,17 @@ async function tryLinking(sql, lineUserId, body, event) {
   }
 
   await sql`DELETE FROM line_codes WHERE code = ${command.rest}`;
+
+  /**
+   * One LINE account per person, in both directions.
+   *
+   * The primary key already stops one LINE account speaking for two people.
+   * This is the other way round: linking a new account replaces the old one,
+   * so somebody who changes phone or re-links does not end up on the list
+   * twice — which would double every message they are sent, and every message
+   * is charged.
+   */
+  await sql`DELETE FROM line_links WHERE username = ${found.username} AND line_user_id <> ${lineUserId}`;
   await sql`
     INSERT INTO line_links (line_user_id, username, display_name, last_seen_at)
     VALUES (${lineUserId}, ${found.username}, ${''}, now())
@@ -278,7 +289,8 @@ async function tryLinking(sql, lineUserId, body, event) {
   return text([
     `เชื่อมต่อเรียบร้อยค่ะ — ${person?.display_name || found.username}`,
     '',
-    'จะได้รับสรุปงานประจำวันทุกเช้า และสั่งงานผ่านแชตนี้ได้เลย',
+    'สั่งงานผ่านแชตนี้ได้เลย และจะได้รับแจ้งเตือนเมื่อมีเอกสารถึงคิวของคุณ',
+    'อยากได้สรุปงานทุกเช้าด้วย พิมพ์ "เปิดแจ้งเตือน"',
     'พิมพ์ "ช่วยเหลือ" เพื่อดูคำสั่งทั้งหมด',
   ].join('\n'), MENU);
 }

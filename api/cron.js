@@ -455,6 +455,7 @@ async function sendDigests(sql, today) {
       await sql`INSERT INTO line_digests_sent (username, on_day)
                 VALUES (${link.username}, ${today}::date)
                 ON CONFLICT DO NOTHING`;
+      await sql`INSERT INTO line_charges (username, kind) VALUES (${link.username}, 'digest')`;
       sent++;
     } catch (error) {
       const message = String(error?.message || error).slice(0, 200);

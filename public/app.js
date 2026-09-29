@@ -4426,6 +4426,32 @@
         ? d.lineLinked + ' ' + t('healthLine')
         : '⚠ ' + t('healthLineOff') }));
 
+      /**
+       * What LINE has cost this month, against the plan's limit.
+       *
+       * The limit is a hard stop rather than an overage, so it has to be
+       * visible before it is hit. Replies are free and are not counted here —
+       * only the messages that are actually billed.
+       */
+      if (d.lineConfigured && d.lineCharged) {
+        var used = d.lineCharged.total;
+        var pct = d.lineQuota ? Math.round((used / d.lineQuota) * 100) : 0;
+        lines.push(h('div', {
+          style: pct >= 80 ? 'color:var(--danger);font-weight:600' : '',
+          text: t('healthLineCost')
+            .replace('%u', String(used))
+            .replace('%q', String(d.lineQuota))
+            .replace('%p', String(pct)) +
+            '  ·  ' + t('healthLineSplit')
+              .replace('%d', String(d.lineCharged.documents))
+              .replace('%g', String(d.lineCharged.digests)),
+        }));
+        lines.push(h('div', {
+          style: 'color:var(--ink-faint)',
+          text: t('healthDigestOptIn').replace('%n', String(d.lineDigestOptIn)),
+        }));
+      }
+
       // The most common answer, and the least obvious one: nothing is due.
       if (d.remindingToday) {
         lines.push(h('div', { text: t('healthRemindToday') + ': ' + d.remindingToday }));

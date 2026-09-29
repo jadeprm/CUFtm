@@ -69,23 +69,6 @@ async function handler(request) {
   const url = requestUrl(request);
   const action = url.searchParams.get('do');
 
-  // ---- directory ---------------------------------------------------------
-  if (request.method === 'GET') {
-    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
-    const grants = await departmentsByUser(sql);
-    const [meta] = await sql`SELECT value FROM meta WHERE key = 'last_sync'`;
-    return json({
-      users: rows.map((u) => directoryRow(u, grants)),
-      canManage: canManageAccounts(me),
-      canSetAccess: me.access === ACCESS.ADMIN,
-      // Whether an access change made here can reach the sheet. The page says
-      // so up front rather than letting an admin find out afterwards.
-      sheetWritable: sheetWriteConfigured(),
-      lastSync: meta?.value || null,
-      sheetId: SHEET_ID,
-    });
-  }
-
   /**
    * Why notifications are or are not arriving.
    *
@@ -126,7 +109,27 @@ async function handler(request) {
       return { id: row.id, title: row.title, days, people: row.people, remindsToday: kind };
     });
 
+    /**
+     * What LINE has cost this month.
+     *
+     * The plans are bought a month at a time and the limit is a hard stop, so
+     * this has to be visible before it is reached rather than afterwards. The
+     * free tier is about 300 a month and the Basic plan about 15,000 — the
+     * page compares against whichever is configured.
+     */
+    const [charges] = await sql`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE kind = 'digest')::int AS digests,
+             count(*) FILTER (WHERE kind = 'document')::int AS documents
+      FROM line_charges
+      WHERE sent_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Bangkok')`;
+    const [{ optedIn }] = await sql`
+      SELECT count(*)::int AS "optedIn" FROM line_links WHERE digest = true`;
+
     return json({
+      lineCharged: charges,
+      lineDigestOptIn: optedIn,
+      lineQuota: Number(process.env.LINE_MONTHLY_QUOTA || 300),
       lastCron: lastCron?.value || null,
       cronSecured: Boolean(process.env.CRON_SECRET),
       pushSubscriptions: subs,
@@ -136,6 +139,23 @@ async function handler(request) {
       lineLinked: lines,
       dueSoon: due,
       remindingToday: due.filter((d) => d.remindsToday).length,
+    });
+  }
+
+  // ---- directory ---------------------------------------------------------
+  if (request.method === 'GET') {
+    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const grants = await departmentsByUser(sql);
+    const [meta] = await sql`SELECT value FROM meta WHERE key = 'last_sync'`;
+    return json({
+      users: rows.map((u) => directoryRow(u, grants)),
+      canManage: canManageAccounts(me),
+      canSetAccess: me.access === ACCESS.ADMIN,
+      // Whether an access change made here can reach the sheet. The page says
+      // so up front rather than letting an admin find out afterwards.
+      sheetWritable: sheetWriteConfigured(),
+      lastSync: meta?.value || null,
+      sheetId: SHEET_ID,
     });
   }
 

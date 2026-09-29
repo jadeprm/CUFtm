@@ -371,6 +371,7 @@ async function createDocument(sql, me, body) {
   const watchers = await secretaries(sql);
   await tellPeople(sql, {
     usernames: [first.username, ...watchers],
+    actor: first.username,
     docId: id,
     priority: body.priority,
     title: `${urgencyTag(body.priority)}เอกสารรออนุมัติ: ${title}`,
@@ -393,7 +394,27 @@ async function createDocument(sql, me, body) {
  * every step, so they are added to the recipients of each event rather than
  * being notified by a separate mechanism that could drift out of step.
  */
-async function tellPeople(sql, { usernames, title, body, docId, priority, urgent }) {
+/**
+ * Telling people about a document.
+ *
+ * Three channels, and only one of them costs money — which is why they no
+ * longer carry the same list.
+ *
+ * The in-app bell and the phone's own notifications go to EVERYONE who should
+ * know: the person whose turn it is, the uploader, and every secretary
+ * watching. Both are free however many people are on the committee.
+ *
+ * A LINE message is a charged push, per person, every time. So it goes only to
+ * whoever actually has to DO something — `actor` — and nobody else. A
+ * secretary watching twenty documents move through four steps each does not
+ * need eighty paid messages to learn what the เอกสาร page would have told them;
+ * they get the bell like everybody else, and LINE only when a document is
+ * genuinely theirs to handle.
+ *
+ * Anybody who would rather have everything in LINE can still ask for the daily
+ * digest, which is one message rather than eighty.
+ */
+async function tellPeople(sql, { usernames, title, body, docId, priority, urgent, actor }) {
   const people = [...new Set(usernames.filter(Boolean))];
   if (!people.length) return { told: 0 };
 
@@ -419,10 +440,14 @@ async function tellPeople(sql, { usernames, title, body, docId, priority, urgent
     console.error('[documents] push failed:', String(error?.message || error).slice(0, 200));
   }
 
-  if (lineConfigured()) {
+  // Only the person who has to act, and only if they have linked LINE.
+  const payFor = [...new Set([].concat(actor || []).filter(Boolean))]
+    .filter((u) => people.includes(u));
+
+  if (lineConfigured() && payFor.length) {
     try {
       const links = await sql`
-        SELECT line_user_id, username FROM line_links WHERE username = ANY(${people})`;
+        SELECT line_user_id, username FROM line_links WHERE username = ANY(${payFor})`;
       /**
        * A card, not a paragraph.
        *
@@ -446,12 +471,14 @@ async function tellPeople(sql, { usernames, title, body, docId, priority, urgent
 
       for (const row of links) {
         await linePush(row.line_user_id, card).catch(() => {});
+        // Counted, because this one is billed.
+        await sql`INSERT INTO line_charges (username, kind) VALUES (${row.username}, 'document')`;
       }
     } catch (error) {
       console.error('[documents] LINE failed:', String(error?.message || error).slice(0, 200));
     }
   }
-  return { told: people.length };
+  return { told: people.length, lineTo: payFor.length };
 }
 
 /** Everyone who watches every document. */
@@ -541,6 +568,7 @@ async function approve(sql, me, body) {
   if (next) {
     await tellPeople(sql, {
       usernames: [next.username, ...watchers],
+      actor: next.username,
       docId: doc.id,
       priority: doc.priority,
       title: `${urgencyTag(doc.priority)}${next.role === 'secretary' ? 'เอกสารพร้อมส่ง' : 'เอกสารรออนุมัติ'}: ${doc.title}`,
@@ -685,6 +713,7 @@ async function reject(sql, me, body) {
   const watchers = await secretaries(sql);
   await tellPeople(sql, {
     usernames: [doc.created_by, ...watchers],
+    actor: doc.created_by,
     docId: doc.id,
     priority: doc.priority,
     urgent: true,
@@ -735,6 +764,7 @@ async function replaceFile(sql, me, body) {
   const watchers = await secretaries(sql);
   await tellPeople(sql, {
     usernames: [doc.created_by, ...alreadySigned, waiting?.username, ...watchers],
+    actor: waiting?.username,
     docId: doc.id,
     priority: doc.priority,
     title: `เอกสารถูกแก้ไข: ${doc.title}`,
@@ -937,6 +967,7 @@ async function reassignSecretary(sql, me, body) {
 
   await tellPeople(sql, {
     usernames: [target.username],
+    actor: target.username,
     docId: doc.id,
     priority: doc.priority,
     title: `เอกสารถูกมอบหมายให้คุณ: ${doc.title}`,
