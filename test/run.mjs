@@ -2389,14 +2389,18 @@ r = await call(docsApi, '/api/documents?do=propose', {
 });
 ok('a chain is proposed', r.status === 200, JSON.stringify(r.data).slice(0, 80));
 let roles = r.data.steps.map((s) => s.role).join(' → ');
-ok('...a department head goes to the director, then the secretary',
-  roles === 'director → secretary', roles);
+ok('...a department head signs their own letter, then it climbs to the director',
+  roles === 'author → director → secretary', roles);
 
-// The director's own document skips the heads entirely.
+/**
+ * The director's own letter: nobody approves it, but it still carries his
+ * signature. This is the bug Jade reported — the chain only ever climbs, so
+ * the man at the top got no step of his own and therefore nowhere to sign.
+ */
 r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'admin', body: {} });
 roles = r.data.steps.map((s) => s.role).join(' → ');
-ok('the director signs nothing of their own — straight to the secretary',
-  roles === 'secretary', roles);
+ok('the director gets a step to sign his own letter, then the secretary',
+  roles === 'author → secretary', roles);
 
 head('42. Documents: uploading, and what is refused');
 
@@ -3025,7 +3029,9 @@ ok('a watcher can follow the status of every document they may see',
   said.includes('หนังสือขออนุมัติจัดกิจกรรม'), said.split('\n').slice(0, 4).join(' | '));
 
 r = await call(docsApi, `/api/documents?id=${lineDocId}`, { as: 'admin' });
-ok('it is still waiting, nobody has signed', r.data.steps[0].state === 'waiting');
+ok('it is still waiting, no approver has acted',
+  r.data.steps.filter((s) => s.role !== 'author').every((s) => s.state === 'waiting'),
+  r.data.steps.map((s) => s.role + ':' + s.state).join(' '));
 
 // Rejecting from the chat must carry a reason.
 await lineApi(lineHook(sayToBot('Udoc1', 'ตีกลับ 1')));
@@ -3771,6 +3777,158 @@ process.env.GOOGLE_DRIVE_REFRESH_TOKEN = keptToken;
 r = await call(usersApi, '/api/users?do=health', { as: 'admin' });
 ok('putting the token back fixes it, without a redeploy',
   r.data.driveConfigured === true, JSON.stringify(r.data.driveConfigured));
+
+
+
+
+// ===========================================================================
+head('64. Signing and approving are different acts');
+
+/**
+ * The bug Jade reported: "ประธานโครงการ sent the document, it does not appear
+ * an option for him to insert the signature". The chain only ever climbs, so
+ * the director had no step at all — and the signature hung off the step, so
+ * there was nowhere for it to go. Signing is now its own flag rather than a
+ * property of the role, which fixes that and the opposite complaint too.
+ */
+const topChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'admin', body: {} })).data.steps;
+ok('the director now gets a step to sign his letter',
+  topChain[0].role === 'author' && topChain[0].username === 'Jade_Pres',
+  topChain.map((x) => x.role + ':' + x.username).join(' → '));
+ok('...and still nobody is asked to approve it',
+  !topChain.some((x) => ['unitHead', 'deptHead', 'director'].includes(x.role)),
+  topChain.map((x) => x.role).join(' → '));
+
+const dirDoc = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'admin',
+  body: {
+    title: 'หนังสือจากประธานโครงการ', pdf: await makePdf(2), department: 'exec',
+    steps: topChain.map((x) => ({
+      role: x.role, username: x.username,
+      marks: x.signs ? [{ page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 }] : [],
+    })),
+  },
+});
+ok('his letter is accepted with a signature box on it', dirDoc.status === 201,
+  JSON.stringify(dirDoc.data).slice(0, 120));
+
+const dirDocId = dirDoc.data.id;
+const dirView = (await call(docsApi, `/api/documents?id=${dirDocId}`, { as: 'admin' })).data;
+ok('...his step is already done — he does not wait on himself',
+  dirView.steps.find((x) => x.role === 'author').state === 'approved',
+  dirView.steps.map((x) => x.role + ':' + x.state).join(' '));
+ok('...the letter waits on the secretary instead',
+  dirView.steps.find((x) => x.state === 'waiting').role === 'secretary',
+  dirView.steps.map((x) => x.role + ':' + x.state).join(' '));
+ok('...and his signature is stamped into a signed copy straight away',
+  (await sql`SELECT count(*)::int AS n FROM doc_files
+             WHERE doc_id = ${dirDocId} AND kind = 'signed'`)[0].n === 1);
+ok('...while he may still withdraw it, his signature notwithstanding',
+  (await call(docsApi, `/api/documents?id=${dirDocId}`,
+    { method: 'DELETE', as: 'admin' })).status === 200);
+
+// ---- approving without putting your signature on the letter -------------
+const baseChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+const noSig = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: {
+    title: 'หนังสือที่หัวหน้าอนุมัติแต่ไม่ลงนาม', pdf: await makePdf(2), department: 'content',
+    steps: baseChain.map((x) => ({
+      role: x.role, username: x.username,
+      marks: x.signs ? [{ page: 1, x: 0.6, y: 0.7, w: 0.25, h: 0.07 }] : [],
+    })),
+  },
+});
+const noSigId = noSig.data.id;
+ok('a staff letter still climbs to the head first', noSig.status === 201,
+  baseChain.map((x) => x.role + ':' + x.username).join(' → '));
+
+/**
+ * Approved by the next signer in the chain — here the director, since by this
+ * point in the suite the ฝ่ายเนื้อหา uploader is themselves a head. The flag
+ * lives on the step, not the role, so ประธานฝ่าย behaves identically.
+ */
+const waitingRole = baseChain.find((x) => x.role !== 'author').role;
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: waitingRole === 'director' ? 'admin' : 'editor',
+  body: { id: noSigId, comment: 'เห็นชอบ', withoutSignature: true },
+});
+ok('a signer can approve without their signature appearing on the letter',
+  r.status === 200, JSON.stringify(r.data).slice(0, 120));
+
+const noSigSteps = await sql`SELECT role, state, signs FROM doc_steps
+                             WHERE doc_id = ${noSigId} ORDER BY position`;
+const headStep = noSigSteps.find((x) => x.role === waitingRole);
+ok('...the approval is recorded all the same', headStep.state === 'approved');
+ok('...but the step is marked as not signing', headStep.signs === false,
+  JSON.stringify(headStep));
+ok('...and the history calls it an approval, not a signature',
+  (await sql`SELECT count(*)::int AS n FROM doc_events
+             WHERE doc_id = ${noSigId} AND kind = 'approved'`)[0].n >= 1);
+
+// ---- one person, several signing spots ----------------------------------
+const multiChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+const multi = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: {
+    title: 'หนังสือที่ต้องลงนามหลายจุด', pdf: await makePdf(3), department: 'content',
+    steps: multiChain.map((x) => ({
+      role: x.role, username: x.username,
+      // An initial on each page as well as a signature at the end.
+      marks: x.signs ? [
+        { page: 1, x: 0.80, y: 0.05, w: 0.10, h: 0.04 },
+        { page: 2, x: 0.80, y: 0.05, w: 0.10, h: 0.04 },
+        { page: 3, x: 0.60, y: 0.70, w: 0.25, h: 0.07 },
+      ] : [],
+    })),
+  },
+});
+ok('a letter can be created with three boxes for one signer', multi.status === 201,
+  JSON.stringify(multi.data).slice(0, 120));
+const multiId = multi.data.id;
+ok('...and all three are stored',
+  (await sql`SELECT count(*)::int AS n FROM doc_boxes b
+             JOIN doc_steps s ON s.id = b.step_id
+             WHERE s.doc_id = ${multiId} AND s.role = ${multiChain.find((x) => x.role !== 'author').role}`)[0].n === 3);
+
+const multiSigner = multiChain.find((x) => x.role !== 'author').role;
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: multiSigner === 'director' ? 'admin' : 'editor',
+  body: { id: multiId, comment: 'ลงนามครบ' },
+});
+ok('the head signs once and every box is filled', r.status === 200,
+  JSON.stringify(r.data).slice(0, 160));
+ok('...three marks placed, not one', r.data.signaturesPlaced === 3,
+  `placed ${r.data.signaturesPlaced}, could not place ` +
+  JSON.stringify(r.data.couldNotPlace || []));
+
+
+
+// ---- a secretary's own pile ---------------------------------------------
+/**
+ * A secretary can see every document in the committee, which makes the list
+ * useless to them without a way to pick out the ones that land on their own
+ * desk. The list now says which secretary each document is headed for.
+ */
+r = await call(docsApi, '/api/documents', { as: 'donat' });
+ok('the list says which secretary each document is for',
+  r.data.documents.every((d) => 'secretary' in d),
+  String(r.data.documents.length) + ' documents');
+ok('...and marks the reader as a secretary', r.data.isSecretary === true);
+
+const donatPile = r.data.documents.filter((d) => d.secretary === 'Donat_Sec');
+ok('...so their own pile can be picked out of the whole committee',
+  donatPile.length > 0 && donatPile.length <= r.data.documents.length,
+  `${donatPile.length} of ${r.data.documents.length}`);
+ok('...and every one of them really names them',
+  donatPile.every((d) => d.steps.some((x) => x.role === 'secretary' && x.username === 'Donat_Sec')));
+
+r = await call(docsApi, '/api/documents', { as: 'content' });
+ok('somebody who is not a secretary is not told they are',
+  r.data.isSecretary === false);
 
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);

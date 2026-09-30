@@ -910,16 +910,64 @@
       h('button', { class: 'btn primary', text: t('docNew'), onclick: function () { openDocUpload(); } }),
     ]));
 
+    /**
+     * Narrowing the pile.
+     *
+     * A secretary can see every document in the committee, which is correct
+     * and useless: the ones that matter to them are the ones that land on
+     * their desk to send. "ที่ฉันดูแล" is that list, and is only offered to
+     * the people for whom it means anything.
+     */
+    var filters = h('div', { class: 'seg wrap' });
+    main.appendChild(filters);
+
     var list = h('div', { class: 'doc-list' });
     main.appendChild(list);
 
+    function matching() {
+      if (S.docFilter === 'turn') {
+        return S.docs.filter(function (d) { return d.myTurn; });
+      }
+      if (S.docFilter === 'secretary') {
+        return S.docs.filter(function (d) { return d.secretary === S.user.username; });
+      }
+      if (S.docFilter === 'open') {
+        return S.docs.filter(function (d) { return !d.sentAt && d.stage !== 'rejected'; });
+      }
+      return S.docs;
+    }
+
+    function drawFilters() {
+      clear(filters);
+      var choices = [
+        { key: 'all', label: t('docFilterAll'), count: S.docs.length },
+        { key: 'turn', label: t('docFilterMyTurn'),
+          count: S.docs.filter(function (d) { return d.myTurn; }).length },
+        { key: 'open', label: t('docFilterOpen'),
+          count: S.docs.filter(function (d) { return !d.sentAt && d.stage !== 'rejected'; }).length },
+      ];
+      if (S.isSecretary) {
+        choices.push({ key: 'secretary', label: t('docFilterMine'),
+          count: S.docs.filter(function (d) { return d.secretary === S.user.username; }).length });
+      }
+      choices.forEach(function (c) {
+        filters.appendChild(h('button', {
+          type: 'button', class: S.docFilter === c.key ? 'on' : '',
+          text: c.label + ' (' + c.count + ')',
+          onclick: function () { S.docFilter = c.key; drawFilters(); draw(); },
+        }));
+      });
+    }
+
     function draw() {
       clear(list);
-      if (!S.docs.length) {
-        list.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('docNone') })]));
+      var shown = matching();
+      if (!shown.length) {
+        list.appendChild(h('div', { class: 'empty' }, [h('strong', {
+          text: S.docs.length ? t('docNoneMatch') : t('docNone') })]));
         return;
       }
-      S.docs.forEach(function (doc) {
+      shown.forEach(function (doc) {
         list.appendChild(docCard(doc));
       });
     }
@@ -927,10 +975,14 @@
     api('/api/documents').then(function (data) {
       S.docs = data.documents || [];
       S.mayManageSecretaries = Boolean(data.mayManageSecretaries);
+      S.isSecretary = Boolean(data.isSecretary);
       S.registerReady = Boolean(data.registerReady);
       if (data.myFullName && !S.user.fullName) S.user.fullName = data.myFullName;
       secBtn.hidden = !S.mayManageSecretaries;
       namesBtn.hidden = !(S.mayManageSecretaries && S.registerReady);
+      // A secretary lands on their own pile; everyone else on everything.
+      if (!S.docFilter) S.docFilter = S.isSecretary ? 'secretary' : 'all';
+      drawFilters();
       draw();
       // A link from a notification asked for one in particular.
       if (S.openDocId) {
@@ -1253,7 +1305,7 @@
       }).then(function (data) {
         chain = data.steps.map(function (s) {
           return { role: s.role, roleLabel: s.roleLabel, username: s.username,
-                   options: s.options, signs: s.signs, mark: null };
+                   options: s.options, signs: s.signs, marks: [] };
         });
         people = data.people;
         stage = 'who';
@@ -1319,19 +1371,22 @@
       var who = h('div', { class: 'seg wrap' }, needMarks.map(function (step) {
         return h('button', {
           type: 'button', class: marking === step ? 'on' : '',
-          text: (step.mark ? '✓ ' : '') + nameOf(step.username),
+          text: (step.marks.length ? '✓' + step.marks.length + ' ' : '') + nameOf(step.username),
           onclick: function () { marking = step; drawMarks(); },
         });
       }));
 
       function paintOverlay() {
         clear(overlay);
-        chain.filter(function (s) { return s.mark && s.mark.page === pageShown; }).forEach(function (s) {
-          overlay.appendChild(h('div', {
-            class: 'sig-box' + (s === marking ? ' on' : ''),
-            style: 'left:' + (s.mark.x * 100) + '%;top:' + (s.mark.y * 100) + '%;' +
-                   'width:' + (s.mark.w * 100) + '%;height:' + (s.mark.h * 100) + '%',
-          }, [h('span', { text: nameOf(s.username) })]));
+        chain.forEach(function (s) {
+          (s.marks || []).forEach(function (m) {
+            if (m.page !== pageShown) return;
+            overlay.appendChild(h('div', {
+              class: 'sig-box' + (s === marking ? ' on' : ''),
+              style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
+                     'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
+            }, [h('span', { text: nameOf(s.username) })]));
+          });
         });
       }
 
@@ -1348,14 +1403,32 @@
         var point = e.touches && e.touches[0] ? e.touches[0] : e;
         var w = 0.26;
         var hh = 0.075;
-        var x = (point.clientX - rect.left) / rect.width - w / 2;
-        var y = (point.clientY - rect.top) / rect.height - hh / 2;
-        marking.mark = {
-          page: pageShown,
-          x: Math.max(0, Math.min(1 - w, x)),
-          y: Math.max(0, Math.min(1 - hh, y)),
-          w: w, h: hh,
-        };
+        var fx = (point.clientX - rect.left) / rect.width;
+        var fy = (point.clientY - rect.top) / rect.height;
+
+        /**
+         * Tapping one of your own boxes takes it away again.
+         *
+         * A signer may need several spots — an initial on every page as well
+         * as a signature at the end — so a tap ADDS rather than replaces, and
+         * the only way back from a misplaced box would otherwise be to start
+         * the upload over.
+         */
+        var hit = -1;
+        marking.marks.forEach(function (m, i) {
+          if (m.page === pageShown && fx >= m.x && fx <= m.x + m.w &&
+              fy >= m.y && fy <= m.y + m.h) hit = i;
+        });
+        if (hit >= 0) {
+          marking.marks.splice(hit, 1);
+        } else {
+          marking.marks.push({
+            page: pageShown,
+            x: Math.max(0, Math.min(1 - w, fx - w / 2)),
+            y: Math.max(0, Math.min(1 - hh, fy - hh / 2)),
+            w: w, h: hh,
+          });
+        }
         paintOverlay();
         drawFooter();
       }
@@ -1364,6 +1437,7 @@
       bodyBox.appendChild(h('div', { class: 'pane' }, [
         notice,
         h('p', { class: 'hint', text: t('docMarkHelp') }),
+        h('p', { class: 'hint', text: t('docMarkAdd') }),
         who,
         pager,
         sheet,
@@ -1396,7 +1470,7 @@
 
       function drawFooter() {
         clear(footer);
-        var ready = needMarks.every(function (s) { return s.mark; });
+        var ready = needMarks.every(function (s) { return s.marks.length; });
         footer.appendChild(h('button', {
           class: 'btn primary', text: t('docSubmit'), disabled: !ready, onclick: submit,
         }));
@@ -1404,7 +1478,7 @@
         if (!ready) {
           footer.appendChild(h('span', { class: 'hint',
             text: t('docMarkRemaining').replace('{n}',
-              String(needMarks.filter(function (s) { return !s.mark; }).length)) }));
+              String(needMarks.filter(function (s) { return !s.marks.length; }).length)) }));
         }
       }
       drawFooter();
@@ -1420,7 +1494,9 @@
           fullName: draft.fullName,
           priority: draft.priority, department: draft.department, unit: draft.unit,
           pdf: pdfBase64,
-          steps: chain.map(function (s) { return { role: s.role, username: s.username, mark: s.mark }; }),
+          steps: chain.map(function (s) {
+            return { role: s.role, username: s.username, marks: s.marks };
+          }),
         },
       }).then(function (data) {
         veil.remove();
@@ -1537,6 +1613,26 @@
           class: 'btn primary', text: t('docApprove'),
           onclick: function () { act('approve'); },
         }));
+
+        /**
+         * Approving without your signature on the letter.
+         *
+         * Only offered where there is a signature to withhold. Agreeing to a
+         * letter and putting your name on its face are different things, and
+         * some heads want the first without the second.
+         */
+        var mine = (data.steps || []).filter(function (s) {
+          return s.state === 'waiting' && s.username === S.user.username;
+        })[0];
+        if (mine && mine.signs) {
+          footer.appendChild(h('button', {
+            class: 'btn', text: t('docApproveNoSign'),
+            onclick: function () {
+              if (!confirm(t('docApproveNoSignSure'))) return;
+              act('approve', { withoutSignature: true });
+            },
+          }));
+        }
         footer.appendChild(h('button', {
           class: 'btn danger', text: t('docReject'),
           onclick: function () {

@@ -151,7 +151,9 @@ const shapeStep = (s) => ({
   state: s.state,
   actedAt: s.acted_at,
   comment: s.comment,
-  signs: signsPdf(s.role),
+  // The stored flag, not the role: an approver may have chosen not to stamp,
+  // and a step created before that flag existed falls back to its role.
+  signs: s.signs === undefined || s.signs === null ? signsPdf(s.role) : s.signs,
   mark: s.x === null ? null : { page: s.page, x: s.x, y: s.y, w: s.w, h: s.h },
 });
 
@@ -176,6 +178,10 @@ async function listDocuments(sql, me) {
         waitingRole: waiting ? (ROLE_TH[waiting.role] || waiting.role) : null,
         myTurn: canAct(me, d, mine),
         progress: progressFraction(d, mine),
+        // Which secretary this one lands on. A secretary sees every document
+        // in the committee, so without this they cannot pick out the ones that
+        // are actually theirs to send.
+        secretary: (mine.find((s) => s.role === 'secretary') || {}).username || null,
       };
     });
 
@@ -331,12 +337,25 @@ async function createDocument(sql, me, body) {
   const bad = steps.filter((s) => !known.has(s.username));
   if (bad.length) return json({ error: 'UNKNOWN_APPROVER', who: bad.map((s) => s.username) }, 400);
 
+  /**
+   * The boxes a step will sign in.
+   *
+   * One signer may have several — an initial on each page as well as a
+   * signature at the end — so this is a list. A single `mark` is still
+   * accepted so that anything built against the older shape keeps working.
+   */
+  const boxesOf = (s) => {
+    const list = Array.isArray(s.marks) ? s.marks : (s.mark ? [s.mark] : []);
+    return list.filter((m) => m && Number.isFinite(Number(m.x)) && Number.isFinite(Number(m.y)));
+  };
+
   // Every signing step needs somewhere for the signature to go.
-  const missing = steps.filter((s) => signsPdf(s.role) && !s.mark);
+  const missing = steps.filter((s) => signsPdf(s.role) && !boxesOf(s).length);
   if (missing.length) {
     return json({ error: 'MARK_REQUIRED', who: missing.map((s) => s.username) }, 400);
   }
-  const offPage = steps.filter((s) => s.mark && (s.mark.page < 1 || s.mark.page > pages));
+  const offPage = steps.filter((s) =>
+    boxesOf(s).some((m) => Math.round(m.page || 1) < 1 || Math.round(m.page || 1) > pages));
   if (offPage.length) return json({ error: 'MARK_OFF_PAGE', pages }, 400);
 
   const department = isDepartment(body.department) ? body.department : (me.department || null);
@@ -356,18 +375,54 @@ async function createDocument(sql, me, body) {
   let position = 0;
   for (const step of steps) {
     position += 1;
-    const mark = step.mark || {};
+    const role = clean(step.role, 20);
+    const boxes = boxesOf(step);
+    const first = boxes[0] || {};
+
+    /**
+     * The author's own step is already done the moment it is created.
+     *
+     * Nobody grants the author permission to sign their own letter, so this
+     * step exists to carry a signature, not to wait for one. Leaving it
+     * 'waiting' would park every such document on its own writer.
+     */
+    const isAuthor = role === 'author';
+    const stepId = newId('st');
+
     await sql`
-      INSERT INTO doc_steps (id, doc_id, position, role, username, page, x, y, w, h)
-      VALUES (${newId('st')}, ${id}, ${position}, ${clean(step.role, 20)}, ${step.username},
-              ${Math.max(1, Math.round(mark.page || 1))},
-              ${step.mark ? Number(mark.x) : null}, ${step.mark ? Number(mark.y) : null},
-              ${step.mark ? Number(mark.w) : null}, ${step.mark ? Number(mark.h) : null})`;
+      INSERT INTO doc_steps (id, doc_id, position, role, username, page, x, y, w, h, signs, state, acted_at)
+      VALUES (${stepId}, ${id}, ${position}, ${role}, ${step.username},
+              ${Math.max(1, Math.round(first.page || 1))},
+              ${boxes.length ? Number(first.x) : null}, ${boxes.length ? Number(first.y) : null},
+              ${boxes.length ? Number(first.w) : null}, ${boxes.length ? Number(first.h) : null},
+              ${boxes.length > 0}, ${isAuthor ? 'approved' : 'waiting'},
+              ${isAuthor ? new Date() : null})`;
+
+    for (const m of boxes) {
+      await sql`
+        INSERT INTO doc_boxes (id, step_id, page, x, y, w, h)
+        VALUES (${newId('box')}, ${stepId}, ${Math.max(1, Math.round(m.page || 1))},
+                ${Number(m.x)}, ${Number(m.y)}, ${Number(m.w)}, ${Number(m.h)})`;
+    }
   }
 
   await note(sql, id, 'created', me.username, title);
 
-  const first = steps[0];
+  /**
+   * The author's signature goes on straight away.
+   *
+   * Their step is already approved, so without this the signed copy would not
+   * appear until somebody else acted — and for a director's letter, where the
+   * author step may be the only signing one, possibly never.
+   */
+  if (steps.some((s) => clean(s.role, 20) === 'author')) {
+    const fresh = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
+    await rebuildSigned(sql, id, fresh);
+  }
+
+  // Whoever is actually waiting — not simply the first step, which for a
+  // letter the author signed is already done.
+  const first = steps.find((s) => clean(s.role, 20) !== 'author') || steps[0];
   const watchers = await secretaries(sql);
   await tellPeople(sql, {
     usernames: [first.username, ...watchers],
@@ -518,6 +573,17 @@ async function approve(sql, me, body) {
   const step = pendingStep(steps);
 
   /**
+   * Approving without signing.
+   *
+   * A department head may want their approval recorded without their signature
+   * appearing on the letter — they are agreeing to it, not putting their name
+   * on its face. The approval is logged either way; only the stamp is dropped.
+   * A step that was never a signing step cannot be turned into one here.
+   */
+  const withoutSignature = body.withoutSignature === true;
+  const willSign = step.signs !== false && !withoutSignature;
+
+  /**
    * A signing role must actually have a signature on file.
    *
    * Checked before anything is written, so a head without one is told to set
@@ -525,14 +591,15 @@ async function approve(sql, me, body) {
    * name should be.
    */
   let signature = null;
-  if (signsPdf(step.role)) {
+  if (willSign && signsPdf(step.role)) {
     const [row] = await sql`SELECT png FROM signatures WHERE username = ${me.username}`;
     signature = toBuffer(row?.png);
     if (!signature) return json({ error: 'NO_SIGNATURE' }, 400);
   }
 
   await sql`
-    UPDATE doc_steps SET state = 'approved', acted_at = now(), comment = ${clean(body.comment, 1000)}
+    UPDATE doc_steps SET state = 'approved', acted_at = now(), signs = ${willSign},
+      comment = ${clean(body.comment, 1000)}
     WHERE id = ${step.id}`;
 
   const after = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
@@ -545,7 +612,7 @@ async function approve(sql, me, body) {
       finished_at = ${stage === 'done' ? new Date().toISOString() : null}
     WHERE id = ${doc.id}`;
 
-  await note(sql, doc.id, signsPdf(step.role) ? 'signed' : 'approved', me.username,
+  await note(sql, doc.id, willSign && signsPdf(step.role) ? 'signed' : 'approved', me.username,
     clean(body.comment, 1000));
 
   /**
@@ -644,13 +711,34 @@ async function rebuildSigned(sql, docId, steps) {
   const original = toBuffer(orig?.bytes);
   if (!original) return { placed: [], skipped: [{ reason: 'NO_ORIGINAL' }] };
 
-  const signing = steps.filter((s) => s.state === 'approved' && signsPdf(s.role) && s.x !== null);
+  /**
+   * Whose signature goes on, and where.
+   *
+   * `signs` rather than the role: an approver may have chosen to approve
+   * without stamping, and the author signs without approving anything. A step
+   * can own several boxes, so each one becomes its own mark.
+   */
+  const signing = steps.filter((s) => s.state === 'approved' && s.signs !== false);
   const marks = [];
   for (const step of signing) {
     const [row] = await sql`SELECT png FROM signatures WHERE username = ${step.username}`;
     const png = toBuffer(row?.png);
     if (!png) continue;
-    marks.push({ username: step.username, page: step.page, x: step.x, y: step.y, w: step.w, h: step.h, png });
+
+    const boxes = await sql`SELECT page, x, y, w, h FROM doc_boxes WHERE step_id = ${step.id}`;
+    // Steps drawn before boxes existed still carry their one box inline.
+    const spots = boxes.length
+      ? boxes
+      : (step.x === null || step.x === undefined
+        ? []
+        : [{ page: step.page, x: step.x, y: step.y, w: step.w, h: step.h }]);
+
+    for (const spot of spots) {
+      marks.push({
+        username: step.username, page: spot.page,
+        x: spot.x, y: spot.y, w: spot.w, h: spot.h, png,
+      });
+    }
   }
 
   if (!marks.length) return { placed: [], skipped: [] };
