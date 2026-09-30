@@ -3,6 +3,12 @@ import { currentUser, canEditTasks } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
 import { accessSet, seesEverything, EVENT_COLOURS, isColour } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
+import { isSecretary } from '../lib/approval.js';
+import {
+  assembleMeetings, createMeeting, updateMeeting, removeMeeting,
+  addAgendaItem, editAgendaItem, removeAgendaItem, replyToInvitation, canSeeMeeting,
+} from '../lib/meetingstore.js';
+import { circleSummary } from '../lib/circles.js';
 
 /**
  * Events: dates people need to know about.
@@ -42,8 +48,14 @@ export async function assembledEvents(sql) {
   const depts = await sql`SELECT * FROM event_departments`;
 
   const by = new Map();
-  for (const e of rows) by.set(e.id, { people: [], departments: [] });
-  for (const p of people) by.get(p.event_id)?.people.push(p.username);
+  for (const e of rows) by.set(e.id, { people: [], departments: [], replies: [] });
+  for (const p of people) {
+    const got = by.get(p.event_id);
+    if (!got) continue;
+    got.people.push(p.username);
+    // What each of them said, so a card can show who is actually coming.
+    got.replies.push({ username: p.username, reply: p.reply || 'invited', repliedAt: p.replied_at });
+  }
   for (const d of depts) by.get(d.event_id)?.departments.push(d.department);
 
   return rows.map((e) => ({
@@ -62,6 +74,7 @@ export async function assembledEvents(sql) {
     notify: String(e.notify || '').split(',').filter(Boolean),
     createdBy: e.created_by,
     people: by.get(e.id)?.people ?? [],
+    replies: by.get(e.id)?.replies ?? [],
     departments: by.get(e.id)?.departments ?? [],
   }));
 }
@@ -125,7 +138,15 @@ function readTags(body) {
 }
 
 async function writeTags(sql, id, people, departments) {
-  await sql`DELETE FROM event_people WHERE event_id = ${id}`;
+  /**
+   * People who are still invited keep their answer.
+   *
+   * The tags are rewritten in full on every edit, so deleting the lot and
+   * putting them back would quietly throw away every accept and decline the
+   * moment somebody fixed a typo in the title. Only people actually removed
+   * from the event lose their row.
+   */
+  await sql`DELETE FROM event_people WHERE event_id = ${id} AND username <> ALL(${people})`;
   await sql`DELETE FROM event_departments WHERE event_id = ${id}`;
   for (const username of people) {
     await sql`INSERT INTO event_people (event_id, username) VALUES (${id}, ${username})
@@ -147,8 +168,46 @@ async function handler(request) {
   if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
 
   const url = requestUrl(request);
+  const action = url.searchParams.get('do') || '';
 
   try {
+    /**
+     * Meetings ride along on this endpoint.
+     *
+     * Not because they belong to events — they have their own tables and their
+     * own rules — but because Vercel counts every file under api/ as a
+     * Serverless Function and the Hobby plan allows twelve, which are all
+     * spoken for. The work itself is in lib/meetingstore.js.
+     */
+    if (action.startsWith('meeting') || action === 'agenda' || action === 'reply') {
+      const roster = await sql`SELECT * FROM users`;
+      const secretary = isSecretary(me);
+      const kit = { people: roster, isSecretary: secretary, json };
+
+      if (action === 'meetings' && request.method === 'GET') {
+        const all = await assembleMeetings(sql, roster);
+        return json({
+          meetings: all
+            .filter((m) => canSeeMeeting(me, m, m.people, { isSecretary: secretary }))
+            .map((m) => ({
+              ...m,
+              myReply: (m.people.find((p) => p.username === me.username) || {}).reply || null,
+              mayEdit: m.createdBy === me.username || secretary ||
+                me.access === 'admin' || me.access === 'coadmin',
+            })),
+          circles: circleSummary(roster),
+        });
+      }
+      if (action === 'meeting' && request.method === 'POST') return createMeeting(sql, me, await request.json().catch(() => ({})), kit);
+      if (action === 'meeting' && request.method === 'PATCH') return updateMeeting(sql, me, await request.json().catch(() => ({})), kit);
+      if (action === 'meeting' && request.method === 'DELETE') return removeMeeting(sql, me, url.searchParams.get('id'), kit);
+      if (action === 'agenda' && request.method === 'POST') return addAgendaItem(sql, me, await request.json().catch(() => ({})), kit);
+      if (action === 'agenda' && request.method === 'PATCH') return editAgendaItem(sql, me, await request.json().catch(() => ({})), kit);
+      if (action === 'agenda' && request.method === 'DELETE') return removeAgendaItem(sql, me, url.searchParams.get('id'), kit);
+      if (action === 'reply' && request.method === 'POST') return replyToInvitation(sql, me, await request.json().catch(() => ({})), kit);
+      return json({ error: 'BAD_REQUEST' }, 400);
+    }
+
     if (request.method === 'GET') {
       const all = await assembledEvents(sql);
       return json({

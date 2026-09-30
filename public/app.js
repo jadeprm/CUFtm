@@ -753,7 +753,7 @@
     else if (page === 'mine') { S.scope = 'mine'; page = 'work'; }
     else if (page === 'events') page = 'work';
 
-    if (['work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
+    if (['work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce', 'meetings'].indexOf(page) === -1) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -1852,6 +1852,7 @@
     if (S.page === 'links') return pageLinks(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
+    if (S.page === 'meetings') return pageMeetings(main);
   }
 
   /**
@@ -2293,6 +2294,55 @@
     var timeInput = h('input', { type: 'time', value: draft.dueTime || '', disabled: !mayEdit });
 
     var peopleBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
+    /**
+     * Saying yes or no to being put on something.
+     *
+     * Being named on a task and having agreed to it are different facts, and
+     * the system used to record only the first. This is shown to everybody so
+     * that whoever created it can see who has actually answered — an accepted
+     * task and a silent one look identical otherwise.
+     */
+    var replyBox = h('div', { class: 'rsvp' });
+    function drawReplies() {
+      clear(replyBox);
+      if (isNew || !task) return;
+      var replies = task.replies || [];
+      var mine = replies.filter(function (x) { return x.username === S.user.username; })[0];
+
+      if (mine) {
+        replyBox.appendChild(h('span', { class: 'hint', text: t('rsvpAsk') }));
+        [['accepted', 'rsvpAccept'], ['declined', 'rsvpDecline']].forEach(function (pair) {
+          replyBox.appendChild(h('button', {
+            type: 'button',
+            class: 'btn sm rsvp-' + pair[0] + (mine.reply === pair[0] ? ' on' : ''),
+            text: t(pair[1]),
+            onclick: function () {
+              api('/api/events?do=reply', {
+                method: 'POST',
+                body: { kind: 'task', id: task.id, reply: pair[0] },
+              }).then(function () {
+                mine.reply = pair[0];
+                drawReplies();
+                api('/api/tasks').then(function (d) { S.tasks = d.tasks; });
+              }).catch(function (err) { alert(errText(err.code)); });
+            },
+          }));
+        });
+      }
+
+      // The tally, so the person who set it up can see who is missing.
+      var counted = { accepted: 0, declined: 0, invited: 0 };
+      replies.forEach(function (x) { counted[x.reply === 'accepted' ? 'accepted'
+        : x.reply === 'declined' ? 'declined' : 'invited'] += 1; });
+      if (replies.length) {
+        replyBox.appendChild(h('span', { class: 'rsvp-count', text:
+          t('rsvpTally').replace('%a', String(counted.accepted))
+            .replace('%d', String(counted.declined))
+            .replace('%w', String(counted.invited)) }));
+      }
+    }
+    drawReplies();
+
     var deptBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
     if (mayEdit) {
       buildPeoplePicker(peopleBox, draft);
@@ -2591,7 +2641,7 @@
           h('div', { class: 'field' }, [h('label', { text: t('dueDate') }), dateInput]),
           h('div', { class: 'field' }, [h('label', { text: t('dueTime') }), timeInput]),
         ]),
-        h('div', { class: 'field' }, [h('label', { text: t('assignTo') }), peopleBox]),
+        h('div', { class: 'field' }, [h('label', { text: t('assignTo') }), peopleBox, replyBox]),
         h('div', { class: 'field' }, [h('label', { text: t('departments') }), deptBox]),
         h('div', { class: 'two' }, [
           h('div', { class: 'field' }, [h('label', { text: t('teamspace') }), deptSelect,
@@ -2912,6 +2962,46 @@
           })
         : [h('span', { class: 'chip', text: t('noOne') })]);
 
+      /**
+       * The circles, above the search box.
+       *
+       * Naming eleven heads one at a time before every meeting is how people
+       * stop using a system. Tapping a circle adds everyone in it; tapping it
+       * again takes them all back out, so it is a shortcut rather than a trap.
+       */
+      var circleRow = h('div', { class: 'seg wrap circles' });
+      circleChoices().forEach(function (c) {
+        var allIn = c.members.every(function (u) {
+          return draft.assignees.indexOf(u) !== -1;
+        });
+        circleRow.appendChild(h('button', {
+          type: 'button', class: allIn ? 'on' : '',
+          title: c.note || '',
+          text: c.label + ' (' + c.members.length + ')',
+          onclick: function () {
+            if (allIn) {
+              /**
+               * Turning a circle off never removes you from your own work.
+               *
+               * You are almost always inside the circle you just picked, so a
+               * plain "remove everyone in it" quietly takes the organiser off
+               * their own meeting — and the server puts them back anyway, so
+               * the page would be showing something that was not going to
+               * happen.
+               */
+              draft.assignees = draft.assignees.filter(function (u) {
+                return c.members.indexOf(u) === -1 || u === S.user.username;
+              });
+            } else {
+              c.members.forEach(function (u) {
+                if (draft.assignees.indexOf(u) === -1) draft.assignees.push(u);
+              });
+            }
+            redraw();
+          },
+        }));
+      });
+
       var search = h('input', { type: 'text', placeholder: t('assignTo') });
       var options = h('div', { class: 'options' });
 
@@ -2952,6 +3042,7 @@
       fill();
 
       box.appendChild(selected);
+      if (circleRow.childNodes.length) box.appendChild(circleRow);
       box.appendChild(h('div', { class: 'search' }, [search]));
       box.appendChild(options);
     }
@@ -5140,6 +5231,34 @@
   function mayCreate() { return S.user && S.user.access !== 'inner'; }
 
   /** The people a unit editor may put work on: their own section, and themselves. */
+  /**
+   * Who is in a circle, worked out from the roster the page already holds.
+   *
+   * The same rule as the server's: a circle is everybody at or above a floor
+   * on the access ladder, minus closed and suspended accounts. The server
+   * expands every circle again when anything is saved, so this list decides
+   * what the picker shows and never what is stored.
+   */
+  function circleMembers(key) {
+    var circle = (S.circles || []).filter(function (c) { return c.key === key; })[0];
+    if (!circle || !S.accessOrder) return [];
+    var floor = S.accessOrder.indexOf(circle.floor);
+    if (floor < 0) return [];
+    return (S.users || []).filter(function (u) {
+      if (!u.active || u.suspended) return false;
+      var mine = S.accessOrder.indexOf(u.access);
+      return mine >= 0 && mine >= floor;
+    }).map(function (u) { return u.username; });
+  }
+
+  /** The circles a picker should offer, with how many people are in each. */
+  function circleChoices() {
+    return (S.circles || []).map(function (c) {
+      return { key: c.key, label: S.lang === 'en' ? c.en : c.th,
+               note: c.note, members: circleMembers(c.key) };
+    }).filter(function (c) { return c.members.length > 0; });
+  }
+
   function assignableTo(person) {
     if (!S.user || S.user.access !== 'unitlead') return true;
     if (person.username === S.user.username) return true;
@@ -5154,6 +5273,298 @@
       return null;
     }
     return 'EDITORS_CANNOT_MANAGE_ACCOUNTS';
+  }
+
+
+  /* ---------- meetings --------------------------------------------------- */
+
+  /**
+   * การประชุม.
+   *
+   * A meeting is not an event and not a task: it has an agenda that the people
+   * attending propose items to, a link to join, and minutes that only exist
+   * afterwards. It gets its own page for that reason rather than another set of
+   * fields hanging off the calendar.
+   */
+  function pageMeetings(main) {
+    main.appendChild(h('div', { class: 'page-head' }, [
+      h('h1', { text: t('navMeetings') }),
+      h('span', { class: 'grow' }),
+      h('button', {
+        class: 'btn primary', text: t('mtgNew'),
+        onclick: function () { openMeeting(null); },
+      }),
+    ]));
+
+    var list = h('div', { class: 'doc-list' });
+    main.appendChild(list);
+
+    function draw() {
+      clear(list);
+      var all = S.meetings || [];
+      if (!all.length) {
+        list.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('mtgNone') })]));
+        return;
+      }
+      all.forEach(function (m) { list.appendChild(meetingCard(m)); });
+    }
+
+    load();
+    function load() {
+      api('/api/events?do=meetings').then(function (d) {
+        S.meetings = d.meetings || [];
+        draw();
+      }).catch(function (err) {
+        clear(list);
+        list.appendChild(h('div', { class: 'notice err', text: errText(err.code) }));
+      });
+    }
+    S.reloadMeetings = load;
+    draw();
+  }
+
+  /** The colour of an answer, which is the whole point of showing it. */
+  function replyClass(reply) {
+    return reply === 'accepted' ? 'yes' : reply === 'declined' ? 'no' : 'maybe';
+  }
+
+  function meetingCard(m) {
+    var when = m.meetsOn + (m.meetsAt ? ' · ' + m.meetsAt : '');
+    return h('button', {
+      class: 'doc-card' + (m.status === 'cancelled' ? ' bad' : ''),
+      onclick: function () { openMeeting(m); },
+    }, [
+      h('div', { class: 'dc-top' }, [
+        m.code ? h('span', { class: 't-code', text: m.code }) : null,
+        h('span', { class: 'dc-title', text: m.title }),
+        h('span', { class: 'chip ' + replyClass(m.myReply),
+          text: m.myReply === 'accepted' ? t('rsvpGoing')
+            : m.myReply === 'declined' ? t('rsvpNotGoing') : t('rsvpAsk') }),
+      ].filter(Boolean)),
+      h('div', { class: 'dc-sub' }, [
+        h('span', { text: when }),
+        m.place ? h('span', { text: ' · ' + m.place }) : null,
+        h('span', { text: ' · ' + t('rsvpTally')
+          .replace('%a', String(m.counts.accepted))
+          .replace('%d', String(m.counts.declined))
+          .replace('%w', String(m.counts.invited)) }),
+      ].filter(Boolean)),
+    ]);
+  }
+
+  function openMeeting(meeting) {
+    var isNew = !meeting;
+    var draft = {
+      title: meeting ? meeting.title : '',
+      note: meeting ? meeting.note : '',
+      meetsOn: meeting ? meeting.meetsOn : '',
+      meetsAt: meeting ? (meeting.meetsAt || '') : '',
+      place: meeting ? meeting.place : '',
+      joinUrl: meeting ? meeting.joinUrl : '',
+      agendaUrl: meeting ? meeting.agendaUrl : '',
+      minutesUrl: meeting ? meeting.minutesUrl : '',
+      assignees: meeting ? meeting.people.map(function (p) { return p.username; }) : [S.user.username],
+      departments: [],
+      template: 'standard',
+    };
+    var mayEdit = isNew || meeting.mayEdit;
+
+    var veil = h('div', { class: 'veil' });
+    var bodyBox = h('div', { class: 'modal-body' });
+    var footer = h('div', { class: 'modal-foot' });
+    var notice = h('div', { class: 'notice err', hidden: true });
+
+    function fail(text) { notice.hidden = false; notice.textContent = text; }
+
+    var field = function (label, node) {
+      return h('div', { class: 'field' }, [h('label', { text: label }), node]);
+    };
+    var input = function (key, type) {
+      var el = h('input', { type: type || 'text', value: draft[key] || '', disabled: !mayEdit });
+      el.addEventListener('input', function () { draft[key] = el.value; });
+      return el;
+    };
+
+    var peopleBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
+    if (mayEdit) buildPeoplePicker(peopleBox, draft);
+
+    bodyBox.appendChild(notice);
+
+    /**
+     * What somebody opened the meeting to look at comes first.
+     *
+     * For a meeting that already exists, that is who is coming and what is on
+     * the agenda — not seven form fields they have to scroll past. The details
+     * are still there, underneath, for the organiser who came to change them.
+     */
+    var detailPane = h('div', { class: 'pane' }, [
+      field(t('mtgTitle'), input('title')),
+      field(t('mtgDate'), input('meetsOn', 'date')),
+      field(t('mtgStart'), input('meetsAt', 'time')),
+      field(t('mtgPlace'), input('place')),
+      field(t('mtgJoin'), input('joinUrl', 'url')),
+      field(t('mtgAgendaUrl'), input('agendaUrl', 'url')),
+      isNew ? null : field(t('mtgMinutesUrl'), input('minutesUrl', 'url')),
+      field(t('mtgWho'), peopleBox),
+    ].filter(Boolean));
+    if (isNew) bodyBox.appendChild(detailPane);
+
+    /**
+     * Which agenda a new meeting starts with.
+     *
+     * The committee's five วาระ are what every set of its minutes uses, so
+     * they are offered as a starting point — but a working session of three
+     * people does not need เรื่องสืบเนื่อง, and a blank agenda is as valid.
+     */
+    if (isNew) {
+      var templateSeg = h('div', { class: 'seg wrap' }, [
+        ['standard', 'mtgTemplateStandard'], ['blank', 'mtgTemplateBlank'],
+      ].map(function (pair) {
+        var b = h('button', {
+          type: 'button', class: draft.template === pair[0] ? 'on' : '', text: t(pair[1]),
+          onclick: function () {
+            draft.template = pair[0];
+            [...templateSeg.childNodes].forEach(function (n) { n.className = ''; });
+            b.className = 'on';
+          },
+        });
+        return b;
+      }));
+      bodyBox.appendChild(h('div', { class: 'pane' }, [field(t('mtgTemplate'), templateSeg)]));
+    }
+
+    // ---- an existing meeting: who is coming, and the agenda ----
+    if (!isNew) {
+      var whoPane = h('div', { class: 'pane' });
+      var mine = meeting.people.filter(function (p) { return p.username === S.user.username; })[0];
+
+      if (mine) {
+        var rsvp = h('div', { class: 'rsvp' });
+        var closed = meeting.status !== 'planned';
+        [['accepted', 'rsvpGoing'], ['declined', 'rsvpNotGoing']].forEach(function (pair) {
+          rsvp.appendChild(h('button', {
+            type: 'button', disabled: closed,
+            class: 'btn sm rsvp-' + pair[0] + (mine.reply === pair[0] ? ' on' : ''),
+            text: t(pair[1]),
+            onclick: function () {
+              api('/api/events?do=reply', {
+                method: 'POST', body: { kind: 'meeting', id: meeting.id, reply: pair[0] },
+              }).then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+                .catch(function (err) { fail(errText(err.code)); });
+            },
+          }));
+        });
+        whoPane.appendChild(rsvp);
+      }
+
+      // Everybody, colour-coded, so a glance answers "who is actually coming".
+      whoPane.appendChild(h('div', { class: 'selected' }, meeting.people.map(function (p) {
+        return h('span', { class: 'chip who ' + replyClass(p.reply) },
+          [avatarNode(p.username, 'sm'), nameOf(p.username)]);
+      })));
+      bodyBox.appendChild(whoPane);
+
+      var agendaPane = h('div', { class: 'pane' });
+      agendaPane.appendChild(h('h3', { text: t('mtgAgenda') }));
+      if (meeting.length && meeting.length.minutes) {
+        agendaPane.appendChild(h('p', { class: 'hint', text: t('mtgLength')
+          .replace('%m', String(meeting.length.minutes))
+          .replace('%e', meeting.length.endsAt || '—') }));
+      }
+
+      meeting.agenda.forEach(function (item) {
+        agendaPane.appendChild(h('div', { class: 'agenda-row' }, [
+          h('span', { class: 't-code', text: String(item.slot) }),
+          h('span', { class: 'grow', text: item.title }),
+          item.minutes ? h('span', { class: 'chip', text: item.minutes + ' ' + t('mtgItemMinutes') }) : null,
+          h('small', { text: t('mtgProposedBy') + ' ' + nameOf(item.proposedBy) }),
+          (item.proposedBy === S.user.username || meeting.mayEdit) ? h('button', {
+            class: 'btn sm danger', text: '✕', title: t('mtgRemoveItem'),
+            onclick: function () {
+              api('/api/events?do=agenda&id=' + encodeURIComponent(item.id), { method: 'DELETE' })
+                .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+                .catch(function (err) { fail(errText(err.code)); });
+            },
+          }) : null,
+        ].filter(Boolean)));
+      });
+
+      // Anybody invited may add to it — that is the point of the thing.
+      if (mine && meeting.status === 'planned') {
+        var itemTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
+        var itemMins = h('input', { type: 'number', min: '0', max: '600', value: '10',
+          style: 'max-width:5.5rem' });
+        agendaPane.appendChild(h('div', { class: 'agenda-add' }, [
+          itemTitle, itemMins,
+          h('button', {
+            class: 'btn', text: t('mtgAddItem'),
+            onclick: function () {
+              if (!itemTitle.value.trim()) return;
+              api('/api/events?do=agenda', {
+                method: 'POST',
+                body: { meetingId: meeting.id, title: itemTitle.value.trim(),
+                        minutes: Number(itemMins.value) || 0 },
+              }).then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+                .catch(function (err) { fail(errText(err.code)); });
+            },
+          }),
+        ]));
+      }
+
+      [['joinUrl', 'mtgOpenJoin'], ['agendaUrl', 'mtgOpenAgenda'], ['minutesUrl', 'mtgOpenMinutes']]
+        .forEach(function (pair) {
+          if (!meeting[pair[0]]) return;
+          agendaPane.appendChild(h('a', {
+            class: 'chip dept', target: '_blank', rel: 'noopener',
+            href: meeting[pair[0]], text: t(pair[1]),
+          }));
+        });
+
+      bodyBox.appendChild(agendaPane);
+      // The editable details last, for whoever came to change them.
+      bodyBox.appendChild(detailPane);
+    }
+
+    if (mayEdit) {
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: t('save'),
+        onclick: function () {
+          if (!draft.title.trim()) { fail(t('mtgTitle')); return; }
+          if (!draft.meetsOn) { fail(t('mtgDate')); return; }
+          var body = {
+            title: draft.title, note: draft.note, meetsOn: draft.meetsOn,
+            meetsAt: draft.meetsAt || null, place: draft.place,
+            joinUrl: draft.joinUrl, agendaUrl: draft.agendaUrl,
+            people: draft.assignees,
+          };
+          if (isNew) body.template = draft.template;
+          else { body.id = meeting.id; body.minutesUrl = draft.minutesUrl; }
+          api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
+            .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+            .catch(function (err) { fail(errText(err.code)); });
+        },
+      }));
+      if (!isNew) {
+        footer.appendChild(h('button', {
+          class: 'btn danger', text: t('mtgDelete'),
+          onclick: function () {
+            if (!confirm(t('mtgDeleteSure'))) return;
+            api('/api/events?do=meeting&id=' + encodeURIComponent(meeting.id), { method: 'DELETE' })
+              .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+              .catch(function (err) { fail(errText(err.code)); });
+          },
+        }));
+      }
+    }
+    footer.appendChild(h('button', { class: 'btn', text: t('close'),
+      onclick: function () { veil.remove(); } }));
+
+    veil.appendChild(h('div', { class: 'modal' }, [
+      h('div', { class: 'modal-head' }, [h('strong', { text: isNew ? t('mtgNew') : meeting.title })]),
+      bodyBox, footer,
+    ]));
+    veil.addEventListener('click', function (e) { if (e.target === veil) veil.remove(); });
+    document.body.appendChild(veil);
   }
 
   /* ---------- announcements (admin / co-admin) --------------------------- */
@@ -5728,6 +6139,8 @@
       api('/api/events'),
     ]).then(function (res) {
       S.departments = res[0].departments;
+      S.circles = res[0].circles || [];
+      S.accessOrder = res[0].accessOrder || [];
       S.users = res[1].users;
       S.canManage = res[1].canManage;
       S.canSetAccess = Boolean(res[1].canSetAccess);

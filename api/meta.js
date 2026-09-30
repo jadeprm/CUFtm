@@ -5,6 +5,8 @@ import { withNode } from '../lib/http.js';
 import { currentUser, canEditTasks, canManageAccounts } from '../lib/auth.js';
 import { makeCode, readCode, readTarget, shortUrl } from '../lib/shortlink.js';
 import { siteUrl } from '../lib/line.js';
+import { CIRCLES } from '../lib/circles.js';
+import { ACCESS_ORDER } from '../lib/auth.js';
 
 /**
  * Reference data, the keep-warm ping, and short links.
@@ -63,6 +65,17 @@ async function handler(request) {
 
   return json({
     hasDatabase,
+    /**
+     * The circles, as definitions only.
+     *
+     * Who is in one is worked out from the roster the page already has, so
+     * this endpoint stays a cheap piece of reference data rather than another
+     * query against the users table on every page load. The server re-expands
+     * every circle when anything is actually saved, so the page's version of
+     * the list is a convenience and never the thing of record.
+     */
+    circles: CIRCLES.map((c) => ({ key: c.key, th: c.th, en: c.en, floor: c.floor, note: c.note })),
+    accessOrder: ACCESS_ORDER,
     departments: DEPARTMENTS.map((d) => ({
       key: d.key, th: d.th, en: d.en, units: d.units, parent: d.parent || null,
     })),

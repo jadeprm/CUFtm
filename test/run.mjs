@@ -3931,5 +3931,272 @@ ok('somebody who is not a secretary is not told they are',
   r.data.isSecretary === false);
 
 
+
+// ===========================================================================
+head('65. Circles: the committee’s own words for groups of people');
+
+const { CIRCLES, membersOf, expandPeople: expandCircle, describeCircle, inCircle } =
+  await import('../lib/circles.js');
+
+const cRoster = await sql`SELECT * FROM users`;
+const sizes = CIRCLES.map((c) => c.key + ':' + membersOf(c.key, cRoster).length).join(' ');
+console.log('  circles:', sizes);
+
+ok('the four circles nest, widest last',
+  CIRCLES.map((c) => membersOf(c.key, cRoster).length)
+    .every((n, i, all) => i === 0 || n >= all[i - 1]), sizes);
+ok('the board is admins and co-admins only',
+  membersOf('board', cRoster).every((u) =>
+    ['admin', 'coadmin'].includes(cRoster.find((p) => p.username === u).access)),
+  membersOf('board', cRoster).join(','));
+ok('the core team adds the ประธานฝ่าย',
+  membersOf('core', cRoster).length > membersOf('board', cRoster).length,
+  membersOf('core', cRoster).join(','));
+ok('all heads reaches down to หัวหน้าฝ่ายย่อย',
+  membersOf('heads', cRoster).some((u) =>
+    cRoster.find((p) => p.username === u).access === 'unitlead'),
+  membersOf('heads', cRoster).join(','));
+
+/**
+ * Circles are derived, never stored — which is the whole reason they are
+ * worth having. Somebody promoted is in the core team from that moment,
+ * with nobody remembering to add them to a list.
+ */
+const beforePromotion = membersOf('core', cRoster).length;
+await sql`UPDATE users SET access = 'editor' WHERE username = 'Ploy_StaffCon'`;
+const afterRoster = await sql`SELECT * FROM users`;
+ok('promoting somebody puts them in the circle with no list to update',
+  membersOf('core', afterRoster).length === beforePromotion + 1 &&
+  membersOf('core', afterRoster).includes('Ploy_StaffCon'),
+  `${beforePromotion} → ${membersOf('core', afterRoster).length}`);
+await sql`UPDATE users SET access = 'inner' WHERE username = 'Ploy_StaffCon'`;
+
+const closed = await sql`SELECT * FROM users WHERE active = false OR suspended = true LIMIT 1`;
+if (closed.length) {
+  ok('a closed or suspended account is in no circle at all',
+    CIRCLES.every((c) => !inCircle(closed[0], c.key)), closed[0].username);
+}
+
+ok('a mixed pick of circles and names comes back as one list, without repeats',
+  (() => {
+    const got = expandCircle({ usernames: ['Jade_Pres', 'ghost'], circles: ['board'], people: roster });
+    return new Set(got).size === got.length && got.includes('Jade_Pres') && !got.includes('ghost');
+  })());
+ok('an exact circle is named back as one, a near miss is not',
+  describeCircle(membersOf('board', cRoster), cRoster) === 'board' &&
+  describeCircle(['Jade_Pres'], cRoster) === null);
+
+// ===========================================================================
+head('66. Accepting and declining an invitation');
+
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานที่ต้องตอบรับ', dueDate: '2026-12-20',
+          assignees: ['Kungking_HeadCon', 'Donat_Sec'], notify: [] },
+});
+const inviteId = r.data.task.id;
+ok('a task can be given to two people', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+let invited = r.data.tasks.find((t) => t.id === inviteId);
+ok('...and everybody starts as invited, not as having agreed',
+  invited.replies.filter((x) => x.username !== 'Jade_Pres')
+    .every((x) => x.reply === 'invited'),
+  JSON.stringify(invited.replies));
+
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'editor', body: { kind: 'task', id: inviteId, reply: 'accepted' },
+});
+ok('an invited person can accept', r.status === 200 && r.data.reply === 'accepted',
+  JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'donat', body: { kind: 'task', id: inviteId, reply: 'declined' },
+});
+ok('...and another can decline', r.status === 200 && r.data.reply === 'declined',
+  JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'merch', body: { kind: 'task', id: inviteId, reply: 'accepted' },
+});
+ok('somebody who was never invited cannot answer',
+  r.status === 403 && r.data.error === 'NOT_INVITED', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'editor', body: { kind: 'task', id: inviteId, reply: 'maybe' },
+});
+ok('...and "maybe" is not an answer this system takes',
+  r.status === 400 && r.data.error === 'BAD_REPLY', JSON.stringify(r.data));
+
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+invited = r.data.tasks.find((t) => t.id === inviteId);
+ok('the creator can see who accepted and who declined',
+  invited.replies.find((x) => x.username === 'Kungking_HeadCon').reply === 'accepted' &&
+  invited.replies.find((x) => x.username === 'Donat_Sec').reply === 'declined',
+  JSON.stringify(invited.replies));
+
+/**
+ * The trap this guards: the tags are rewritten in full on every save, so an
+ * unrelated edit used to be able to wipe every answer given so far.
+ */
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'admin', body: { id: inviteId, title: 'งานที่ต้องตอบรับ (แก้ชื่อ)' },
+});
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+invited = r.data.tasks.find((t) => t.id === inviteId);
+ok('editing the task does not throw away what people already answered',
+  invited.replies.find((x) => x.username === 'Kungking_HeadCon').reply === 'accepted',
+  JSON.stringify(invited.replies));
+
+// ===========================================================================
+head('67. การประชุม: agendas, invitations and who is coming');
+
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'member',
+  body: { title: 'ประชุมที่สมาชิกธรรมดาไม่ควรเรียกได้', meetsOn: '2026-12-05' },
+});
+ok('an ordinary member cannot call a meeting of the committee',
+  r.status === 403 && r.data.error === 'CANNOT_CALL_MEETING', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: {
+    title: 'ประชุมคณะกรรมการโครงการ ครั้งที่ 4/2569',
+    meetsOn: '2026-12-05', meetsAt: '17:00',
+    place: 'ออนไลน์', joinUrl: 'https://chula.zoom.us/j/92311519265',
+    circles: ['core'], template: 'standard',
+  },
+});
+ok('a meeting can be called on a whole circle at once', r.status === 201,
+  JSON.stringify(r.data).slice(0, 100));
+const mtgId = r.data.id;
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+let mtg = r.data.meetings.find((m) => m.id === mtgId);
+ok('...and everybody in that circle is invited',
+  mtg.people.length === membersOf('core', cRoster).length,
+  `${mtg.people.length} invited, circle has ${membersOf('core', cRoster).length}`);
+ok('...the card says which circle it went to, rather than listing names',
+  mtg.circle === 'core', String(mtg.circle));
+ok('...the organiser counts as accepted, having called it',
+  mtg.people.find((p) => p.username === 'Jade_Pres').reply === 'accepted');
+ok('...and it carries a code people can search for', /^M\d{4}$/.test(mtg.code || ''), mtg.code);
+
+ok('the standard agenda is the committee’s five วาระ',
+  mtg.agenda.length === 5 && mtg.agenda[0].title.includes('วาระที่ 1') &&
+  mtg.agenda[4].title.includes('วาระที่ 5'),
+  mtg.agenda.map((a) => a.slot + '.' + a.title.slice(0, 12)).join(' '));
+ok('...numbered from one, in order', mtg.agenda.every((a, i) => a.slot === i + 1));
+ok('...and the page can say when the meeting would actually end',
+  mtg.length.minutes === 90 && mtg.length.endsAt === '18:30',
+  JSON.stringify(mtg.length));
+
+// A blank agenda is the other choice.
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: { title: 'คุยงานสั้น ๆ', meetsOn: '2026-12-06', template: 'blank' },
+});
+const blankId = r.data.id;
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+ok('a blank agenda really is blank',
+  r.data.meetings.find((m) => m.id === blankId).agenda.length === 0);
+
+// ---- anybody invited may propose an item --------------------------------
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'editor',
+  body: { meetingId: mtgId, title: 'ขอหารือเรื่องงบฝ่ายเนื้อหา', minutes: 15, priority: 'high' },
+});
+ok('somebody invited can propose an item for the agenda', r.status === 201,
+  JSON.stringify(r.data).slice(0, 80));
+
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'member',
+  body: { meetingId: mtgId, title: 'ไม่ได้รับเชิญ' },
+});
+ok('...but somebody who was not invited cannot',
+  r.status === 403 && r.data.error === 'NOT_INVITED', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+mtg = r.data.meetings.find((m) => m.id === mtgId);
+const proposed = mtg.agenda.find((a) => a.title.includes('งบฝ่ายเนื้อหา'));
+ok('the proposed item lands at the end and says who asked for it',
+  proposed.slot === 6 && proposed.proposedBy === 'Kungking_HeadCon',
+  JSON.stringify(proposed));
+ok('...and the meeting is now a quarter of an hour longer',
+  mtg.length.minutes === 105 && mtg.length.endsAt === '18:45',
+  JSON.stringify(mtg.length));
+
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'PATCH', as: 'donat',
+  body: { id: proposed.id, title: 'เปลี่ยนคำพูดของคนอื่น' },
+});
+ok('nobody can reword somebody else’s proposal into something it was not',
+  r.status === 403, JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'PATCH', as: 'admin', body: { id: proposed.id, slot: 2 },
+});
+ok('...though the organiser may move it up the running order', r.status === 200,
+  JSON.stringify(r.data));
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+mtg = r.data.meetings.find((m) => m.id === mtgId);
+ok('...and the whole agenda renumbers cleanly, with no gap left behind',
+  mtg.agenda.every((a, i) => a.slot === i + 1) &&
+  mtg.agenda[1].title.includes('งบฝ่ายเนื้อหา'),
+  mtg.agenda.map((a) => a.slot + '.' + a.title.slice(0, 10)).join(' '));
+
+// ---- who is coming -------------------------------------------------------
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'editor', body: { kind: 'meeting', id: mtgId, reply: 'accepted' },
+});
+ok('an invited person accepts the meeting', r.status === 200, JSON.stringify(r.data));
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'coadmin', body: { kind: 'meeting', id: mtgId, reply: 'declined' },
+});
+ok('...and another declines', r.status === 200, JSON.stringify(r.data));
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'editor', body: { kind: 'meeting', id: mtgId, reply: 'declined' },
+});
+ok('...and may change their mind while the meeting is still ahead',
+  r.status === 200 && r.data.reply === 'declined', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+mtg = r.data.meetings.find((m) => m.id === mtgId);
+ok('the counts separate "said no" from "has not answered"',
+  mtg.counts.accepted >= 1 && mtg.counts.declined === 2 &&
+  mtg.counts.invited === mtg.counts.total - mtg.counts.accepted - mtg.counts.declined,
+  JSON.stringify(mtg.counts));
+
+// A meeting that has already begun takes no more replies.
+await sql`UPDATE meetings SET meets_on = '2020-01-01' WHERE id = ${mtgId}`;
+r = await call(eventsApi, '/api/events?do=reply', {
+  method: 'POST', as: 'editor', body: { kind: 'meeting', id: mtgId, reply: 'accepted' },
+});
+ok('once the meeting has started, the answer is whatever it was',
+  r.status === 400 && r.data.error === 'TOO_LATE_TO_REPLY', JSON.stringify(r.data));
+await sql`UPDATE meetings SET meets_on = '2026-12-05' WHERE id = ${mtgId}`;
+
+// ---- links, and one that should never be stored -------------------------
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin',
+  body: { id: mtgId, minutesUrl: 'https://docs.google.com/document/d/abc/edit' },
+});
+ok('the minutes can be linked once the meeting is over', r.status === 200);
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin', body: { id: mtgId, joinUrl: 'javascript:alert(1)' },
+});
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+mtg = r.data.meetings.find((m) => m.id === mtgId);
+ok('a javascript: link is never stored as somewhere to join a meeting',
+  mtg.joinUrl === '', JSON.stringify(mtg.joinUrl));
+ok('...while the real minutes link survives',
+  mtg.minutesUrl.includes('docs.google.com'), mtg.minutesUrl);
+
+r = await call(eventsApi, `/api/events?do=meeting&id=${blankId}`, { method: 'DELETE', as: 'editor' });
+ok('somebody else’s meeting cannot be deleted', r.status === 403, JSON.stringify(r.data));
+r = await call(eventsApi, `/api/events?do=meeting&id=${blankId}`, { method: 'DELETE', as: 'admin' });
+ok('...and the organiser can call it off', r.status === 200, JSON.stringify(r.data));
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

@@ -57,6 +57,10 @@ export async function assembled(sql) {
       t.*,
       COALESCE((SELECT json_agg(p.username ORDER BY p.username)
                 FROM task_people p WHERE p.task_id = t.id), '[]') AS people,
+      COALESCE((SELECT json_agg(json_build_object(
+                  'username', p.username, 'reply', p.reply, 'repliedAt', p.replied_at)
+                  ORDER BY p.username)
+                FROM task_people p WHERE p.task_id = t.id), '[]') AS replies,
       COALESCE((SELECT json_agg(json_build_object('key', d.department, 'scope', d.scope))
                 FROM task_departments d WHERE d.task_id = t.id), '[]') AS depts,
       COALESCE((SELECT json_agg(json_build_object(
@@ -101,6 +105,8 @@ export async function assembled(sql) {
     createdAt: t.created_at,
     updatedAt: t.updated_at,
     assignees: asArray(t.people),
+    // Named is not the same as agreed. The card shows both.
+    replies: asArray(t.replies),
     departments: asArray(t.depts),
     parts: asArray(t.parts),
     links: asArray(t.links),
@@ -156,10 +162,17 @@ async function expandPeople(sql, assignees, departments) {
 }
 
 async function writeTags(sql, taskId, assignees, departments) {
-  await sql`DELETE FROM task_people WHERE task_id = ${taskId}`;
-  await sql`DELETE FROM task_departments WHERE task_id = ${taskId}`;
-
   const expanded = await expandPeople(sql, assignees, departments);
+
+  /**
+   * Whoever is still on the task keeps whatever they answered.
+   *
+   * These tags are rewritten in full on every save, so removing the rows and
+   * re-adding them would wipe every accept and decline each time somebody
+   * edited the due date. Only people genuinely taken off the task lose theirs.
+   */
+  await sql`DELETE FROM task_people WHERE task_id = ${taskId} AND username <> ALL(${expanded})`;
+  await sql`DELETE FROM task_departments WHERE task_id = ${taskId}`;
 
   /**
    * One statement per table, however many people are on the task.

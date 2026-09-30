@@ -1246,3 +1246,36 @@ input.code-input {
   .link-row { grid-template-columns: 1fr auto; }
   .lr-acts { grid-column: 1 / -1; justify-content: flex-start; }
 }
+
+/* ---- invitations, circles and meetings --------------------------------- */
+
+/**
+ * An answer has to be readable as a colour before it is read as a word — the
+ * whole reason for showing who accepted is that somebody can glance at a list
+ * and see who has not. Shape carries it too, for anybody who cannot separate
+ * the greens from the reds.
+ */
+.rsvp { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: .5rem; }
+.rsvp-count { color: var(--ink-faint); font-size: .85rem; }
+.btn.rsvp-accepted.on { background: var(--ok, #1a7f4b); border-color: var(--ok, #1a7f4b); color: #fff; }
+.btn.rsvp-declined.on { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+.chip.yes   { border-color: var(--ok, #1a7f4b); color: var(--ok, #1a7f4b); }
+.chip.no    { border-color: var(--danger); color: var(--danger); text-decoration: line-through; }
+.chip.maybe { border-color: var(--line); color: var(--ink-faint); }
+
+.seg.circles button { font-size: .85rem; }
+
+.agenda-row {
+  display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+  padding: .45rem 0; border-bottom: 1px solid var(--line);
+}
+.agenda-row .grow { flex: 1 1 12rem; }
+.agenda-row small { color: var(--ink-faint); }
+.agenda-add { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; }
+.agenda-add input[type="text"] { flex: 1 1 12rem; }
+
+@media (max-width: 560px) {
+  .agenda-row { gap: .35rem; }
+  .agenda-row small { flex-basis: 100%; }
+}
