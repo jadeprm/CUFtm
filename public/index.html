@@ -160,6 +160,7 @@
             </header>
             <div class="items">
               <a href="#/profile" class="item" data-t="navProfile">โปรไฟล์</a>
+              <a href="#/links" class="item" data-t="navLinks">ลิงก์สั้น</a>
               <button class="item" id="me-theme">ธีม</button>
               <button class="item" id="me-lang">ภาษา</button>
               <button class="item danger" id="sign-out" data-t="signOut">ออกจากระบบ</button>
@@ -175,6 +176,11 @@
 
 <div id="modal-root"></div>
 
+<!-- QR codes for posters. Shipped with the app rather than loaded from a CDN,
+     for the same reason pdf.js is: a university network that blocks the CDN
+     would otherwise leave the one feature that exists to be printed unable to
+     draw anything. MIT, © 2009 Kazuhiko Arase. -->
+<script src="./vendor/qrcode.js"></script>
 <script src="./i18n.js"></script>
 <script src="./app.js"></script>
 </body>

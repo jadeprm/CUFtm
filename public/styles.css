@@ -1180,3 +1180,69 @@ button.avatar { border: none; padding: 0; cursor: pointer; font: inherit; }
 }
 .crop-canvas:active { cursor: grabbing; }
 .crop-zoom { width: 100%; max-width: 320px; accent-color: var(--accent); }
+
+/* ---------------------------------------------------------------------------
+   Short links.
+
+   The list is read to find one thing — "where does /s/CUFAIR go" — so the code
+   leads, the destination is underneath in full rather than truncated (a
+   half-shown URL is exactly the kind of thing somebody should be able to check
+   before printing it), and the click count is the one number on the row.
+   --------------------------------------------------------------------------- */
+.link-form {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 18px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 14px;
+}
+.code-row { display: flex; align-items: center; gap: 0; }
+.code-prefix {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;
+  color: var(--ink-faint); background: var(--surface-2);
+  border: 1px solid var(--line); border-right: none;
+  border-radius: 9px 0 0 9px; padding: 8px 4px 8px 11px;
+}
+input.code-input {
+  border-radius: 0 9px 9px 0 !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase; flex: 1; min-width: 0;
+}
+.link-list { display: flex; flex-direction: column; gap: 8px; }
+.link-row {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; display: grid; grid-template-columns: 1fr auto auto;
+  gap: 10px 16px; align-items: center; box-shadow: var(--shadow-1);
+}
+.link-row.off { background: var(--surface-2); }
+.link-row.off .lr-short code { text-decoration: line-through; color: var(--ink-faint); }
+.lr-main { min-width: 0; }
+.lr-short { display: flex; align-items: center; gap: 8px; }
+.lr-short code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px; font-weight: 600; color: var(--accent);
+}
+.lr-title { font-size: 13.5px; margin-top: 2px; }
+.lr-target {
+  display: block; font-size: 12px; color: var(--ink-soft); margin-top: 3px;
+  word-break: break-all; text-decoration: none;
+}
+.lr-target:hover { text-decoration: underline; }
+.lr-by { font-size: 11.5px; color: var(--ink-faint); margin-top: 3px; }
+.lr-hits { text-align: center; }
+.lr-hits b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+.lr-hits small { font-size: 11px; color: var(--ink-faint); }
+.lr-acts { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* The QR code itself: white ground, generous margin, big enough to print. */
+.qr-holder { display: grid; place-items: center; }
+.qr-canvas {
+  width: 100%; max-width: 260px; height: auto; image-rendering: pixelated;
+  border: 1px solid var(--line); border-radius: 10px; background: #fff;
+}
+.qr-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px; color: var(--ink-soft); word-break: break-all; text-align: center;
+}
+
+@media (max-width: 720px) {
+  .link-row { grid-template-columns: 1fr auto; }
+  .lr-acts { grid-column: 1 / -1; justify-content: flex-start; }
+}

@@ -9,3 +9,9 @@
 8,นอร์ท,North_HeadOper2,North - Head Operation 2,ประธานฝ่ายอำนวยการ 2,Editor,Oper 2
 9,บีมบีม,BeamBeam_AsOper,Beam Beam - Assistant Head Operation,ผู้ช่วยประธานฝ่ายอำนวยการใหญ่,Editor,"OperAll, Oper1, Oper 2, Oper 3"
 10,แยม,Yam_HeadSpon,Yam - Head Sponsor,ประธานฝ่ายหาทุน,Editor,Sponsorship
+9,ซันเดย์,Sunday_Sec,Sunday - Head Secretary,หัวหน้าฝ่ายเลขานุการ,Editor,Secretariat
+10,โดนัท,Donat_Sec,Donat - Head Secretary,หัวหน้าฝ่ายเลขานุการ,Editor,Secretariat
+11,ปิ่น,Pin_Sec,Pin - Secretary,เลขานุการ,Editor,Secretariat
+12,นิว,New_UnitCon,New - Stage unit,หัวหน้าหน่วยเวที,Unit Editor,Content
+13,พลอย,Ploy_StaffCon,Ploy - Stage staff,สมาชิกฝ่ายเนื้อหา,Inner,Content
+14,ฟ้า,Fah_StaffCon,Fah - Exhibition staff,สมาชิกฝ่ายเนื้อหา,Inner,Content

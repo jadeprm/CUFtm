@@ -8,6 +8,7 @@ import { writeAccess, sheetWriteConfigured } from '../lib/sheets.js';
 import {
   isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
 } from '../lib/departments.js';
+import { driveStatus } from '../lib/drive.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -126,7 +127,45 @@ async function handler(request) {
     const [{ optedIn }] = await sql`
       SELECT count(*)::int AS "optedIn" FROM line_links WHERE digest = true`;
 
+    /**
+     * Where the PDFs actually are.
+     *
+     * Every uploaded document sits in the database while it is being signed,
+     * because that is the only place a half-finished document can safely live.
+     * Google Drive is what empties it again: the nightly run copies a finished
+     * document out, waits a few days, checks Drive still holds it, and only
+     * then deletes the copy here. With Drive unconfigured that second half
+     * never happens and the database grows forever — which is invisible until
+     * a storage bill arrives, so it is stated here instead.
+     */
+    const drive = driveStatus();
+    const [pdf] = await sql`
+      SELECT coalesce(sum(byte_size), 0)::bigint AS bytes,
+             count(*)::int AS files,
+             count(DISTINCT doc_id)::int AS docs
+      FROM doc_files`;
+    const [flow] = await sql`
+      SELECT count(*) FILTER (WHERE sent_at IS NOT NULL
+                                AND drive_file_id IS NULL)::int AS waiting,
+             count(*) FILTER (WHERE drive_file_id IS NOT NULL)::int AS archived,
+             count(*) FILTER (WHERE drive_file_id IS NOT NULL
+                                AND EXISTS (SELECT 1 FROM doc_files f
+                                            WHERE f.doc_id = documents.id))::int AS notYetPurged
+      FROM documents`;
+
     return json({
+      driveConfigured: drive.configured,
+      driveHasClient: drive.hasClient,
+      driveHasRefreshToken: drive.hasRefreshToken,
+      driveFolder: drive.folder,
+      drivePinnedFolder: drive.pinnedFolder,
+      archiveGraceDays: Number(process.env.DOC_ARCHIVE_DAYS || 3),
+      pdfBytes: Number(pdf?.bytes || 0),
+      pdfFiles: Number(pdf?.files || 0),
+      pdfDocs: Number(pdf?.docs || 0),
+      docsWaitingToArchive: Number(flow?.waiting || 0),
+      docsArchived: Number(flow?.archived || 0),
+      docsNotYetPurged: Number(flow?.notYetPurged || 0),
       lineCharged: charges,
       lineDigestOptIn: optedIn,
       lineQuota: Number(process.env.LINE_MONTHLY_QUOTA || 300),

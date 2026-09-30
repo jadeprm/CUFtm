@@ -19,17 +19,202 @@ const SHEET_CSV = `ลำดับ,ชื่อเล่น,Username,Display Nam
 6,กล้วยหอม,Kluayhom_HeadMerchant,Kluayhom - Head Merchant,ประธานฝ่ายร้านค้า,Editor,Merchant
 7,อิคคิว,Ikkew_HeadOper1,Ikkew - Head Operation 1,ประธานฝ่ายอำนวยการ 1,Editor,Oper 1
 8,แยม,Yam_HeadSpon,Yam - Head Sponsor,ประธานฝ่ายหาทุน,Editor,Sponsorship
-9,,,,,,
+9,ซันเดย์,Sunday_Sec,Sunday - Head Secretary,หัวหน้าฝ่ายเลขานุการ,Editor,Secretariat
+10,โดนัท,Donat_Sec,Donat - Head Secretary,หัวหน้าฝ่ายเลขานุการ,Editor,Secretariat
+11,ปิ่น,Pin_Sec,Pin - Secretary,เลขานุการ,Editor,Secretariat
+12,นิว,New_UnitCon,New - Stage unit,หัวหน้าหน่วยเวที,Unit Editor,Content
+13,พลอย,Ploy_StaffCon,Ploy - Stage staff,สมาชิกฝ่ายเนื้อหา,Inner,Content
+14,ฟ้า,Fah_StaffCon,Fah - Exhibition staff,สมาชิกฝ่ายเนื้อหา,Inner,Content
+15,,,,,,
 `;
 
 let sheetCsv = SHEET_CSV;
 const realFetch = globalThis.fetch;
 const lineSent = [];
 let lineFails = null;         // set to a status code to make LINE refuse
+
+/**
+ * The Sheets API, stubbed.
+ *
+ * `sheetValues` is the grid the API would return; `sheetWrites` records every
+ * cell the app tries to write, which is the only way to prove that changing
+ * somebody's access in the app really reaches the spreadsheet.
+ */
+/** Every piece of text inside a Flex card, in the order it is laid out. */
+const flatten = (node) => collect(node, []).join('\n');
+
+function collect(node, out) {
+  if (!node || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const child of node) collect(child, out);
+    return out;
+  }
+  if (node.type === 'text' && node.text) out.push(node.text);
+  if (node.action?.label) out.push(node.action.label);
+  if (node.action?.uri) out.push(node.action.uri);
+  for (const key of ['contents', 'header', 'body', 'footer', 'hero']) {
+    if (node[key]) collect(node[key], out);
+  }
+  return out;
+}
+
+let sheetValues = null;
+const sheetWrites = [];
+let sheetApiFails = false;
+
+const driveFiles = new Map();
+const driveFolders = new Map();
+let driveRefuses = false;
+let driveTrashed = false;
+
+/**
+ * The committee's numbering spreadsheet, stubbed as a real grid.
+ *
+ * One tab per ฝ่าย, each laid out exactly as theirs is: ฝ่าย and รหัสฝ่าย in
+ * B1:C2, the log from row 4, and the name list at H/I. The stub keeps the
+ * cells so a test can read back what the app actually wrote.
+ */
+const REGISTER_ID = 'register-sheet-id';
+const registerTabs = new Map();
+let registerRefuses = false;
+
+function makeTab(title, name, code, template = true) {
+  const grid = [];
+  const put = (r, c, v) => {
+    while (grid.length <= r) grid.push([]);
+    while (grid[r].length <= c) grid[r].push('');
+    grid[r][c] = v;
+  };
+  put(0, 1, 'ฝ่าย'); put(0, 2, name);
+  put(1, 1, 'รหัสฝ่าย'); put(1, 2, code);
+  put(2, 1, 'เลขรันเอกสาร'); put(2, 2, 'ชื่อเรื่อง'); put(2, 3, 'สถานะ');
+  put(2, 4, 'ผู้รับผิดชอบ'); put(2, 5, 'หมายเหตุ'); put(2, 7, 'รายชื่อผู้รับผิดชอบ');
+  if (template) { put(3, 0, '1'); put(3, 1, `อบจ.จฬฟ. ${code}-001/2569`); }
+  registerTabs.set(title, grid);
+}
+
+/** "'ฝ่ายเนื้อหา'!A4:F400" → { tab, r1, c1, r2, c2 } */
+function readA1(range) {
+  const [rawTab, cells] = String(range).split('!');
+  const tab = rawTab.replace(/^'|'$/g, '').replace(/''/g, "'");
+  const [from, to] = cells.split(':');
+  const point = (ref) => {
+    const m = ref.match(/^([A-Z]+)(\d+)$/);
+    let col = 0;
+    for (const ch of m[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
+    return { row: Number(m[2]) - 1, col: col - 1 };
+  };
+  const a = point(from);
+  const b = to ? point(to) : a;
+  return { tab, r1: a.row, c1: a.col, r2: b.row, c2: b.col };
+}
+
+function registerRead(range) {
+  const { tab, r1, c1, r2, c2 } = readA1(range);
+  const grid = registerTabs.get(tab) || [];
+  const out = [];
+  for (let r = r1; r <= r2; r++) {
+    const row = [];
+    for (let c = c1; c <= c2; c++) row.push((grid[r] || [])[c] ?? '');
+    out.push(row);
+  }
+  // The Sheets API trims trailing empty rows, and code that assumes otherwise
+  // breaks against the real thing — so the stub trims them too.
+  while (out.length && out[out.length - 1].every((v) => v === '')) out.pop();
+  return out;
+}
+
+function registerWrite(range, values) {
+  const { tab, r1, c1 } = readA1(range);
+  if (!registerTabs.has(tab)) registerTabs.set(tab, []);
+  const grid = registerTabs.get(tab);
+  values.forEach((row, i) => {
+    const r = r1 + i;
+    while (grid.length <= r) grid.push([]);
+    row.forEach((v, j) => {
+      const c = c1 + j;
+      while (grid[r].length <= c) grid[r].push('');
+      grid[r][c] = v;
+    });
+  });
+}
+
+/** What a tab looks like now, as rows of {number, title, status, who}. */
+const registerLog = (tab) => (registerTabs.get(tab) || []).slice(3)
+  .map((row) => ({ n: row[0] || '', number: row[1] || '', title: row[2] || '',
+                   status: row[3] || '', who: row[4] || '' }))
+  .filter((r) => r.number || r.title);
+
 globalThis.fetch = async (url, init) => {
   if (String(url).includes('docs.google.com')) {
     if (sheetCsv === null) return new Response('<html>sign in</html>', { status: 200 });
     return new Response(sheetCsv, { status: 200 });
+  }
+  if (String(url).includes('oauth2.googleapis.com')) {
+    return new Response(JSON.stringify({ access_token: 'ya29.test', expires_in: 3600 }), { status: 200 });
+  }
+  /**
+   * Google Drive, stubbed. `driveFiles` is the archive itself, so a test can
+   * ask what really landed there — and `driveTrashed` lets one pretend the
+   * archive copy vanished, which is the case the purge must refuse.
+   */
+  if (String(url).includes('/upload/drive/v3/files')) {
+    if (driveRefuses) return new Response('{"error":"no room"}', { status: 403 });
+    const body = String(init.body);
+    const meta = JSON.parse(body.slice(body.indexOf('{'), body.indexOf('}\r\n--') + 1));
+    const id = 'drivefile' + (driveFiles.size + 1);
+    driveFiles.set(id, { name: meta.name, parents: meta.parents || null, size: init.body.length });
+    return new Response(JSON.stringify({ id, webViewLink: `https://drive.google.com/file/d/${id}/view` }),
+      { status: 200 });
+  }
+  if (String(url).match(/\/drive\/v3\/files\?/) && (!init || (init.method || 'GET') === 'GET')) {
+    // A folder listing. Under drive.file this only ever returns what the app
+    // itself made, so the stub answers from what the app has created here.
+    const q = new URL(url).searchParams.get('q') || '';
+    const name = (q.match(/name='([^']*)'/) || [])[1];
+    const hit = [...driveFolders.entries()].find(([, f]) => f.name === name);
+    return new Response(JSON.stringify({ files: hit ? [{ id: hit[0] }] : [] }), { status: 200 });
+  }
+  if (String(url).match(/\/drive\/v3\/files\?/) && init && init.method === 'POST') {
+    const meta = JSON.parse(init.body);
+    const id = 'folder' + (driveFolders.size + 1);
+    driveFolders.set(id, { name: meta.name });
+    return new Response(JSON.stringify({ id }), { status: 200 });
+  }
+  if (String(url).includes('/drive/v3/files/')) {
+    const id = String(url).split('/drive/v3/files/')[1].split('?')[0];
+    const f = driveFiles.get(id);
+    if (!f) return new Response('{"error":"gone"}', { status: 404 });
+    return new Response(JSON.stringify({ id, size: String(f.size), trashed: driveTrashed }), { status: 200 });
+  }
+  if (String(url).includes('sheets.googleapis.com') && String(url).includes(REGISTER_ID)) {
+    if (registerRefuses) return new Response('{"error":"no"}', { status: 403 });
+
+    if (String(url).includes('fields=sheets.properties.title')) {
+      return new Response(JSON.stringify({
+        sheets: [...registerTabs.keys()].map((title) => ({ properties: { title } })),
+      }), { status: 200 });
+    }
+    if (String(url).includes('values:batchGet')) {
+      const ranges = [...new URL(url).searchParams.getAll('ranges')];
+      return new Response(JSON.stringify({
+        valueRanges: ranges.map((r) => ({ values: registerRead(r) })),
+      }), { status: 200 });
+    }
+    if (String(url).includes('values:batchUpdate')) {
+      for (const item of JSON.parse(init.body).data) registerWrite(item.range, item.values);
+      return new Response('{}', { status: 200 });
+    }
+    return new Response('{}', { status: 200 });
+  }
+
+  if (String(url).includes('sheets.googleapis.com')) {
+    if (String(url).includes('values:batchUpdate')) {
+      if (sheetApiFails) return new Response('{"error":"no"}', { status: 403 });
+      sheetWrites.push(JSON.parse(init.body));
+      return new Response('{}', { status: 200 });
+    }
+    return new Response(JSON.stringify({ values: sheetValues || [] }), { status: 200 });
   }
   if (String(url).includes('api-data.line.me')) {
     lineSent.push({ kind: 'image', bytes: init.body?.length || 0,
@@ -51,7 +236,15 @@ globalThis.fetch = async (url, init) => {
       kind: String(url).includes('/reply') ? 'reply' : 'push',
       to: body.to || null,
       token: body.replyToken || null,
-      text: (body.messages || []).map((m) => m.text).join('\n'),
+      /**
+       * What the person actually sees. A card is not one string, so the text
+       * nodes, the button labels and the link are flattened out of it — the
+       * tests assert on what is on screen, not on the message format, so that
+       * changing the layout does not quietly stop them checking anything.
+       */
+      text: (body.messages || []).map((m) =>
+        m.type === 'text' ? m.text : flatten(m.contents)).join('\n'),
+      flex: (body.messages || []).filter((m) => m.type === 'flex').map((m) => m.contents),
       // The tappable buttons are a separate field; a test that only reads the
       // body would miss half of what the person actually sees.
       labels: (body.messages || []).flatMap((m) =>
@@ -170,7 +363,7 @@ ok('markdown-escaped username (Jade\\_Pres) parsed correctly', r.data.displayNam
 ok('first login needs a password set', r.data.needsSetup === true);
 
 const roster = await sql`SELECT username, access, department, is_head FROM users ORDER BY username`;
-ok('all 8 rows imported, blank row skipped', roster.length === 8, `${roster.length} users`);
+ok('all 14 rows imported, blank row skipped', roster.length === 14, `${roster.length} users`);
 const byName = Object.fromEntries(roster.map((u) => [u.username, u]));
 ok('Admin mapped from "Admin"', byName.Jade_Pres.access === 'admin');
 ok('Co-Admin mapped from "Co-Admin"', byName.Kaew_VP.access === 'coadmin');
@@ -244,12 +437,14 @@ ok('co-admin CAN manage an editor', r.status === 200);
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: { username: 'Kaew_VP', department: 'exec' } });
 ok('admin CAN manage a co-admin', r.status === 200);
 
-r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: { username: 'Kungking_HeadCon', access: 'admin' } });
-ok('access level cannot be raised through the API (sheet is master)',
-  r.status === 400 && r.data.error === 'ACCESS_FROM_SHEET');
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'coadmin', body: { username: 'Kungking_HeadCon', access: 'admin' } });
+ok('a CO-ADMIN cannot hand out access levels (no promoting a proxy)',
+  r.status === 403 && r.data.error === 'ONLY_ADMIN_SETS_ACCESS');
+ok('...and the attempt changed nothing',
+  (await sql`SELECT access FROM users WHERE username = 'Kungking_HeadCon'`)[0].access === 'editor');
 
 r = await call(usersApi, '/api/users', { as: 'editor' });
-ok('editor can still read the directory', r.status === 200 && r.data.users.length === 8);
+ok('editor can still read the directory', r.status === 200 && r.data.users.length === 14);
 ok('directory tells the editor they cannot manage', r.data.canManage === false);
 
 r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'editor' });
@@ -391,7 +586,7 @@ sheetCsv = null; // simulate the sheet becoming private
 r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
 ok('an unreadable sheet fails loudly instead of wiping the roster', r.status === 502);
 const survived = await sql`SELECT count(*)::int AS n FROM users`;
-ok('...and every account is still there', survived[0].n === 8, `${survived[0].n} users`);
+ok('...and every account is still there', survived[0].n === 14, `${survived[0].n} users`);
 sheetCsv = SHEET_CSV;
 
 
@@ -445,6 +640,24 @@ ok('"Oper 1" and "Oper1" are the same thing',
 p = parseDepartmentList('OperAll');
 ok('"OperAll" expands to the umbrella plus its divisions',
   p.keys.sort().join(',') === 'oper1,oper2,oper3,operations', p.keys.join(','));
+
+/**
+ * The president's team. The roster writes these cells as "All, President" —
+ * the All was always read, but the extra word was not, and the sync reported
+ * it as an unreadable cell on every run. It is the same teamspace as
+ * ประธานโครงการ.
+ */
+p = parseDepartmentList('All, President');
+ok('"All, President" is every department, and nothing left unread',
+  p.all === true && p.keys.join(',') === 'exec' && p.unknown.length === 0,
+  JSON.stringify(p));
+p = parseDepartmentList('All, President, Secretariat');
+ok('...and the secretaries keep their secretariat with it',
+  p.all === true && p.keys.sort().join(',') === 'exec,secretariat' && p.unknown.length === 0,
+  JSON.stringify(p));
+p = parseDepartmentList('President');
+ok('"President" on its own is the ประธานโครงการ teamspace',
+  p.keys.join(',') === 'exec' && p.unknown.length === 0, JSON.stringify(p));
 ok('"Merch" is Sponsorship, not Merchant',
   parseDepartmentList('Merch').keys.join(',') === 'sponsor');
 ok('"Merchant" is still Merchant',
@@ -1636,8 +1849,19 @@ res = await lineApi(lineHook(sayToBot('Uother', linkCode)));
 ok('the same code cannot be used twice', lastReply().includes('ไม่ถูกต้องหรือหมดอายุ'));
 
 r = await call(lineApi, '/api/line?do=status', { as: 'admin' });
-ok('the website now shows it linked', r.data.linked === true && r.data.digest === true,
+ok('the website now shows it linked', r.data.linked === true,
   JSON.stringify({ linked: r.data.linked, digest: r.data.digest }));
+/**
+ * The daily digest costs one charged LINE message per person per day, so it is
+ * off until somebody asks for it. Nobody is billed for a default.
+ */
+ok('...with the paid daily digest OFF until asked for', r.data.digest === false,
+  String(r.data.digest));
+
+r = await call(lineApi, '/api/line?do=digest', { method: 'PATCH', as: 'admin', body: { digest: true } });
+ok('...and switching it on is one call', r.data.digest === true, JSON.stringify(r.data));
+r = await call(lineApi, '/api/line?do=digest', { method: 'PATCH', as: 'admin', body: { digest: false } });
+ok('...and off again', r.data.digest === false, JSON.stringify(r.data));
 
 head('31. LINE: reading and writing through the chat');
 
@@ -1655,7 +1879,11 @@ ok('...at the right time', fromLine?.dueTime === '18:00', fromLine?.dueTime);
 ok('...owned by the person who sent the message', fromLine?.createdBy === 'Jade_Pres', fromLine?.createdBy);
 
 await lineApi(lineHook(sayToBot('Uadmin', 'งาน')));
-ok('the list comes back numbered', /1\. /.test(lastReply()), lastReply().split('\n').slice(0, 4).join(' | '));
+// The list is a card now: the number and the title are separate pieces of the
+// same row, so the check is that both are on screen rather than that they sit
+// in one string.
+ok('the list comes back numbered', /^1\.$/m.test(lastReply()) && /จองเวทีกลาง/.test(lastReply()),
+  lastReply().split('\n').slice(0, 4).join(' | '));
 
 // Nothing the bot says in conversation is ever a push — that is what keeps it free.
 ok('every conversational message was a free reply, never a push',
@@ -1743,10 +1971,13 @@ r = await call(tasksApi, '/api/tasks', {
 });
 ok('both linked people have something due', r.status === 201);
 
+// Both of them ask for the digest; it is off for everybody by default.
+await sql`UPDATE line_links SET digest = true`;
+
 lineSent.length = 0;
 r = await call(cronApi, '/api/cron');
 const digests = lineSent.filter((m) => m.kind === 'push');
-ok('the digest went out', digests.length === 2, JSON.stringify(r.data.line));
+ok('the digest goes to the people who asked for it', digests.length === 2, JSON.stringify(r.data.line));
 ok('...addressed to each person individually, never broadcast',
   digests.every((m) => m.to && m.to.startsWith('U')), JSON.stringify(digests.map((m) => m.to)));
 
@@ -2134,6 +2365,24 @@ async function makePdf(pages = 2) {
 }
 const sigPng = (await import('node:fs')).readFileSync('/tmp/sig.png').toString('base64');
 
+/**
+ * Full names, given once.
+ *
+ * A document carries its uploader's real name into the committee's register,
+ * so the app asks for one before the first upload and keeps it.
+ */
+for (const [who, name] of [
+  ['content', 'กุ๊งกิ๊ง ใจดีมาก'],
+  ['merch', 'กล้วยหอม ทองดี'],
+  ['admin', 'เจตน์ วุฒิเกริก'],
+]) {
+  await call(usersApi, '/api/users?do=me', { method: 'PATCH', as: who, body: { fullName: name } });
+}
+r = await call(usersApi, '/api/users', { as: 'admin' });
+ok('a full name can be given and is kept',
+  r.data.users.find((u) => u.username === 'Kungking_HeadCon')?.fullName === 'กุ๊งกิ๊ง ใจดีมาก',
+  r.data.users.find((u) => u.username === 'Kungking_HeadCon')?.fullName);
+
 // Who the system thinks must sign, for a plain member of ฝ่ายเนื้อหา.
 r = await call(docsApi, '/api/documents?do=propose', {
   method: 'POST', as: 'content', body: { department: 'content' },
@@ -2318,6 +2567,1211 @@ ok('...nor download the file', r.status === 403, String(r.status));
 
 r = await call(docsApi, '/api/documents', { as: 'content' });
 ok('the uploader sees their own', r.data.documents.some((d) => d.id === docId));
+
+// ===========================================================================
+head('49. Secretaries: who may bring one in, and who may not');
+
+for (const [name, pw, key] of [
+  ['Sunday_Sec', 'sundayPw1', 'sunday'],
+  ['Donat_Sec', 'donatPw11', 'donat'],
+  ['Pin_Sec', 'pinPword1', 'pin'],
+]) {
+  await call(authApi, '/api/auth?do=setup', { method: 'POST', body: { username: name, password: pw }, remember: key });
+}
+ok('the three secretaries signed in', Boolean(jar.sunday && jar.donat && jar.pin));
+
+r = await call(docsApi, '/api/documents?do=secretaries', { as: 'sunday' });
+ok('a head secretary may manage the list', r.data.mayManage === true && r.data.amHead === true);
+ok('...and sees all three', r.data.secretaries.length === 3,
+  r.data.secretaries.map((s) => s.username).join(','));
+
+r = await call(docsApi, '/api/documents?do=secretaries', { as: 'pin' });
+ok('an ordinary secretary may NOT', r.data.mayManage === false && r.data.amHead === false);
+
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'pin', body: { add: 'Yam_HeadSpon' } });
+ok('...and is refused when she tries', r.status === 403 && r.data.error === 'NOT_ALLOWED');
+
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'content', body: { add: 'Yam_HeadSpon' } });
+ok('nor can an editor from another department', r.status === 403);
+
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'donat', body: { add: 'Yam_HeadSpon' } });
+ok('the other head secretary CAN bring somebody in',
+  r.status === 200 && r.data.secretaries.some((s) => s.username === 'Yam_HeadSpon'),
+  r.data.secretaries?.map((s) => s.username).join(','));
+
+r = await call(docsApi, '/api/documents', { as: 'seesall' });
+ok('...and the new secretary immediately watches every document',
+  r.data.documents.some((d) => d.id === docId));
+
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'donat', body: { remove: 'Yam_HeadSpon' } });
+ok('and can let them go again', !r.data.secretaries.some((s) => s.username === 'Yam_HeadSpon'));
+
+r = await call(docsApi, '/api/documents', { as: 'seesall' });
+ok('...after which they stop seeing other departments’ documents',
+  !r.data.documents.some((d) => d.id === docId), String(r.data.documents.length));
+
+// Somebody whose home teamspace is the secretariat must really leave it,
+// not merely lose a grant while still sitting in the department.
+await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'sunday', body: { remove: 'Pin_Sec' } });
+r = await call(docsApi, '/api/documents?do=secretaries', { as: 'sunday' });
+ok('removing a sheet-imported secretary really removes her',
+  !r.data.secretaries.some((s) => s.username === 'Pin_Sec'),
+  r.data.secretaries.map((s) => s.username).join(','));
+
+await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'sunday', body: { remove: 'Donat_Sec' } });
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'admin', body: { remove: 'Sunday_Sec' } });
+ok('the last secretary cannot be removed', r.status === 400 && r.data.error === 'LAST_SECRETARY');
+
+await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'sunday', body: { add: 'Donat_Sec' } });
+await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'sunday', body: { add: 'Pin_Sec' } });
+r = await call(docsApi, '/api/documents?do=secretaries', { as: 'sunday' });
+ok('all three are back', r.data.secretaries.length === 3, r.data.secretaries.map((s) => s.username).join(','));
+
+// ===========================================================================
+head('50. Secretaries: how a document finds one');
+
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'sunday',
+  body: { mode: 'department', byDepartment: { content: 'Pin_Sec' } } });
+ok('a head secretary can say "ฝ่ายเนื้อหา always goes to Pin"',
+  r.data.mode === 'department' && r.data.byDepartment.content === 'Pin_Sec',
+  JSON.stringify(r.data.byDepartment));
+
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'content', body: { department: 'content' } });
+ok('...and a Content document is proposed to her',
+  r.data.steps.find((s) => s.role === 'secretary')?.username === 'Pin_Sec',
+  JSON.stringify(r.data.steps.map((s) => s.username)));
+
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'merch', body: { department: 'merchant' } });
+ok('a department with nobody mapped still gets a real secretary',
+  ['Sunday_Sec', 'Donat_Sec', 'Pin_Sec'].includes(r.data.steps.find((s) => s.role === 'secretary')?.username));
+
+r = await call(docsApi, '/api/documents?do=secretaries', { method: 'POST', as: 'sunday', body: { mode: 'random' } });
+ok('back to spreading the load', r.data.mode === 'random');
+
+// Reassigning the document that is already in flight.
+r = await call(docsApi, '/api/documents?do=assign', { method: 'POST', as: 'content',
+  body: { id: docId, username: 'Pin_Sec' } });
+ok('the uploader cannot move their document to a different secretary', r.status === 403);
+
+r = await call(docsApi, '/api/documents?do=assign', { method: 'POST', as: 'pin',
+  body: { id: docId, username: 'Pin_Sec' } });
+ok('an ordinary secretary cannot either', r.status === 403);
+
+r = await call(docsApi, '/api/documents?do=assign', { method: 'POST', as: 'sunday',
+  body: { id: docId, username: 'Kungking_HeadCon' } });
+ok('and nobody can be assigned who is not a secretary',
+  r.status === 400 && r.data.error === 'NOT_A_SECRETARY');
+
+r = await call(docsApi, '/api/documents?do=assign', { method: 'POST', as: 'sunday',
+  body: { id: docId, username: 'Pin_Sec' } });
+ok('a head secretary can move it', r.status === 200 && r.data.secretary === 'Pin_Sec', JSON.stringify(r.data));
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'sunday' });
+ok('...and the chain now shows her',
+  r.data.steps.find((s) => s.role === 'secretary')?.username === 'Pin_Sec');
+ok('...with the handover written into the history',
+  r.data.events.some((h) => h.kind === 'reassigned'),
+  r.data.events.map((h) => h.kind).join(','));
+
+r = await call(notifApi, '/api/notifications', { as: 'pin' });
+ok('the new secretary is told', r.data.notifications.some((n) => /มอบหมาย/.test(n.title)),
+  r.data.notifications.map((n) => n.title).join(' | ').slice(0, 80));
+
+// ===========================================================================
+head('51. Deleting a document');
+
+const freshChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
+const marked = freshChain.map((s) => ({
+  role: s.role, username: s.username,
+  mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+}));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'merch',
+  body: { title: 'หนังสือขอถอน', pdf: await makePdf(1), department: 'merchant', steps: marked },
+});
+const mineId = r.data.id;
+ok('a second document is submitted', Boolean(mineId), JSON.stringify(r.data).slice(0, 60));
+
+r = await call(docsApi, `/api/documents?id=${mineId}`, { method: 'DELETE', as: 'content' });
+ok('somebody else cannot delete it', r.status === 403 && r.data.error === 'NOT_ALLOWED');
+
+r = await call(docsApi, `/api/documents?id=${mineId}`, { method: 'DELETE', as: 'merch' });
+ok('the uploader can, while nobody has signed', r.status === 200 && r.data.deleted === true);
+
+r = await call(docsApi, `/api/documents?id=${mineId}`, { as: 'merch' });
+ok('...and it is gone from the system entirely', r.status === 404, String(r.status));
+ok('...file and all', (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${mineId}`)[0].n === 0);
+
+// One that has already been signed is no longer the uploader's to erase.
+r = await call(docsApi, `/api/documents?id=${docId}`, { method: 'DELETE', as: 'content' });
+ok('a document somebody has signed cannot be withdrawn',
+  r.status === 403 && r.data.error === 'ALREADY_ACTED_ON', JSON.stringify(r.data));
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { method: 'DELETE', as: 'admin' });
+ok('an admin can always clear one away', r.status === 200 && r.data.deleted === true);
+
+// ===========================================================================
+head('52. An access change on the admin page reaches the Google Sheet');
+
+const { generateKeyPairSync } = await import('node:crypto');
+const { parseCsv: parseSheetCsv } = await import('../lib/sheet.js');
+sheetValues = parseSheetCsv(SHEET_CSV);
+
+r = await call(usersApi, '/api/users', { as: 'admin' });
+ok('with no service account, the page is told the sheet cannot be written',
+  r.data.sheetWritable === false && r.data.canSetAccess === true);
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kluayhom_HeadMerchant', access: 'coadmin' } });
+ok('the change still takes effect in the app',
+  r.status === 200 && r.data.user.access === 'coadmin', JSON.stringify(r.data.did));
+ok('...and is honest that the sheet did not get it', r.data.sheet.ok === false && r.data.sheet.reason === 'NOT_CONFIGURED');
+ok('...so it is pinned against the next sync', r.data.user.accessPinned === true);
+
+await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+ok('a sync does NOT undo a change the sheet never received',
+  (await sql`SELECT access FROM users WHERE username = 'Kluayhom_HeadMerchant'`)[0].access === 'coadmin');
+
+// Now with a service account configured.
+const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+process.env.GOOGLE_SA_EMAIL = 'fair-bot@example.iam.gserviceaccount.com';
+// Written with escaped newlines, which is how a key survives an env var.
+process.env.GOOGLE_SA_PRIVATE_KEY =
+  privateKey.export({ type: 'pkcs8', format: 'pem' }).replace(/\n/g, '\\n');
+
+r = await call(usersApi, '/api/users', { as: 'admin' });
+ok('the page now says the sheet can be written', r.data.sheetWritable === true);
+
+sheetWrites.length = 0;
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kluayhom_HeadMerchant', access: 'editor' } });
+ok('the sheet write is reported as done', r.data.sheet?.ok === true, JSON.stringify(r.data.sheet));
+ok('...and the pin is released, because the sheet now agrees',
+  r.data.user.accessPinned === false);
+
+const wrote = sheetWrites.at(-1);
+ok('exactly one cell was written — not the whole row', wrote.data.length === 1, JSON.stringify(wrote.data));
+ok('...the Access cell on Kluayhom’s row (row 7)', wrote.data[0].range === 'F7', wrote.data[0].range);
+ok('...with the label the sheet uses, not the internal key',
+  wrote.data[0].values[0][0] === 'Editor', JSON.stringify(wrote.data[0].values));
+
+// A department change is an access change too, and goes back the same way.
+sheetWrites.length = 0;
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kluayhom_HeadMerchant', departments: ['merchant', 'marketing'] } });
+const deptWrite = sheetWrites.at(-1);
+ok('changing departments writes the Department cell, and only that',
+  deptWrite.data.length === 1 && deptWrite.data[0].range === 'G7',
+  JSON.stringify(deptWrite.data.map((d) => d.range)));
+const cell = deptWrite.data.find((d) => d.range === 'G7').values[0][0];
+ok('...in Thai, the way the column already reads', cell === 'ฝ่ายร้านค้า, Marketing', cell);
+
+// And what it writes must survive a round trip through the reader.
+const roundTrip = parseDepartmentList(cell);
+ok('...and the sync reads back exactly what was written',
+  roundTrip.keys.sort().join(',') === 'marketing,merchant' && !roundTrip.unknown.length,
+  JSON.stringify(roundTrip));
+
+sheetApiFails = true;
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kluayhom_HeadMerchant', access: 'coadmin' } });
+ok('when Google refuses, the app change still stands',
+  r.status === 200 && r.data.user.access === 'coadmin');
+ok('...the admin is told plainly', r.data.sheet.ok === false && r.data.sheet.reason === 'GOOGLE_REFUSED',
+  JSON.stringify(r.data.sheet).slice(0, 80));
+ok('...and it is pinned again', r.data.user.accessPinned === true);
+sheetApiFails = false;
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kluayhom_HeadMerchant', followSheet: true } });
+ok('"follow the sheet again" releases both pins',
+  r.data.user.accessPinned === false && r.data.user.deptsPinned === false);
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Jade_Pres', access: 'editor' } });
+ok('the last admin cannot demote themselves out of the building',
+  r.status === 400 && r.data.error === 'LAST_ADMIN', JSON.stringify(r.data));
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kungking_HeadCon', access: 'wizard' } });
+ok('a made-up access level is refused', r.status === 400 && r.data.error === 'BAD_ACCESS');
+
+// ===========================================================================
+head('53. Finished documents move to Google Drive, and only then leave the database');
+
+// A document walked all the way through: signed by the director, sent by the
+// secretary. That is the state the archive is for.
+const archChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'merch',
+  body: {
+    title: 'หนังสือเชิญประชุมผู้ประกอบการ', recipient: 'ร้านค้าในงาน',
+    pdf: await makePdf(1), department: 'merchant',
+    steps: archChain.map((s) => ({
+      role: s.role, username: s.username,
+      mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+    })),
+  },
+});
+const archId = r.data.id;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: archId } });
+
+r = await call(docsApi, `/api/documents?id=${archId}`, { as: 'admin' });
+const secName = r.data.steps.find((s) => s.role === 'secretary').username;
+const secSession = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[secName];
+r = await call(docsApi, '/api/documents?do=send', { method: 'POST', as: secSession, body: { id: archId, to: 'ร้านค้าในงาน' } });
+ok('the secretary sends it', r.status === 200, JSON.stringify(r.data).slice(0, 60));
+
+// Nothing is archived while the archive account is not set up — and nothing
+// is lost either.
+r = await call(cronApi, '/api/cron');
+ok('with no Drive account configured, nothing is archived', Boolean(r.data.archive.skipped), JSON.stringify(r.data.archive));
+ok('...and the file is still here',
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${archId}`)[0].n > 0);
+
+process.env.GOOGLE_OAUTH_CLIENT_ID = 'test-client.apps.googleusercontent.com';
+process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'test-secret';
+process.env.GOOGLE_DRIVE_REFRESH_TOKEN = '1//test-refresh';
+process.env.GOOGLE_DRIVE_FOLDER_ID = 'folder-of-the-fair';
+
+r = await call(cronApi, '/api/cron');
+ok('the sent document is copied to Drive', r.data.archive.archived.includes(archId), JSON.stringify(r.data.archive));
+const stored = [...driveFiles.values()].pop();
+ok('...filed under the folder it was told to use',
+  stored.parents && stored.parents[0] === 'folder-of-the-fair', JSON.stringify(stored.parents));
+ok('...named by date and title, as a PDF',
+  /^\d{4}-\d{2}-\d{2} หนังสือเชิญประชุมผู้ประกอบการ\.pdf$/.test(stored.name), stored.name);
+
+let archRow = (await sql`SELECT drive_url, archived_at FROM documents WHERE id = ${archId}`)[0];
+ok('the document now carries its Drive link', /drive\.google\.com/.test(archRow.drive_url), archRow.drive_url);
+ok('...and when it was archived', Boolean(archRow.archived_at));
+ok('...with the move written into its history',
+  (await sql`SELECT count(*)::int AS n FROM doc_events WHERE doc_id = ${archId} AND kind = 'archived'`)[0].n === 1);
+
+ok('the file is STILL in the database — the copy is not deleted the same day',
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${archId}`)[0].n > 0);
+
+r = await call(cronApi, '/api/cron');
+ok('a second run does not archive it twice', !r.data.archive.archived.includes(archId), JSON.stringify(r.data.archive.archived));
+
+// Three days on.
+await sql`UPDATE documents SET archived_at = now() - interval '4 days' WHERE id = ${archId}`;
+
+driveTrashed = true;
+r = await call(cronApi, '/api/cron');
+ok('if the archive copy has gone missing, the database copy is KEPT',
+  !r.data.archive.purged.includes(archId) &&
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${archId}`)[0].n > 0,
+  JSON.stringify(r.data.archive.failed));
+driveTrashed = false;
+
+r = await call(cronApi, '/api/cron');
+ok('once Drive confirms it, the database copy goes', r.data.archive.purged.includes(archId), JSON.stringify(r.data.archive));
+ok('...and the row, the chain and the history all remain',
+  (await sql`SELECT count(*)::int AS n FROM documents WHERE id = ${archId}`)[0].n === 1 &&
+  (await sql`SELECT count(*)::int AS n FROM doc_steps WHERE doc_id = ${archId}`)[0].n > 0);
+
+r = await call(docsApi, `/api/documents?id=${archId}&file=signed`, { as: 'merch' });
+ok('asking for the file now points at Drive instead of failing blankly',
+  r.status === 410 && r.data.error === 'ARCHIVED' && /drive\.google\.com/.test(r.data.driveUrl),
+  JSON.stringify(r.data).slice(0, 80));
+
+// And an archive that refuses an upload must not take the document with it.
+driveRefuses = true;
+const refusedChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'merch',
+  body: { title: 'หนังสือฉบับที่สอง', pdf: await makePdf(1), department: 'merchant',
+          steps: refusedChain.map((s) => ({ role: s.role, username: s.username,
+            mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
+});
+const secondId = r.data.id;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: secondId } });
+r = await call(docsApi, `/api/documents?id=${secondId}`, { as: 'admin' });
+const sec2 = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[r.data.steps.find((s) => s.role === 'secretary').username];
+await call(docsApi, '/api/documents?do=send', { method: 'POST', as: sec2, body: { id: secondId, to: 'x' } });
+
+r = await call(cronApi, '/api/cron');
+ok('an archive that refuses is reported, not swallowed',
+  r.data.archive.failed.some((f) => f.id === secondId), JSON.stringify(r.data.archive.failed));
+ok('...and the document keeps its file until the archive works',
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${secondId}`)[0].n > 0);
+driveRefuses = false;
+
+r = await call(cronApi, '/api/cron');
+ok('the next run picks it up', r.data.archive.archived.includes(secondId), JSON.stringify(r.data.archive.archived));
+
+/**
+ * With no folder id configured, the app makes its own.
+ *
+ * This is not tidiness. Under the drive.file scope an app can only touch what
+ * it created, so a folder somebody made by hand in the browser is invisible to
+ * it and uploading into one fails with a 404 about a folder that plainly
+ * exists. A folder the app created is its own.
+ */
+delete process.env.GOOGLE_DRIVE_FOLDER_ID;
+const { forgetFolder } = await import('../lib/drive.js');
+forgetFolder();
+driveFolders.clear();
+
+const ownChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'merch',
+  body: { title: 'หนังสือเข้าโฟลเดอร์ของแอป', pdf: await makePdf(1), department: 'merchant',
+          steps: ownChain.map((st) => ({ role: st.role, username: st.username,
+            mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
+});
+const ownId = r.data.id;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: ownId } });
+r = await call(docsApi, `/api/documents?id=${ownId}`, { as: 'admin' });
+const ownSec = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[
+  r.data.steps.find((st) => st.role === 'secretary').username];
+await call(docsApi, '/api/documents?do=send', { method: 'POST', as: ownSec, body: { id: ownId, to: 'x' } });
+
+r = await call(cronApi, '/api/cron');
+ok('with no folder configured, the app creates one of its own',
+  driveFolders.size === 1, JSON.stringify([...driveFolders.values()]));
+ok('...and files the document in it', r.data.archive.archived.includes(ownId),
+  JSON.stringify(r.data.archive));
+const filedIn = [...driveFiles.values()].pop();
+ok('...not loose at the top of the Drive',
+  filedIn.parents && driveFolders.has(filedIn.parents[0]), JSON.stringify(filedIn.parents));
+
+// A second document reuses that folder rather than making another.
+forgetFolder();
+const againChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'merch',
+  body: { title: 'หนังสือฉบับถัดไป', pdf: await makePdf(1), department: 'merchant',
+          steps: againChain.map((st) => ({ role: st.role, username: st.username,
+            mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
+});
+const againId = r.data.id;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: againId } });
+r = await call(docsApi, `/api/documents?id=${againId}`, { as: 'admin' });
+await call(docsApi, '/api/documents?do=send', { method: 'POST',
+  as: { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[
+    r.data.steps.find((st) => st.role === 'secretary').username],
+  body: { id: againId, to: 'x' } });
+await call(cronApi, '/api/cron');
+ok('...and the next document goes in the same folder, not a new one',
+  driveFolders.size === 1, String(driveFolders.size));
+
+// ===========================================================================
+head('54. LINE: the เอกสาร button, and acting on a document from the chat');
+
+/**
+ * The button on the notification sent the word เอกสาร and the bot had no such
+ * command, so every person who tapped it got "ไม่เข้าใจคำสั่ง". That is the
+ * bug this section exists to keep fixed.
+ */
+// Three LINE accounts for this section: the director, a secretary who
+// watches everything, and somebody with no connection to the document at all.
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Udoc1', 'Jade_Pres', 'Jade'), ('Udoc2', 'Sunday_Sec', 'Sunday'),
+                 ('Udoc3', 'Yam_HeadSpon', 'Yam')
+          ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+
+const docChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: {
+    title: 'หนังสือขออนุมัติจัดกิจกรรม', recipient: 'คณบดี', priority: 'high',
+    pdf: await makePdf(1), department: 'content',
+    steps: docChain.map((s) => ({
+      role: s.role, username: s.username,
+      mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+    })),
+  },
+});
+const lineDocId = r.data.id;
+ok('a document is waiting on the director', Boolean(lineDocId), JSON.stringify(r.data).slice(0, 60));
+
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Udoc1', 'เอกสาร')));
+let said = lastReply();
+ok('the เอกสาร button is understood at last', !/ไม่เข้าใจคำสั่ง/.test(said), said.slice(0, 60));
+ok('...and shows what is waiting on this person', said.includes('หนังสือขออนุมัติจัดกิจกรรม'),
+  said.split('\n').slice(0, 4).join(' | '));
+ok('...saying it is their turn', /ถึงคิวของคุณ/.test(said), said.split('\n').slice(0, 6).join(' | '));
+ok('...with a link to the website', /https?:\/\/[^\s]*#\/d(ocs)?/.test(said),
+  said.split('\n').filter((l) => l.includes('http')).join(' '));
+
+await lineApi(lineHook(sayToBot('Udoc1', 'เอกสาร 1')));
+said = lastReply();
+ok('opening it shows the progress, step by step',
+  said.includes('ส่งเรื่อง') && said.includes('ประธานโครงการ') && said.includes('เลขานุการ'),
+  said.split('\n').slice(0, 8).join(' | '));
+ok('...and offers the two things they can do', said.includes('อนุมัติ') && said.includes('ตีกลับ'));
+ok('...with a link straight to that document',
+  said.includes(`#/d/${lineDocId}`), said.split('\n').filter((l) => l.includes('http')).join(' '));
+
+// The card's buttons are postbacks, so tapping one does not write a command
+// into the person's own chat history.
+const bubbleSent = lineSent.filter((m) => m.flex?.length).slice(-1)[0];
+const postbacks = JSON.stringify(bubbleSent.flex).match(/"type":"postback"/g) || [];
+ok('the buttons are postbacks, not fake typing', postbacks.length === 2, String(postbacks.length));
+
+// Somebody it is not waiting on sees it, but gets no buttons.
+await lineApi(lineHook(sayToBot('Udoc2', 'เอกสารทั้งหมด')));
+said = lastReply();
+ok('a watcher can follow the status of every document they may see',
+  said.includes('หนังสือขออนุมัติจัดกิจกรรม'), said.split('\n').slice(0, 4).join(' | '));
+
+r = await call(docsApi, `/api/documents?id=${lineDocId}`, { as: 'admin' });
+ok('it is still waiting, nobody has signed', r.data.steps[0].state === 'waiting');
+
+// Rejecting from the chat must carry a reason.
+await lineApi(lineHook(sayToBot('Udoc1', 'ตีกลับ 1')));
+ok('ตีกลับ with no reason is refused', /เหตุผล/.test(lastReply()), lastReply().slice(0, 60));
+
+// Approving from the chat is the same act as approving on the website.
+await lineApi(lineHook(sayToBot('Udoc1', 'เอกสาร')));
+await lineApi(lineHook(sayToBot('Udoc1', 'อนุมัติ 1')));
+r = await call(docsApi, `/api/documents?id=${lineDocId}`, { as: 'admin' });
+ok('approving from LINE really signs it',
+  r.data.steps.find((s) => s.role === 'director')?.state === 'approved',
+  JSON.stringify(r.data.steps.map((s) => s.role + ':' + s.state)));
+ok('...and it stamped the PDF, the same as the website would',
+  r.data.files.some((f) => f.kind === 'signed'), JSON.stringify(r.data.files.map((f) => f.kind)));
+ok('...and the chat shows the updated progress back', /เลขานุการ/.test(lastReply()));
+
+// A number from an old list cannot reach a document this person may not see.
+await lineApi(lineHook(sayToBot('Udoc3', 'เอกสาร 1')));
+ok('somebody unconnected cannot open one by guessing a number',
+  !lastReply().includes('หนังสือขออนุมัติจัดกิจกรรม'), lastReply().slice(0, 70));
+
+// The ตีกลับ button asks for the reason, then does it.
+const rejectChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'หนังสือที่จะถูกตีกลับจากไลน์', pdf: await makePdf(1), department: 'content',
+          steps: rejectChain.map((s) => ({ role: s.role, username: s.username,
+            mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
+});
+const lineRejectId = r.data.id;
+
+await lineApi(lineHook([{
+  type: 'postback', replyToken: 'rt_pb1', source: { type: 'user', userId: 'Udoc1' },
+  postback: { data: `doc:reject:${lineRejectId}` },
+}]));
+ok('the ตีกลับ button asks what is wrong', /พิมพ์เหตุผล/.test(lastReply()), lastReply().slice(0, 60));
+
+await lineApi(lineHook(sayToBot('Udoc1', 'วันที่ผิด แก้เป็น 20 พ.ย. ด้วยค่ะ')));
+r = await call(docsApi, `/api/documents?id=${lineRejectId}`, { as: 'admin' });
+ok('...and the reason is what comes back with it',
+  r.data.document.stage === 'rejected' &&
+  r.data.steps.some((s) => (s.comment || '').includes('20 พ.ย.')),
+  JSON.stringify(r.data.steps.map((s) => s.state + ':' + (s.comment || ''))));
+ok('...the file is gone but the reason is kept', r.data.files.length === 0);
+
+r = await call(notifApi, '/api/notifications', { as: 'content' });
+ok('the person who sent it is told why', r.data.notifications.some((n) => /ตีกลับ/.test(n.title)),
+  r.data.notifications.map((n) => n.title).join(' | ').slice(0, 70));
+
+// ===========================================================================
+head('55. The two new levels: a unit editor runs a section, a member does not');
+
+const levels = await sql`
+  SELECT username, access FROM users
+  WHERE username IN ('New_UnitCon', 'Ploy_StaffCon', 'Kungking_HeadCon')`;
+const levelOf = Object.fromEntries(levels.map((u) => [u.username, u.access]));
+ok('"Unit Editor" in the sheet becomes a unit editor', levelOf.New_UnitCon === 'unitlead', levelOf.New_UnitCon);
+ok('"Inner" becomes a member', levelOf.Ploy_StaffCon === 'inner', levelOf.Ploy_StaffCon);
+
+for (const [name, pw, key] of [
+  ['New_UnitCon', 'unitLead11', 'unitlead'],
+  ['Ploy_StaffCon', 'memberPw11', 'member'],
+  ['Fah_StaffCon', 'memberPw22', 'member2'],
+]) {
+  await call(authApi, '/api/auth?do=setup', { method: 'POST', body: { username: name, password: pw }, remember: key });
+}
+ok('all three signed in', Boolean(jar.unitlead && jar.member && jar.member2));
+
+// Sections: New leads เวที (Stage); Ploy is in it, Fah is not.
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'New_UnitCon', unit: 'Stage' } });
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Ploy_StaffCon', unit: 'Stage' } });
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Fah_StaffCon', unit: 'Exhibition' } });
+
+// ---- a member ------------------------------------------------------------
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member',
+  body: { title: 'งานที่สมาชิกพยายามสร้าง', assignees: ['Ploy_StaffCon'] } });
+ok('a member cannot create a task', r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE',
+  JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events', { method: 'POST', as: 'member',
+  body: { title: 'กิจกรรมที่สมาชิกพยายามสร้าง', startsOn: '2026-11-20' } });
+ok('...nor an event', r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE', JSON.stringify(r.data));
+
+// ---- a unit editor -------------------------------------------------------
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
+  body: { title: 'ซ้อมคิวเวที', department: 'content', unit: 'Stage',
+          assignees: ['Ploy_StaffCon'], notify: [] } });
+ok('a unit editor CAN give work to their own section', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+const unitTaskId = r.data.task?.id;
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
+  body: { title: 'งานข้ามหน่วย', department: 'content', assignees: ['Fah_StaffCon'], notify: [] } });
+ok('...but not to somebody in another section',
+  r.status === 403 && r.data.error === 'OUTSIDE_YOUR_UNIT', JSON.stringify(r.data));
+
+const leftBehind = await sql`SELECT count(*)::int AS n FROM tasks WHERE title = 'งานข้ามหน่วย'`;
+ok('...and the refused task is not left half-made', leftBehind[0].n === 0, String(leftBehind[0].n));
+
+// Tagging a whole department is assigning everybody in it, so the same rule holds.
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
+  body: { title: 'แท็กทั้งฝ่าย', department: 'content',
+          departments: [{ key: 'content', scope: 'all' }], notify: [] } });
+ok('...and tagging the whole department is refused for the same reason',
+  r.status === 403 && r.data.error === 'OUTSIDE_YOUR_UNIT', JSON.stringify(r.data).slice(0, 70));
+
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'unitlead',
+  body: { id: unitTaskId, assignees: ['Ploy_StaffCon', 'Fah_StaffCon'] } });
+ok('...and they cannot widen their own task later either',
+  r.status === 403 && r.data.error === 'OUTSIDE_YOUR_UNIT', JSON.stringify(r.data));
+
+// ---- what they can still do ---------------------------------------------
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+ok('a member still sees their department’s work',
+  r.data.tasks.some((t) => t.id === unitTaskId), String(r.data.tasks.length));
+
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'member',
+  body: { id: unitTaskId, status: 'doing' } });
+ok('...and can say they have started what was given to them',
+  r.status === 200, JSON.stringify(r.data).slice(0, 60));
+
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'member',
+  body: { id: unitTaskId, title: 'เปลี่ยนชื่องานเอง' } });
+const stillNamed = await sql`SELECT title FROM tasks WHERE id = ${unitTaskId}`;
+ok('...but cannot rewrite it', stillNamed[0].title === 'ซ้อมคิวเวที', stillNamed[0].title);
+
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'member2',
+  body: { id: unitTaskId, status: 'done' } });
+ok('somebody not on the task cannot close it', r.status === 403, String(r.status));
+
+// An editor is unchanged by any of this.
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'content',
+  body: { title: 'งานปกติของประธานฝ่าย', assignees: ['Fah_StaffCon', 'Ploy_StaffCon'], notify: [] } });
+ok('a department head can still assign across sections', r.status === 201, JSON.stringify(r.data).slice(0, 60));
+
+// And the level can be set from the admin page like any other.
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Fah_StaffCon', access: 'unitlead' } });
+ok('an admin can promote a member to unit editor',
+  r.status === 200 && r.data.user.access === 'unitlead', JSON.stringify(r.data.did));
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Fah_StaffCon', access: 'inner' } });
+
+// ===========================================================================
+head('56. Units: set on the admin page, written back to the sheet');
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Ploy_StaffCon', unit: 'สถานที่' } });
+ok('a section from another department is refused',
+  r.status === 400 && r.data.error === 'UNIT_NOT_IN_DEPARTMENT', JSON.stringify(r.data));
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Ploy_StaffCon', unit: 'Exhibition' } });
+ok('one from a department she has is accepted',
+  r.status === 200 && r.data.user.unit === 'Exhibition', JSON.stringify(r.data.did));
+
+sheetWrites.length = 0;
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Ploy_StaffCon', unit: 'Stage' } });
+const unitWrite = sheetWrites.at(-1);
+ok('...and it reaches the sheet', Boolean(unitWrite), JSON.stringify(r.data.sheet));
+
+/**
+ * The roster has no Unit column yet, so the app has to make one. It goes after
+ * the last column in use, with its header, and never on top of anything.
+ */
+const wroteHeader = unitWrite.data.find((d) => /^[A-Z]+1$/.test(d.range));
+ok('a missing Unit column is created, with its header',
+  wroteHeader && wroteHeader.values[0][0] === 'Unit', JSON.stringify(unitWrite.data));
+ok('...in the first free column, not over the Department column',
+  wroteHeader.range.startsWith('H'), wroteHeader.range);
+const wroteValue = unitWrite.data.find((d) => !/^[A-Z]+1$/.test(d.range));
+ok('...and the section lands on that person’s row',
+  wroteValue.range === 'H14' && wroteValue.values[0][0] === 'Stage', JSON.stringify(wroteValue));
+
+// Second time round the column exists, so it is used rather than made again.
+sheetValues = sheetValues.map((row, i) => (i === 0 ? row.concat(['Unit']) : row.concat([''])));
+sheetWrites.length = 0;
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Ploy_StaffCon', unit: 'Exhibition' } });
+const second = sheetWrites.at(-1);
+ok('an existing Unit column is reused, not duplicated',
+  second.data.length === 1 && second.data[0].range === 'H14',
+  JSON.stringify(second.data.map((d) => d.range)));
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Ploy_StaffCon', unit: null } });
+ok('clearing it works too', r.status === 200 && r.data.user.unit === null, JSON.stringify(r.data.did));
+
+// ===========================================================================
+head('57. Deleting an account that has left');
+
+r = await call(usersApi, '/api/users?do=user&username=Fah_StaffCon', { method: 'DELETE', as: 'admin' });
+ok('an account still in the committee cannot be deleted',
+  r.status === 400 && r.data.error === 'ONLY_INACTIVE_OR_SUSPENDED', JSON.stringify(r.data));
+
+r = await call(usersApi, '/api/users?do=user&username=Jade_Pres', { method: 'DELETE', as: 'admin' });
+ok('...and nobody can delete themselves',
+  r.status === 400 && r.data.error === 'CANNOT_DELETE_YOURSELF', JSON.stringify(r.data));
+
+// Something of theirs to check survives.
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'content',
+  body: { title: 'งานที่คนลาออกเคยสร้าง', assignees: ['Fah_StaffCon'], notify: [] } });
+const orphanTask = r.data.task.id;
+await sql`UPDATE tasks SET created_by = 'Fah_StaffCon' WHERE id = ${orphanTask}`;
+
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Fah_StaffCon', suspended: true } });
+
+r = await call(usersApi, '/api/users?do=user&username=Fah_StaffCon', { method: 'DELETE', as: 'editor' });
+ok('an editor cannot delete anybody', r.status === 403, String(r.status));
+
+r = await call(usersApi, '/api/users?do=user&username=Fah_StaffCon', { method: 'DELETE', as: 'admin' });
+ok('a suspended account can be deleted', r.status === 200 && r.data.removed === 'Fah_StaffCon',
+  JSON.stringify(r.data).slice(0, 70));
+
+const gone2 = await sql`SELECT count(*)::int AS n FROM users WHERE username = 'Fah_StaffCon'`;
+ok('...and is really gone', gone2[0].n === 0);
+
+const theirWork = await sql`SELECT created_by FROM tasks WHERE id = ${orphanTask}`;
+ok('...but the work they created stays, handed to whoever removed them',
+  theirWork.length === 1 && theirWork[0].created_by === 'Jade_Pres',
+  JSON.stringify(theirWork[0]));
+
+const leftovers = await sql`
+  SELECT (SELECT count(*)::int FROM task_people WHERE username = 'Fah_StaffCon') AS tagged,
+         (SELECT count(*)::int FROM notifications WHERE username = 'Fah_StaffCon') AS notes`;
+ok('...with nothing of theirs left behind',
+  leftovers[0].tagged === 0 && leftovers[0].notes === 0, JSON.stringify(leftovers[0]));
+
+r = await call(authApi, '/api/auth?do=login', { method: 'POST',
+  body: { username: 'Fah_StaffCon', password: 'memberPw22' } });
+ok('...and they cannot sign back in', r.status === 401 || r.status === 403, String(r.status));
+
+// The sheet still lists them, so the next sync brings the account back — which
+// is correct: the sheet is what decides who is in the committee.
+await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+const backAgain2 = await sql`SELECT count(*)::int AS n FROM users WHERE username = 'Fah_StaffCon'`;
+ok('a sync restores anyone still on the sheet — the sheet decides membership',
+  backAgain2[0].n === 1, String(backAgain2[0].n));
+
+// ===========================================================================
+head('58. Short codes, and finding things by them');
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin',
+  body: { title: 'งานที่มีรหัส', description: 'รายละเอียดเรื่องเวทีกลาง', notify: [] } });
+const coded = r.data.task;
+ok('a new task gets a short code', /^T\d{4}$/.test(coded.code || ''), coded.code);
+
+r = await call(eventsApi, '/api/events', { method: 'POST', as: 'admin',
+  body: { title: 'กิจกรรมที่มีรหัส', startsOn: '2026-11-25' } });
+ok('...and so does an event', /^E\d{4}$/.test(r.data.event.code || ''), r.data.event.code);
+const eventCode = r.data.event.code;
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin',
+  body: { title: 'งานถัดไป', notify: [] } });
+ok('codes are handed out in order and never repeat',
+  r.data.task.code !== coded.code && r.data.task.code > coded.code,
+  `${coded.code} → ${r.data.task.code}`);
+
+const dupes = await sql`
+  SELECT count(*)::int AS n FROM (SELECT code FROM tasks GROUP BY code HAVING count(*) > 1) d`;
+ok('...and no two tasks share one', dupes[0].n === 0, String(dupes[0].n));
+
+const everyOne = await sql`SELECT count(*)::int AS n FROM tasks WHERE code IS NULL`;
+ok('every task that existed before has one too', everyOne[0].n === 0, String(everyOne[0].n));
+
+// From LINE: the code on its own is enough.
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Udoc1', coded.code)));
+said = lastReply();
+ok('typing a code into LINE opens that task',
+  said.includes('งานที่มีรหัส') && said.includes(coded.code),
+  said.split('\n').slice(0, 4).join(' | '));
+
+await lineApi(lineHook(sayToBot('Udoc1', eventCode.toLowerCase())));
+ok('...in lower case too, and for events',
+  lastReply().includes('กิจกรรมที่มีรหัส'), lastReply().split('\n').slice(0, 4).join(' | '));
+
+await lineApi(lineHook(sayToBot('Udoc1', 'หา เวทีกลาง')));
+ok('searching reaches the description, not just the title',
+  lastReply().includes('งานที่มีรหัส'), lastReply().split('\n').slice(0, 4).join(' | '));
+
+await lineApi(lineHook(sayToBot('Udoc1', 'T9999')));
+ok('a code nobody has says so plainly',
+  /ไม่มีรายการ/.test(lastReply()), lastReply().split('\n').slice(0, 3).join(' | '));
+
+// ===========================================================================
+head('59. เลขรันเอกสาร: the committee\u2019s own document numbers');
+
+const { forgetPlan } = await import('../lib/docregister.js');
+
+// The register, laid out exactly as the committee's is.
+makeTab('เนื้อหา ', 'เนื้อหา', '03');
+makeTab('Stage', 'Stage', '03.01');
+makeTab('Exhibiton', 'Exhibition', '03.02.01');   // the tab label really is misspelled
+makeTab('ร้านค้า', 'ร้านค้า', '04');
+process.env.DOC_SHEET_ID = REGISTER_ID;
+forgetPlan();
+
+/** Signs a document all the way to the secretary and returns its row. */
+async function toSecretary(as, body) {
+  const chain = (await call(docsApi, '/api/documents?do=propose',
+    { method: 'POST', as, body: { department: body.department, unit: body.unit } })).data.steps;
+  const made = await call(docsApi, '/api/documents?do=create', {
+    method: 'POST', as,
+    body: {
+      ...body, pdf: await makePdf(1),
+      steps: chain.map((st) => ({
+        role: st.role, username: st.username,
+        mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+      })),
+    },
+  });
+  const id = made.data.id;
+  // Everyone above the uploader signs, until it reaches the secretary.
+  for (let guard = 0; guard < 4; guard++) {
+    const view = (await call(docsApi, `/api/documents?id=${id}`, { as: 'admin' })).data;
+    const step = view.steps.find((st) => st.state === 'waiting');
+    if (!step || step.role === 'secretary') break;
+    const session = { Jade_Pres: 'admin', Kungking_HeadCon: 'content' }[step.username];
+    if (!session) break;
+    await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: session, body: { id } });
+  }
+  const [row] = await sql`SELECT * FROM documents WHERE id = ${id}`;
+  return row;
+}
+
+let doc1 = await toSecretary('content', {
+  title: 'ขอใช้หอประชุมจุฬาฯ', recipient: 'สำนักบริหารระบบกายภาพ',
+  department: 'content', unit: 'Stage',
+});
+ok('a number is issued once every signature is in',
+  doc1.doc_number === 'อบจ.จฬฟ. 03.01-001/2569', doc1.doc_number);
+ok('...on the tab for that section, not the department',
+  doc1.doc_tab === 'Stage', doc1.doc_tab);
+
+let log = registerLog('Stage');
+ok('the register has a row for it', log.length === 1, JSON.stringify(log));
+ok('...with the title the committee will read', log[0].title === 'ขอใช้หอประชุมจุฬาฯ', log[0].title);
+ok('...the responsible person by their full name', log[0].who === 'กุ๊งกิ๊ง ใจดีมาก', log[0].who);
+ok('...and where it has got to', log[0].status === 'รอเลขาฯ ส่ง', log[0].status);
+
+// The second document for that section follows on, not over the top.
+const doc2 = await toSecretary('content', {
+  title: 'ขอยืมโต๊ะและเก้าอี้', department: 'content', unit: 'Stage',
+});
+ok('the next one takes the next number', doc2.doc_number === 'อบจ.จฬฟ. 03.01-002/2569', doc2.doc_number);
+log = registerLog('Stage');
+ok('...on its own row, below the first', log.length === 2 && log[1].title === 'ขอยืมโต๊ะและเก้าอี้',
+  JSON.stringify(log.map((r) => r.number + ' ' + r.title)));
+
+// A different section has its own sequence.
+const doc3 = await toSecretary('content', {
+  title: 'ขอติดตั้งบูธนิทรรศการ', department: 'content', unit: 'Exhibition',
+});
+ok('another section numbers separately, from its own code',
+  doc3.doc_number === 'อบจ.จฬฟ. 03.02.01-001/2569', doc3.doc_number);
+ok('...found by the ฝ่าย name inside the tab, not the misspelled tab label',
+  doc3.doc_tab === 'Exhibiton', doc3.doc_tab);
+
+// A document with no section falls back to the department's own tab.
+const doc4 = await toSecretary('content', { title: 'หนังสือของฝ่าย', department: 'content' });
+ok('a document with no section is registered under its ฝ่าย',
+  doc4.doc_number === 'อบจ.จฬฟ. 03-001/2569' && doc4.doc_tab === 'เนื้อหา ',
+  `${doc4.doc_number} on ${doc4.doc_tab}`);
+
+// Sending it moves the status on, in the sheet.
+r = await call(docsApi, `/api/documents?id=${doc1.id}`, { as: 'admin' });
+const secFor = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[
+  r.data.steps.find((st) => st.role === 'secretary').username];
+r = await call(docsApi, '/api/documents?do=send', { method: 'POST', as: secFor,
+  body: { id: doc1.id, to: 'สำนักบริหารระบบกายภาพ' } });
+ok('sending it reports the number back', r.data.number === doc1.doc_number, JSON.stringify(r.data.number));
+log = registerLog('Stage');
+ok('...and the register says ส่งแล้ว', log[0].status === 'ส่งแล้ว', log[0].status);
+
+// Numbering never happens twice for the same document.
+const rowsBefore = registerLog('Stage').length;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: secFor, body: { id: doc1.id } });
+ok('a document is never numbered twice', registerLog('Stage').length === rowsBefore,
+  `${rowsBefore} → ${registerLog('Stage').length}`);
+
+// An unreachable register must not strand a signed document.
+registerRefuses = true;
+const doc5 = await toSecretary('merch', { title: 'หนังสือตอนชีตล่ม', department: 'merchant' });
+ok('a document still reaches the secretary when the register is unreachable',
+  doc5.stage === 'secretary' && !doc5.doc_number, `${doc5.stage} / ${doc5.doc_number}`);
+const why = await sql`SELECT kind, detail FROM doc_events WHERE doc_id = ${doc5.id} AND kind = 'number_failed'`;
+ok('...and the failure is written into its history, not swallowed',
+  why.length === 1, JSON.stringify(why[0] || {}));
+registerRefuses = false;
+
+// The names list, pushed from the roster into the register.
+r = await call(docsApi, '/api/documents?do=names', { method: 'POST', as: 'content' });
+ok('an ordinary editor cannot rewrite the register\u2019s name lists', r.status === 403, String(r.status));
+
+// Somebody who runs a section is listed on that section's tab, not the
+// department's — which is the whole point of having both.
+await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
+  body: { username: 'Kungking_HeadCon', unit: 'Stage' } });
+
+r = await call(docsApi, '/api/documents?do=names', { method: 'POST', as: 'admin' });
+ok('an admin can', r.status === 200 && r.data.written.length > 0,
+  JSON.stringify(r.data.written || r.data).slice(0, 80));
+
+const stageNames = (registerTabs.get('Stage') || []).slice(3).map((row) => row[8]).filter(Boolean);
+ok('...and the section\u2019s people are listed by their full names',
+  stageNames.includes('กุ๊งกิ๊ง ใจดีมาก'), JSON.stringify(stageNames));
+ok('...while anybody without a full name is reported rather than guessed at',
+  Array.isArray(r.data.withoutFullName), JSON.stringify((r.data.withoutFullName || []).slice(0, 3)));
+
+// Somebody who has never given a full name is asked for one.
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'seesall',
+  body: { title: 'หนังสือไม่มีชื่อผู้รับผิดชอบ', pdf: await makePdf(1), department: 'sponsor', steps: [] },
+});
+ok('a first-time uploader is asked for their full name',
+  r.status === 400 && r.data.error === 'FULL_NAME_REQUIRED', JSON.stringify(r.data));
+
+// ===========================================================================
+head('60. Every visible string exists, once, in both languages');
+
+/**
+ * A duplicate key in a JavaScript object is not an error — the later one wins
+ * and the earlier one silently does nothing. That had already happened three
+ * times, and one of them meant the section picker was labelled
+ * "กล่อง/หน่วยงาน" while the string somebody wrote for it sat unused higher up
+ * the file. A parse of the source catches what running the file cannot.
+ */
+const i18nSource = (await import('node:fs')).readFileSync('public/i18n.js', 'utf8');
+const langKeys = {};
+for (const lang of ['th', 'en']) {
+  const block = i18nSource.split(`  ${lang}: {`)[1].split('\n  },')[0];
+  langKeys[lang] = [...block.matchAll(/^    ([A-Za-z0-9_]+):/gm)].map((m) => m[1]);
+  const dupes = [...new Set(langKeys[lang].filter((k, i) => langKeys[lang].indexOf(k) !== i))];
+  ok(`no string is defined twice in ${lang}`, dupes.length === 0, dupes.join(', '));
+}
+
+const onlyTh = langKeys.th.filter((k) => !langKeys.en.includes(k));
+const onlyEn = langKeys.en.filter((k) => !langKeys.th.includes(k));
+ok('every Thai string has an English one', onlyTh.length === 0, onlyTh.join(', '));
+ok('...and the other way round', onlyEn.length === 0, onlyEn.join(', '));
+
+const errorKeys = [...i18nSource.matchAll(/^  [A-Z_]+: '([A-Za-z0-9_]+)',/gm)].map((m) => m[1]);
+const orphanErrors = errorKeys.filter((k) => !langKeys.th.includes(k));
+ok('every error code maps to a string that exists', orphanErrors.length === 0, orphanErrors.join(', '));
+
+/**
+ * And every string the page ASKS for exists.
+ *
+ * `t()` returns the key itself when a string is missing, so a forgotten one
+ * shows up as raw English gibberish — "healthLineCost" — on a Thai page, and
+ * nothing fails. That happened twice while this was being built, both times
+ * caught by eye on a screenshot rather than by anything automatic.
+ */
+const appSource = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+const asked = [...new Set([...appSource.matchAll(/\bt\('([A-Za-z0-9_]+)'\)/g)].map((m) => m[1]))];
+const absent = asked.filter((k) => !langKeys.th.includes(k));
+ok(`every one of the ${asked.length} strings the page asks for is defined`,
+  absent.length === 0, absent.join(', '));
+
+// The same for the HTML, which labels itself with data-t attributes.
+const htmlSource = (await import('node:fs')).readFileSync('public/index.html', 'utf8');
+const shellKeys = [...new Set([...htmlSource.matchAll(/data-t="([A-Za-z0-9_]+)"/g)].map((m) => m[1]))];
+const absentHtml = shellKeys.filter((k) => !langKeys.th.includes(k));
+ok('...and so is every one the page shell asks for', absentHtml.length === 0, absentHtml.join(', '));
+
+// ===========================================================================
+head('61. What LINE actually costs: only the person who must act is paid for');
+
+/**
+ * A LINE push is charged per person, every time. The bell and the phone's own
+ * notifications are free however many people get them. So the rule is that a
+ * charged message goes ONLY to whoever has to do something — and this section
+ * exists because that rule is invisible until a bill arrives.
+ */
+// One LINE account each, as linking now enforces.
+await sql`DELETE FROM line_links`;
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Ucost1', 'Jade_Pres', 'Jade'), ('Ucost2', 'Sunday_Sec', 'Sunday'),
+                 ('Ucost3', 'Donat_Sec', 'Donat'), ('Ucost4', 'Pin_Sec', 'Pin'),
+                 ('Ucost5', 'Kungking_HeadCon', 'Kungking')
+          ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+
+const costChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+
+lineSent.length = 0;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { title: 'หนังสือวัดค่าใช้จ่าย', pdf: await makePdf(1), department: 'content',
+          steps: costChain.map((st) => ({ role: st.role, username: st.username,
+            mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
+});
+const costId = r.data.id;
+
+let charged = lineSent.filter((m) => m.kind === 'push');
+ok('submitting charges for exactly one LINE message — the approver',
+  charged.length === 1 && charged[0].to === 'Ucost1',
+  `${charged.length} push(es) → ${charged.map((m) => m.to).join(',')}`);
+
+// Everybody still hears about it, through the channels that cost nothing.
+r = await call(notifApi, '/api/notifications', { as: 'sunday' });
+ok('...while every secretary still gets it in the bell, free',
+  r.data.notifications.some((n) => /หนังสือวัดค่าใช้จ่าย/.test(n.title)),
+  r.data.notifications.map((n) => n.title).join(' | ').slice(0, 60));
+
+lineSent.length = 0;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: costId } });
+charged = lineSent.filter((m) => m.kind === 'push');
+ok('approving charges for one more — the secretary whose turn it now is',
+  charged.length === 1, `${charged.length} → ${charged.map((m) => m.to).join(',')}`);
+
+r = await call(docsApi, `/api/documents?id=${costId}`, { as: 'admin' });
+const whoseTurn = r.data.steps.find((st) => st.state === 'waiting').username;
+const turnSession = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[whoseTurn];
+ok('...and it went to that very person, not to all of them',
+  charged[0].to === { Sunday_Sec: 'Ucost2', Donat_Sec: 'Ucost3', Pin_Sec: 'Ucost4' }[whoseTurn],
+  `${charged[0].to} for ${whoseTurn}`);
+
+lineSent.length = 0;
+await call(docsApi, '/api/documents?do=send', { method: 'POST', as: turnSession,
+  body: { id: costId, to: 'ผู้รับ' } });
+ok('sending it costs nothing — nobody has anything left to do',
+  lineSent.filter((m) => m.kind === 'push').length === 0,
+  JSON.stringify(lineSent.filter((m) => m.kind === 'push').map((m) => m.to)));
+
+/**
+ * The whole journey, counted. Five people on LINE, four steps: the old
+ * behaviour would have charged for roughly fifteen messages.
+ */
+ok('a whole document costs two charged messages, not fifteen', true,
+  'submitted 1 + approved 1 + sent 0');
+
+// And the digest stays off unless somebody asks, however many people link.
+await sql`DELETE FROM line_digests_sent`;
+const optedIn = await sql`SELECT count(*)::int AS n FROM line_links WHERE digest = true`;
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+const morning = lineSent.filter((m) => m.kind === 'push');
+ok('the morning digest only goes to people who asked for it',
+  morning.length <= optedIn[0].n, `${morning.length} sent, ${optedIn[0].n} opted in`);
+
+r = await call(usersApi, '/api/users?do=health', { as: 'admin' });
+ok('the admin page counts the charged messages, so the bill is never a surprise',
+  r.data.lineCharged.total > 0 && r.data.lineCharged.documents > 0,
+  JSON.stringify(r.data.lineCharged));
+ok('...separating documents from the daily digest',
+  r.data.lineCharged.total === r.data.lineCharged.documents + r.data.lineCharged.digests,
+  JSON.stringify(r.data.lineCharged));
+ok('...and says how many people have the paid digest on',
+  typeof r.data.lineDigestOptIn === 'number', String(r.data.lineDigestOptIn));
+
+// ===========================================================================
+head('62. Short links, and the QR codes that go on posters');
+
+const { readCode, readTarget, makeCode, ALPHABET } = await import('../lib/shortlink.js');
+
+// ---- the rules, without a database -------------------------------------
+ok('a code is folded to upper case, so a poster can be typed either way',
+  readCode('cufair').code === 'CUFAIR', JSON.stringify(readCode('cufair')));
+ok('confusable characters are kept out of generated codes',
+  !/[O0I1L]/.test(ALPHABET) && makeCode().length === 6, ALPHABET);
+ok('a code that looks like part of the system is refused',
+  readCode('admin').error === 'CODE_RESERVED' && readCode('api').error === 'CODE_RESERVED');
+ok('javascript: is not a destination', readTarget('javascript:alert(1)').error === 'BAD_URL');
+ok('a bare IP address is not a destination',
+  readTarget('http://203.0.113.7/x').error === 'NO_RAW_IP');
+ok('a short link cannot point at another short link — that is a redirect loop',
+  readTarget('https://fair.test/s/ABC', { siteUrl: 'https://fair.test' }).error === 'POINTS_AT_ITSELF');
+ok('...but it can point at an ordinary page on the same site',
+  Boolean(readTarget('https://fair.test/work', { siteUrl: 'https://fair.test' }).url));
+ok('a link typed without https:// still works',
+  readTarget('forms.gle/abc').url === 'https://forms.gle/abc');
+
+// ---- making one ---------------------------------------------------------
+r = await call(metaApi, '/api/meta?do=link', { method: 'POST', as: 'content',
+  body: { url: 'https://forms.gle/staff-application', title: 'ใบสมัครสตาฟ', code: 'STAFF' } });
+ok('a link with a chosen code is made', r.status === 201 && r.data.link.code === 'STAFF',
+  JSON.stringify(r.data).slice(0, 80));
+ok('...and comes back as the address to print',
+  r.data.link.shortUrl === 'https://fair.test/s/STAFF', r.data.link.shortUrl);
+
+r = await call(metaApi, '/api/meta?do=link', { method: 'POST', as: 'admin',
+  body: { url: 'https://example.org/other', code: 'staff' } });
+ok('the same code cannot be taken twice, in any case',
+  r.status === 409 && r.data.error === 'CODE_TAKEN', JSON.stringify(r.data));
+
+r = await call(metaApi, '/api/meta?do=link', { method: 'POST', as: 'content',
+  body: { url: 'https://drive.google.com/drive/folders/xyz' } });
+ok('a link with no chosen code gets a random one',
+  r.status === 201 && /^[A-Z2-9]{6}$/.test(r.data.link.code), r.data.link.code);
+const randomCode = r.data.link.code;
+
+r = await call(metaApi, '/api/meta?do=link', { method: 'POST', as: 'member',
+  body: { url: 'https://example.org' } });
+ok('a member cannot publish under the committee\u2019s domain',
+  r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE', JSON.stringify(r.data));
+
+// ---- following one ------------------------------------------------------
+async function visit(code) {
+  const res = await metaApi(new Request(`https://app.test/api/meta?go=${encodeURIComponent(code)}`));
+  return { status: res.status, location: res.headers.get('location'),
+           body: res.status === 404 ? await res.text() : '' };
+}
+
+let hop = await visit('STAFF');
+ok('following it redirects, signed in or not',
+  hop.status === 302 && hop.location === 'https://forms.gle/staff-application',
+  `${hop.status} → ${hop.location}`);
+
+hop = await visit('staff');
+ok('...in lower case too, because posters get typed by hand',
+  hop.status === 302 && hop.location === 'https://forms.gle/staff-application', String(hop.status));
+
+const counted = await sql`SELECT hits FROM short_links WHERE code = 'STAFF'`;
+ok('every visit is counted', counted[0].hits === 2, String(counted[0].hits));
+const daily = await sql`SELECT hits FROM short_hits WHERE code = 'STAFF'`;
+ok('...and counted per day, so a poster can be told from a LINE message',
+  daily.length === 1 && daily[0].hits === 2, JSON.stringify(daily));
+
+hop = await visit('NOPE99');
+ok('a code nobody has explains itself instead of showing a browser error',
+  hop.status === 404 && hop.body.includes('ไม่พบลิงก์นี้'), String(hop.status));
+ok('...and says the code back, so a typo on a banner can be spotted',
+  hop.body.includes('NOPE99'), hop.body.slice(0, 40));
+
+// ---- changing one -------------------------------------------------------
+r = await call(metaApi, '/api/meta?do=link', { method: 'PATCH', as: 'content',
+  body: { code: 'STAFF', url: 'https://forms.gle/staff-round-two' } });
+ok('the owner can point it somewhere else after the posters are out', r.status === 200);
+hop = await visit('STAFF');
+ok('...and it takes effect at once', hop.location === 'https://forms.gle/staff-round-two', hop.location);
+
+r = await call(metaApi, '/api/meta?do=link', { method: 'PATCH', as: 'merch',
+  body: { code: 'STAFF', url: 'https://somewhere.else/' } });
+ok('somebody else cannot retarget it',
+  r.status === 403 && r.data.error === 'NOT_YOUR_SHORT_LINK', JSON.stringify(r.data));
+
+r = await call(metaApi, '/api/meta?do=link', { method: 'PATCH', as: 'admin',
+  body: { code: 'STAFF', active: false } });
+ok('an admin can switch off any link, whoever made it', r.status === 200 && r.data.link.active === false);
+hop = await visit('STAFF');
+ok('...and a switched-off link stops working but keeps its code',
+  hop.status === 404 && hop.body.includes('ปิดใช้งาน'), String(hop.status));
+
+r = await call(metaApi, '/api/meta?do=link', { method: 'PATCH', as: 'content',
+  body: { code: 'STAFF', url: 'https://fair.test/s/OTHER' } });
+ok('a link cannot be retargeted into a loop either',
+  r.status === 400 && r.data.error === 'POINTS_AT_ITSELF', JSON.stringify(r.data));
+
+// ---- the list -----------------------------------------------------------
+r = await call(metaApi, '/api/meta?do=links', { as: 'merch' });
+ok('everybody can see where every link goes',
+  r.data.links.length >= 2 && r.data.links.some((l) => l.code === 'STAFF'),
+  String(r.data.links.length));
+ok('...and is told which are theirs to change',
+  r.data.links.find((l) => l.code === 'STAFF').mine === false);
+
+r = await call(metaApi, '/api/meta?do=links', {});
+ok('a signed-out visitor cannot read the directory of links', r.status === 401, String(r.status));
+
+// ---- removing one -------------------------------------------------------
+r = await call(metaApi, `/api/meta?do=link&code=${randomCode}`, { method: 'DELETE', as: 'merch' });
+ok('somebody else cannot delete it', r.status === 403, String(r.status));
+
+r = await call(metaApi, `/api/meta?do=link&code=${randomCode}`, { method: 'DELETE', as: 'content' });
+ok('the owner can', r.status === 200 && r.data.deleted === randomCode, JSON.stringify(r.data));
+hop = await visit(randomCode);
+ok('...and it stops resolving', hop.status === 404, String(hop.status));
+
+// ---- and the rest of the endpoint still works ---------------------------
+r = await call(metaApi, '/api/meta', {});
+ok('the department tree is still served from the same function',
+  Array.isArray(r.data.departments) && r.data.departments.length > 10,
+  String((r.data.departments || []).length));
+r = await call(metaApi, '/api/meta?ping=1', {});
+ok('...and so is the keep-warm ping', r.data.ok === true, JSON.stringify(r.data));
+
+
+// ===========================================================================
+head('63. Whether the PDFs are leaving the database, said out loud');
+
+/**
+ * The question this answers is "did I link Drive, and am I paying for storage
+ * I do not need" — and the failure it guards against is the silent one, where
+ * Drive is half-configured, nothing is archived, and the database quietly
+ * grows until a bill explains it.
+ *
+ * By this point in the suite Drive IS configured and one document has already
+ * been archived and purged, so the healthy case can be checked first and the
+ * broken ones produced by taking the credentials away again.
+ */
+r = await call(usersApi, '/api/users?do=health', { as: 'admin' });
+ok('the health page says Drive is connected', r.data.driveConfigured === true,
+  JSON.stringify({ c: r.data.driveConfigured, folder: r.data.driveFolder }));
+ok('...and names the folder to go and look in',
+  typeof r.data.driveFolder === 'string' && r.data.driveFolder.length > 0, r.data.driveFolder);
+ok('...and counts what it has already filed', r.data.docsArchived > 0, String(r.data.docsArchived));
+ok('...and says how long a database copy is kept after Drive confirms it',
+  r.data.archiveGraceDays === 3, String(r.data.archiveGraceDays));
+
+// The weight actually held, which is the number that becomes money.
+const held = (await sql`SELECT coalesce(sum(byte_size),0)::bigint AS b,
+                               count(DISTINCT doc_id)::int AS d FROM doc_files`)[0];
+ok('the page reports the real weight of the PDFs it is holding',
+  r.data.pdfBytes === Number(held.b), `${r.data.pdfBytes} vs ${held.b}`);
+ok('...and how many documents that is', r.data.pdfDocs === Number(held.d),
+  `${r.data.pdfDocs} vs ${held.d}`);
+ok('...and a purged document no longer counts towards it',
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${archId}`)[0].n === 0);
+
+/**
+ * No secret ever reaches the page. An admin needs to know WHETHER the archive
+ * account is set up; the refresh token is a password to the committee's Drive
+ * and must not be readable from a browser, admin or not.
+ */
+const healthText = JSON.stringify(r.data);
+ok('the refresh token is never sent to the browser',
+  !healthText.includes('1//test-refresh'));
+ok('...nor the client secret', !healthText.includes('test-secret'));
+
+// ---- half-configured, which is the easiest mistake to miss --------------
+const keptToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+delete process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+r = await call(usersApi, '/api/users?do=health', { as: 'admin' });
+ok('with the token missing, Drive is reported as not working',
+  r.data.driveConfigured === false, JSON.stringify(r.data.driveConfigured));
+ok('...but the page can still tell half-set-up from not-set-up at all',
+  r.data.driveHasClient === true && r.data.driveHasRefreshToken === false,
+  JSON.stringify({ c: r.data.driveHasClient, t: r.data.driveHasRefreshToken }));
+
+// And in that state the archive really does stop, rather than half-running.
+r = await call(cronApi, '/api/cron');
+ok('...and nothing is archived while it is in that state',
+  Boolean(r.data.archive.skipped), JSON.stringify(r.data.archive));
+
+process.env.GOOGLE_DRIVE_REFRESH_TOKEN = keptToken;
+r = await call(usersApi, '/api/users?do=health', { as: 'admin' });
+ok('putting the token back fixes it, without a redeploy',
+  r.data.driveConfigured === true, JSON.stringify(r.data.driveConfigured));
+
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

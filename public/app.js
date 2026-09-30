@@ -753,7 +753,7 @@
     else if (page === 'mine') { S.scope = 'mine'; page = 'work'; }
     else if (page === 'events') page = 'work';
 
-    if (['work', 'calendar', 'docs', 'profile', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
+    if (['work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -1753,6 +1753,7 @@
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'docs') return pageDocs(main);
     if (S.page === 'profile') return pageProfile(main);
+    if (S.page === 'links') return pageLinks(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
   }
@@ -4325,6 +4326,274 @@
     });
   }
 
+  /* ---------- short links ------------------------------------------------ */
+
+  /**
+   * Short links on the fair's own address.
+   *
+   * A committee spends its year handing out addresses — a form on a poster, a
+   * Drive folder in a LINE message, a sign-up page read out at a meeting — and
+   * a forty-character Google URL cannot be typed off a poster or said across a
+   * room. This makes cu-ftm.vercel.app/s/CUFAIR instead, with a QR code beside
+   * it, and counts how many people followed it.
+   */
+  function pageLinks(main) {
+    var state = { links: [], site: '', mayCreate: false, mayManageAll: false, remaining: 0 };
+    var notice = h('div', { class: 'notice', hidden: true });
+    var list = h('div', { class: 'link-list' });
+
+    function say(kind, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + kind;
+      notice.textContent = text;
+    }
+
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navLinks') })]));
+    main.appendChild(h('p', { class: 'hint', text: t('linksIntro') }));
+    main.appendChild(notice);
+
+    /* ---- the form ---- */
+    var target = h('input', { type: 'url', placeholder: t('linkTargetPlaceholder') });
+    var label = h('input', { type: 'text', maxlength: '120', placeholder: t('linkTitlePlaceholder') });
+    var custom = h('input', {
+      type: 'text', maxlength: '32', placeholder: t('linkCodePlaceholder'), class: 'code-input',
+    });
+
+    var makeBtn = h('button', {
+      class: 'btn primary', text: t('linkMake'),
+      onclick: function () {
+        var body = { url: target.value.trim(), title: label.value.trim() };
+        if (custom.value.trim()) body.code = custom.value.trim();
+        if (!body.url) { say('err', t('linkNeedTarget')); target.focus(); return; }
+
+        makeBtn.disabled = true;
+        api('/api/meta?do=link', { method: 'POST', body: body })
+          .then(function (d) {
+            target.value = ''; label.value = ''; custom.value = '';
+            say('ok', t('linkMade').replace('%s', absoluteShort(d.link)));
+            load();
+            // Straight to the QR code, since that is what it is usually for.
+            openQr(d.link);
+          })
+          .catch(function (err) { say('err', errText(err.code)); })
+          .then(function () { makeBtn.disabled = false; });
+      },
+    });
+
+    var form = h('div', { class: 'link-form' }, [
+      h('div', { class: 'field' }, [h('label', { text: t('linkTarget') }), target]),
+      h('div', { class: 'two' }, [
+        h('div', { class: 'field' }, [h('label', { text: t('linkTitle') }), label]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('linkCode') }),
+          h('div', { class: 'code-row' }, [
+            h('span', { class: 'code-prefix', text: '/s/' }),
+            custom,
+          ]),
+          h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('linkCodeHint') }),
+        ]),
+      ]),
+      h('div', {}, [makeBtn]),
+    ]);
+    main.appendChild(form);
+    main.appendChild(list);
+
+    /* ---- the list ---- */
+    function draw() {
+      clear(list);
+      form.hidden = !state.mayCreate;
+
+      if (!state.links.length) {
+        list.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('linkNone') })]));
+        return;
+      }
+
+      state.links.forEach(function (link) {
+        var mayEdit = link.mine || state.mayManageAll;
+
+        var row = h('div', { class: 'link-row' + (link.active ? '' : ' off') }, [
+          h('div', { class: 'lr-main' }, [
+            h('div', { class: 'lr-short' }, [
+              h('code', { text: '/s/' + link.code }),
+              link.active ? null : h('span', { class: 'chip', text: t('linkOff') }),
+            ]),
+            link.title ? h('div', { class: 'lr-title', text: link.title }) : null,
+            h('a', {
+              class: 'lr-target', href: link.url, target: '_blank', rel: 'noopener noreferrer',
+              text: link.url,
+            }),
+            h('div', { class: 'lr-by', text: nameOf(link.createdBy) }),
+          ]),
+          h('div', { class: 'lr-hits' }, [
+            h('b', { text: String(link.hits) }),
+            h('small', { text: t('linkClicks') }),
+          ]),
+          h('div', { class: 'lr-acts' }, [
+            h('button', {
+              class: 'btn sm', text: t('linkCopy'),
+              onclick: function (e) { copyText(absoluteShort(link), e.target); },
+            }),
+            h('button', { class: 'btn sm', text: t('linkQr'), onclick: function () { openQr(link); } }),
+            mayEdit ? h('button', {
+              class: 'btn sm', text: link.active ? t('linkTurnOff') : t('linkTurnOn'),
+              onclick: function () { change(link, { active: !link.active }); },
+            }) : null,
+            mayEdit ? h('button', {
+              class: 'btn sm', text: t('linkRetarget'),
+              onclick: function () {
+                var next = prompt(t('linkRetargetAsk'), link.url);
+                if (next === null || !next.trim()) return;
+                change(link, { url: next.trim() });
+              },
+            }) : null,
+            mayEdit ? h('button', {
+              class: 'btn sm danger', text: t('linkDelete'),
+              onclick: function () {
+                if (!confirm(t('linkDeleteSure').replace('%s', '/s/' + link.code))) return;
+                api('/api/meta?do=link&code=' + encodeURIComponent(link.code), { method: 'DELETE' })
+                  .then(function () { say('ok', t('linkDeleted')); load(); })
+                  .catch(function (err) { say('err', errText(err.code)); });
+              },
+            }) : null,
+          ]),
+        ]);
+        list.appendChild(row);
+      });
+    }
+
+    function change(link, patch) {
+      api('/api/meta?do=link', { method: 'PATCH', body: Object.assign({ code: link.code }, patch) })
+        .then(function () { load(); })
+        .catch(function (err) { say('err', errText(err.code)); });
+    }
+
+    function load() {
+      api('/api/meta?do=links').then(function (d) {
+        state = d;
+        draw();
+      }).catch(function (err) {
+        clear(list);
+        list.appendChild(h('div', { class: 'notice err', text: errText(err.code) }));
+      });
+    }
+
+    draw();
+    load();
+  }
+
+  /**
+   * The QR code, drawn here rather than fetched from a service.
+   *
+   * A QR image from an outside generator means the committee's addresses pass
+   * through somebody else's server, and a poster is printed once — if that
+   * service disappears, so does every future code. This draws it in the page
+   * from a vendored library and hands over a PNG big enough to print.
+   */
+  /**
+   * The full address of a short link, always absolute.
+   *
+   * The server knows the site's address only when SITE_URL is configured, and
+   * without it `shortUrl` comes back as a bare /s/CODE. A relative path is
+   * fine in a browser and useless in a QR code — a camera has no idea what
+   * site it came from. The page is already AT the address, so it fills in
+   * what the server could not.
+   */
+  function absoluteShort(link) {
+    var short = link.shortUrl || ('/s/' + link.code);
+    if (/^https?:\/\//i.test(short)) return short;
+    return window.location.origin + (short.charAt(0) === '/' ? '' : '/') + short;
+  }
+
+  function openQr(link) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var holder = h('div', { class: 'qr-holder' });
+    var short = absoluteShort(link);
+
+    /**
+     * Error correction level H — the most redundant.
+     *
+     * A QR code on a poster gets rained on, taped over a corner and
+     * photographed at an angle. H survives about 30% of the code being
+     * unreadable; the lower levels do not, and the code is small either way at
+     * this length.
+     */
+    var canvas = null;
+    try {
+      var qr = window.qrcode(0, 'H');
+      qr.addData(short);
+      qr.make();
+
+      var count = qr.getModuleCount();
+      // 16 pixels a module puts a 5 cm printed code at roughly 270 dpi, which
+      // survives a laser printer and a phone camera at arm's length. Twelve
+      // was fine on screen and marginal on paper.
+      var scale = 16;
+      var quiet = 4;               // the blank margin the spec requires
+      var size = (count + quiet * 2) * scale;
+
+      canvas = h('canvas', { width: String(size), height: String(size), class: 'qr-canvas' });
+      var ctx = canvas.getContext('2d');
+      // White, always — a QR code inverted or on a coloured ground is a QR
+      // code half the scanners will refuse.
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#000000';
+      for (var r = 0; r < count; r++) {
+        for (var c = 0; c < count; c++) {
+          if (qr.isDark(r, c)) {
+            ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+          }
+        }
+      }
+      holder.appendChild(canvas);
+    } catch (e) {
+      holder.appendChild(h('div', { class: 'notice err', text: t('qrFailed') }));
+    }
+
+    var modal = h('div', { class: 'modal', style: 'width:min(26rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('linkQr') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body', style: 'align-items:center' }, [
+        holder,
+        h('code', { class: 'qr-url', text: short }),
+        link.title ? h('p', { class: 'hint', text: link.title }) : null,
+      ]),
+      h('footer', {}, [
+        h('button', {
+          class: 'btn', text: t('linkCopy'),
+          onclick: function (e) { copyText(short, e.target); },
+        }),
+        h('span', { class: 'grow' }),
+        canvas ? h('button', {
+          class: 'btn primary', text: t('qrDownload'),
+          onclick: function () {
+            var a = document.createElement('a');
+            a.download = 'qr-' + link.code + '.png';
+            a.href = canvas.toDataURL('image/png');
+            a.click();
+          },
+        }) : null,
+        h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }),
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+  }
+
+  /** Copy, with the fallback for browsers that refuse the clipboard. */
+  function copyText(text, button) {
+    var done = function () {
+      var was = button.textContent;
+      button.textContent = t('codeCopied');
+      setTimeout(function () { button.textContent = was; }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () { prompt(t('linkCopy'), text); });
+    } else prompt(t('linkCopy'), text);
+  }
+
   /* ---------- admin ----------------------------------------------------- */
   function pageAdmin(main) {
     /**
@@ -4451,6 +4720,52 @@
           text: t('healthDigestOptIn').replace('%n', String(d.lineDigestOptIn)),
         }));
       }
+
+      /**
+       * Where the PDFs are, and whether they are leaving.
+       *
+       * Documents live in the database while they are being signed and move to
+       * Drive once they are finished. With Drive off, the second half never
+       * happens, so the size of what is being held is shown either way — it is
+       * the only number that turns into money if this is left alone.
+       */
+      var mb = (d.pdfBytes || 0) / 1048576;
+      var size = mb >= 1 ? mb.toFixed(1) + ' MB' : Math.round((d.pdfBytes || 0) / 1024) + ' KB';
+
+      if (d.driveConfigured) {
+        // When a folder id is pinned by hand that id is what is used, so
+        // naming a folder here would name the wrong one.
+        lines.push(h('div', { text: d.drivePinnedFolder
+          ? t('healthDrivePinned')
+          : t('healthDrive').replace('%f', d.driveFolder) }));
+        lines.push(h('div', {
+          style: 'color:var(--ink-faint)',
+          text: t('healthDriveFlow')
+            .replace('%a', String(d.docsArchived))
+            .replace('%w', String(d.docsWaitingToArchive))
+            .replace('%g', String(d.archiveGraceDays)),
+        }));
+      } else {
+        // Missing one half of the credentials is a different mistake from
+        // having set none of them, and a much easier one to not notice.
+        lines.push(h('div', {
+          style: 'color:var(--danger);font-weight:600',
+          text: '⚠ ' + (d.driveHasClient || d.driveHasRefreshToken
+            ? t('healthDrivePartial') : t('healthDriveOff')),
+        }));
+      }
+
+      lines.push(h('div', {
+        style: d.driveConfigured ? 'color:var(--ink-faint)' : 'color:var(--danger)',
+        text: t('healthPdfHeld')
+          .replace('%s', size)
+          .replace('%n', String(d.pdfDocs || 0)) +
+          (d.driveConfigured
+            ? (d.docsNotYetPurged
+              ? '  ·  ' + t('healthPdfClearing').replace('%n', String(d.docsNotYetPurged))
+              : '')
+            : '  ·  ' + t('healthPdfGrowing')),
+      }));
 
       // The most common answer, and the least obvious one: nothing is due.
       if (d.remindingToday) {
