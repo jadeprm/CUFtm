@@ -118,12 +118,25 @@ async function handler(request) {
      * free tier is about 300 a month and the Basic plan about 15,000 — the
      * page compares against whichever is configured.
      */
+    /**
+     * The start of the Bangkok month, as an actual instant.
+     *
+     * Truncating now() in Bangkok gives a timestamp with no zone attached, and
+     * comparing one of those against a TIMESTAMPTZ makes Postgres read it in
+     * the SERVER's zone, which is UTC. The boundary landed seven hours late, so
+     * for the first seven hours of every Bangkok month this counter read zero
+     * and messages sent in that window were never counted against the quota —
+     * undercounting a hard limit, which is the dangerous direction. The second
+     * AT TIME ZONE turns it back into an instant, so both sides of the
+     * comparison mean the same thing.
+     */
     const [charges] = await sql`
       SELECT count(*)::int AS total,
              count(*) FILTER (WHERE kind = 'digest')::int AS digests,
              count(*) FILTER (WHERE kind = 'document')::int AS documents
       FROM line_charges
-      WHERE sent_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Bangkok')`;
+      WHERE sent_at >= (date_trunc('month', now() AT TIME ZONE 'Asia/Bangkok')
+                        AT TIME ZONE 'Asia/Bangkok')`;
     const [{ optedIn }] = await sql`
       SELECT count(*)::int AS "optedIn" FROM line_links WHERE digest = true`;
 

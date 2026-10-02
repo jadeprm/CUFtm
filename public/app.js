@@ -5279,6 +5279,31 @@
   /* ---------- meetings --------------------------------------------------- */
 
   /**
+   * The committee's five วาระ, as they appear in every set of its minutes.
+   *
+   * Repeated here rather than fetched so that the agenda can be filled in
+   * while the meeting is still being typed, before anything has been saved.
+   * The server holds the same list and is what a template actually produces;
+   * this copy only decides what the page shows first.
+   */
+  var STANDARD_AGENDA = [
+    { title: 'วาระที่ 1 วาระประธานแจ้งให้ที่ประชุมทราบ', minutes: 10 },
+    { title: 'วาระที่ 2 วาระเรื่องแจ้งเพื่อทราบ', minutes: 20 },
+    { title: 'วาระที่ 3 เรื่องสืบเนื่อง', minutes: 15 },
+    { title: 'วาระที่ 4 เรื่องเสนอเพื่อพิจารณา', minutes: 40 },
+    { title: 'วาระที่ 5 เรื่องอื่น ๆ', minutes: 5 },
+  ];
+
+  /** Where a start time plus a run of minutes lands, as a clock reading. */
+  function endingAt(startsAt, minutes) {
+    if (!/^\d{1,2}:\d{2}$/.test(startsAt || '')) return '—';
+    var parts = startsAt.split(':');
+    var total = Number(parts[0]) * 60 + Number(parts[1]) + minutes;
+    return String(Math.floor(total / 60) % 24).padStart(2, '0') + ':' +
+           String(total % 60).padStart(2, '0');
+  }
+
+  /**
    * การประชุม.
    *
    * A meeting is not an event and not a task: it has an agenda that the people
@@ -5370,8 +5395,17 @@
     var mayEdit = isNew || meeting.mayEdit;
 
     var veil = h('div', { class: 'veil' });
-    var bodyBox = h('div', { class: 'modal-body' });
-    var footer = h('div', { class: 'modal-foot' });
+    /**
+     * The same markup every other dialog in this app uses.
+     *
+     * This was written with class names of its own — modal-head, modal-body,
+     * modal-foot — none of which the stylesheet has ever heard of, so the
+     * dialog came out with no padding, no gaps, and a people picker running
+     * off into the rest of the form. The shell is <header>/<div class="body">/
+     * <footer>, and dialogs that use it get scrolling and spacing for free.
+     */
+    var bodyBox = h('div', { class: 'body' });
+    var footer = h('footer', {});
     var notice = h('div', { class: 'notice err', hidden: true });
 
     function fail(text) { notice.hidden = false; notice.textContent = text; }
@@ -5417,6 +5451,57 @@
      * people does not need เรื่องสืบเนื่อง, and a blank agenda is as valid.
      */
     if (isNew) {
+      /**
+       * The agenda, while the meeting is still being created.
+       *
+       * It used to be impossible to touch the agenda until after the meeting
+       * had been saved and reopened, which is not how anybody plans one — you
+       * decide what the meeting is FOR at the same moment you decide when it
+       * is. Picking a template fills this list; items can then be added,
+       * removed and re-timed before anything is saved.
+       */
+      draft.agenda = [];
+      var agendaDraft = h('div', { class: 'agenda-draft' });
+
+      function drawDraftAgenda() {
+        clear(agendaDraft);
+        draft.agenda.forEach(function (item, i) {
+          agendaDraft.appendChild(h('div', { class: 'agenda-row' }, [
+            h('span', { class: 't-code', text: String(i + 1) }),
+            h('span', { class: 'grow', text: item.title }),
+            h('span', { class: 'chip', text: item.minutes + ' ' + t('mtgItemMinutes') }),
+            h('button', {
+              class: 'btn sm danger', text: '\u2715', title: t('mtgRemoveItem'),
+              onclick: function () { draft.agenda.splice(i, 1); drawDraftAgenda(); },
+            }),
+          ]));
+        });
+
+        var newTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
+        var newMins = h('input', { type: 'number', min: '0', max: '600', value: '10',
+          style: 'max-width:5.5rem' });
+        function add() {
+          if (!newTitle.value.trim()) return;
+          draft.agenda.push({ title: newTitle.value.trim(), minutes: Number(newMins.value) || 0 });
+          drawDraftAgenda();
+        }
+        // Enter adds the item, because typing five of them with the mouse is
+        // how somebody decides the agenda is not worth filling in.
+        newTitle.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); add(); }
+        });
+        agendaDraft.appendChild(h('div', { class: 'agenda-add' }, [
+          newTitle, newMins, h('button', { class: 'btn', text: t('mtgAddItem'), onclick: add }),
+        ]));
+
+        var total = draft.agenda.reduce(function (n, x) { return n + (x.minutes || 0); }, 0);
+        if (total) {
+          agendaDraft.appendChild(h('p', { class: 'hint', text: t('mtgLength')
+            .replace('%m', String(total))
+            .replace('%e', endingAt(draft.meetsAt, total)) }));
+        }
+      }
+
       var templateSeg = h('div', { class: 'seg wrap' }, [
         ['standard', 'mtgTemplateStandard'], ['blank', 'mtgTemplateBlank'],
       ].map(function (pair) {
@@ -5426,11 +5511,23 @@
             draft.template = pair[0];
             [...templateSeg.childNodes].forEach(function (n) { n.className = ''; });
             b.className = 'on';
+            draft.agenda = pair[0] === 'standard' ? STANDARD_AGENDA.map(function (x) {
+              return { title: x.title, minutes: x.minutes };
+            }) : [];
+            drawDraftAgenda();
           },
         });
         return b;
       }));
-      bodyBox.appendChild(h('div', { class: 'pane' }, [field(t('mtgTemplate'), templateSeg)]));
+      bodyBox.appendChild(h('div', { class: 'pane' }, [
+        field(t('mtgTemplate'), templateSeg),
+        field(t('mtgAgenda'), agendaDraft),
+      ]));
+      // Open on the standard agenda, which is the one that was chosen.
+      draft.agenda = STANDARD_AGENDA.map(function (x) {
+        return { title: x.title, minutes: x.minutes };
+      });
+      drawDraftAgenda();
     }
 
     // ---- an existing meeting: who is coming, and the agenda ----
@@ -5537,7 +5634,7 @@
             joinUrl: draft.joinUrl, agendaUrl: draft.agendaUrl,
             people: draft.assignees,
           };
-          if (isNew) body.template = draft.template;
+          if (isNew) { body.template = 'blank'; body.agenda = draft.agenda; }
           else { body.id = meeting.id; body.minutesUrl = draft.minutesUrl; }
           api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
             .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
@@ -5560,11 +5657,18 @@
       onclick: function () { veil.remove(); } }));
 
     veil.appendChild(h('div', { class: 'modal' }, [
-      h('div', { class: 'modal-head' }, [h('strong', { text: isNew ? t('mtgNew') : meeting.title })]),
+      h('header', {}, [
+        h('h2', { text: isNew ? t('mtgNew') : meeting.title }),
+        (!isNew && meeting.code) ? codeChip(meeting.code) : null,
+        h('button', { class: 'btn ghost sm', text: '\u2715',
+          onclick: function () { veil.remove(); } }),
+      ].filter(Boolean)),
       bodyBox, footer,
     ]));
     veil.addEventListener('click', function (e) { if (e.target === veil) veil.remove(); });
-    document.body.appendChild(veil);
+    // Every other dialog lives here; appending to <body> put this one outside
+    // the container that the Escape key and the phone layout both look at.
+    $('modal-root').appendChild(veil);
   }
 
   /* ---------- announcements (admin / co-admin) --------------------------- */

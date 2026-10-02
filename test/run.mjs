@@ -4198,5 +4198,43 @@ r = await call(eventsApi, `/api/events?do=meeting&id=${blankId}`, { method: 'DEL
 ok('...and the organiser can call it off', r.status === 200, JSON.stringify(r.data));
 
 
+
+// ---- the first hours of a Bangkok month ---------------------------------
+/**
+ * A real bug, found the day the clock rolled into October.
+ *
+ * The monthly LINE counter compared a TIMESTAMPTZ against a timestamp that
+ * had no zone attached, so Postgres read the boundary in the server's zone
+ * (UTC) rather than Bangkok's. For the first seven hours of every Bangkok
+ * month the counter read zero and messages sent in that window never counted
+ * against the quota — which is a hard stop, so undercounting it is the
+ * dangerous direction.
+ */
+const bkkNow = (await sql`SELECT (now() AT TIME ZONE 'Asia/Bangkok') AS t`)[0].t;
+await sql`DELETE FROM line_charges WHERE username = 'Ubound'`;
+await sql`
+  INSERT INTO line_charges (username, kind, sent_at)
+  VALUES ('Ubound', 'document',
+          (date_trunc('month', now() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok')
+          + interval '10 minutes')`;
+
+r = await call(usersApi, '/api/users?do=health', { as: 'admin' });
+ok('a message sent just after the Bangkok month begins is counted',
+  r.data.lineCharged.total >= 1,
+  `bangkok now ${String(bkkNow).slice(0, 16)} · counted ${r.data.lineCharged.total}`);
+
+// And one from just before the boundary is not.
+await sql`
+  INSERT INTO line_charges (username, kind, sent_at)
+  VALUES ('Ubound', 'document',
+          (date_trunc('month', now() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok')
+          - interval '10 minutes')`;
+const boundAfter = await call(usersApi, '/api/users?do=health', { as: 'admin' });
+ok('...and one from last month is not counted twice',
+  boundAfter.data.lineCharged.total === r.data.lineCharged.total,
+  `${r.data.lineCharged.total} → ${boundAfter.data.lineCharged.total}`);
+await sql`DELETE FROM line_charges WHERE username = 'Ubound'`;
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

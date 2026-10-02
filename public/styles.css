@@ -1279,3 +1279,24 @@ input.code-input {
   .agenda-row { gap: .35rem; }
   .agenda-row small { flex-basis: 100%; }
 }
+
+/* The agenda being typed out while a meeting is still being created. */
+.agenda-draft { display: flex; flex-direction: column; gap: 2px; }
+.agenda-draft .agenda-row:first-child { border-top: 1px solid var(--line); }
+
+/**
+ * A dialog never grows taller than the window.
+ *
+ * The veil scrolls the whole page, which is fine for a short dialog and quietly
+ * awful for a long one: the meeting form runs past 1000px, so the จัดการ and
+ * บันทึก buttons sat below the fold with nothing on screen to suggest they were
+ * there. Capping the height and letting the body scroll keeps the title and the
+ * buttons always visible, and the middle is the part that moves.
+ */
+.modal {
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 6vh);
+  max-height: calc(100dvh - 6vh);
+}
+.modal > .body { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.modal > header, .modal > footer { flex: 0 0 auto; }
