@@ -4087,9 +4087,13 @@ ok('the standard agenda is the committee’s five วาระ',
   mtg.agenda[4].title.includes('วาระที่ 5'),
   mtg.agenda.map((a) => a.slot + '.' + a.title.slice(0, 12)).join(' '));
 ok('...numbered from one, in order', mtg.agenda.every((a, i) => a.slot === i + 1));
-ok('...and the page can say when the meeting would actually end',
-  mtg.length.minutes === 90 && mtg.length.endsAt === '18:30',
-  JSON.stringify(mtg.length));
+/**
+ * The five headings carry no time of their own — วาระที่ 4 lasts exactly as
+ * long as the things put under it, and a made-up forty minutes against an
+ * empty heading is a number nobody chose.
+ */
+ok('the standard headings start with no invented durations',
+  mtg.length.minutes === 0, JSON.stringify(mtg.length));
 
 // A blank agenda is the other choice.
 r = await call(eventsApi, '/api/events?do=meeting', {
@@ -4102,11 +4106,33 @@ ok('a blank agenda really is blank',
   r.data.meetings.find((m) => m.id === blankId).agenda.length === 0);
 
 // ---- anybody invited may propose an item --------------------------------
+/**
+ * A proposal goes UNDER one of the standing วาระ — it becomes 4.1, never a
+ * sixth heading, because วาระที่ 6 would be wrong in the minutes.
+ */
+const heads = mtg.agenda.filter((x) => x.depth === 0);
+const consider = heads.find((x) => x.title.includes('วาระที่ 4'));
+
 r = await call(eventsApi, '/api/events?do=agenda', {
   method: 'POST', as: 'editor',
   body: { meetingId: mtgId, title: 'ขอหารือเรื่องงบฝ่ายเนื้อหา', minutes: 15, priority: 'high' },
 });
-ok('somebody invited can propose an item for the agenda', r.status === 201,
+ok('an item with no heading chosen is refused on a standard agenda',
+  r.status === 400 && r.data.error === 'PICK_AN_AGENDA_HEADING', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'editor',
+  body: { meetingId: mtgId, title: 'ขอหารือเรื่องงบฝ่ายเนื้อหา', parentId: consider.id },
+});
+ok('...and so is one with no duration given', r.status === 400 &&
+  r.data.error === 'MINUTES_REQUIRED', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'editor',
+  body: { meetingId: mtgId, title: 'ขอหารือเรื่องงบฝ่ายเนื้อหา',
+          minutes: 15, priority: 'high', parentId: consider.id },
+});
+ok('somebody invited can propose an item under วาระที่ 4', r.status === 201,
   JSON.stringify(r.data).slice(0, 80));
 
 r = await call(eventsApi, '/api/events?do=agenda', {
@@ -4119,11 +4145,18 @@ ok('...but somebody who was not invited cannot',
 r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
 mtg = r.data.meetings.find((m) => m.id === mtgId);
 const proposed = mtg.agenda.find((a) => a.title.includes('งบฝ่ายเนื้อหา'));
-ok('the proposed item lands at the end and says who asked for it',
-  proposed.slot === 6 && proposed.proposedBy === 'Kungking_HeadCon',
-  JSON.stringify(proposed));
-ok('...and the meeting is now a quarter of an hour longer',
-  mtg.length.minutes === 105 && mtg.length.endsAt === '18:45',
+ok('it is numbered 4.1, not วาระที่ 6',
+  proposed.number === '4.1' && proposed.depth === 1 &&
+  proposed.proposedBy === 'Kungking_HeadCon',
+  JSON.stringify({ number: proposed.number, depth: proposed.depth }));
+ok('...and there are still only five headings',
+  mtg.agenda.filter((x) => x.depth === 0).length === 5,
+  mtg.agenda.map((x) => x.number).join(' '));
+ok('...the heading now carries the time of what is under it',
+  mtg.agenda.find((x) => x.number === '4').minutes === 15,
+  JSON.stringify(mtg.agenda.find((x) => x.number === '4')));
+ok('...and the meeting is a quarter of an hour long, counted once',
+  mtg.length.minutes === 15 && mtg.length.endsAt === '17:15',
   JSON.stringify(mtg.length));
 
 r = await call(eventsApi, '/api/events?do=agenda', {
@@ -4133,17 +4166,26 @@ r = await call(eventsApi, '/api/events?do=agenda', {
 ok('nobody can reword somebody else’s proposal into something it was not',
   r.status === 403, JSON.stringify(r.data));
 
+// A second item under the same heading, to check the order within it.
+await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: mtgId, title: 'ประมูลร้านค้า', minutes: 25, parentId: consider.id },
+});
 r = await call(eventsApi, '/api/events?do=agenda', {
   method: 'PATCH', as: 'admin', body: { id: proposed.id, slot: 2 },
 });
-ok('...though the organiser may move it up the running order', r.status === 200,
+ok('...though the organiser may reorder items within a วาระ', r.status === 200,
   JSON.stringify(r.data));
 r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
 mtg = r.data.meetings.find((m) => m.id === mtgId);
-ok('...and the whole agenda renumbers cleanly, with no gap left behind',
-  mtg.agenda.every((a, i) => a.slot === i + 1) &&
-  mtg.agenda[1].title.includes('งบฝ่ายเนื้อหา'),
-  mtg.agenda.map((a) => a.slot + '.' + a.title.slice(0, 10)).join(' '));
+ok('...and they renumber as 4.1 and 4.2, in the order chosen',
+  mtg.agenda.find((x) => x.number === '4.1').title.includes('ประมูลร้านค้า') &&
+  mtg.agenda.find((x) => x.number === '4.2').title.includes('งบฝ่ายเนื้อหา'),
+  mtg.agenda.map((x) => x.number + '.' + x.title.slice(0, 8)).join(' '));
+ok('...the heading adds both up', mtg.agenda.find((x) => x.number === '4').minutes === 40,
+  JSON.stringify(mtg.agenda.find((x) => x.number === '4')));
+ok('...and the total counts the items once, not the heading twice',
+  mtg.length.minutes === 40, JSON.stringify(mtg.length));
 
 // ---- who is coming -------------------------------------------------------
 r = await call(eventsApi, '/api/events?do=reply', {
@@ -4234,6 +4276,40 @@ ok('...and one from last month is not counted twice',
   boundAfter.data.lineCharged.total === r.data.lineCharged.total,
   `${r.data.lineCharged.total} → ${boundAfter.data.lineCharged.total}`);
 await sql`DELETE FROM line_charges WHERE username = 'Ubound'`;
+
+
+
+// ---- a blank agenda is not secretly a set of headings -------------------
+/**
+ * The trap: "is this a heading" was once "does it sit at the top", which would
+ * have turned the first line somebody typed onto a blank agenda into a heading
+ * that every later line had to be filed underneath.
+ */
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: { title: 'คุยงานสั้น ๆ ไม่มีวาระมาตรฐาน', meetsOn: '2026-12-20', template: 'blank' },
+});
+const flatId = r.data.id;
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: flatId, title: 'เรื่องแรก', minutes: 10 },
+});
+ok('a first item can go straight onto a blank agenda', r.status === 201, JSON.stringify(r.data));
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: flatId, title: 'เรื่องที่สอง', minutes: 10 },
+});
+ok('...and so can a second, without being filed under the first',
+  r.status === 201, JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+const flat = r.data.meetings.find((m) => m.id === flatId);
+ok('...both sit at the top level, numbered 1 and 2',
+  flat.agenda.length === 2 && flat.agenda.every((x) => x.depth === 0) &&
+  flat.agenda.map((x) => x.number).join(' ') === '1 2',
+  flat.agenda.map((x) => x.number + ':' + x.title).join(' '));
+ok('...and the total is the sum of the two', flat.length.minutes === 20,
+  JSON.stringify(flat.length));
 
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);

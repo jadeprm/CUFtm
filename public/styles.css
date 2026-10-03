@@ -1300,3 +1300,42 @@ input.code-input {
 }
 .modal > .body { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .modal > header, .modal > footer { flex: 0 0 auto; }
+
+/* ---- the meeting dialog, read first ------------------------------------ */
+
+/**
+ * The attendee list sits outside a .picker, so it needs its own row layout —
+ * without it the chips line up on their text baselines and one carrying a
+ * photograph rides higher than one carrying initials.
+ */
+.mtg-people { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mtg-people .chip { height: 26px; }
+
+.mtg-summary .sum-row {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 5px 0; border-bottom: 1px solid var(--line-soft);
+}
+.mtg-summary .sum-row:last-child { border-bottom: none; }
+.mtg-summary .sum-label { color: var(--ink-faint); min-width: 8.5rem; flex: none; font-size: .9rem; }
+.mtg-summary .sum-value { font-weight: 500; }
+
+@media (max-width: 560px) {
+  .mtg-summary .sum-row { flex-direction: column; gap: 2px; }
+  .mtg-summary .sum-label { min-width: 0; }
+}
+
+/* An agenda is a list of headings with things underneath them. */
+.agenda-row.d1 { padding-left: 1.6rem; }
+.agenda-row.d0 { font-weight: 600; }
+.agenda-row.d0 .t-code { font-weight: 700; }
+.agenda-row .chip.sum { background: transparent; border-style: dashed; }
+.agenda-empty {
+  padding: 2px 0 2px 1.6rem; color: var(--ink-faint);
+  font-size: .85rem; font-style: italic;
+}
+.agenda-add { padding-left: 1.6rem; }
+
+/* Meetings on the calendar and in the upcoming rail. */
+.cal-chip.meeting { border-left-color: var(--accent); background: var(--accent-soft); }
+.dot.meeting { background: var(--accent); }
+.event-card.meeting { --c: var(--accent); border-left-color: var(--accent); }

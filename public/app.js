@@ -753,7 +753,11 @@
     else if (page === 'mine') { S.scope = 'mine'; page = 'work'; }
     else if (page === 'events') page = 'work';
 
-    if (['work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce', 'meetings'].indexOf(page) === -1) page = 'work';
+    // Meetings no longer have a page of their own — they sit with the events
+    // and the tasks. The old address still resolves so a link somebody already
+    // shared lands somewhere sensible rather than nowhere.
+    if (page === 'meetings') page = 'work';
+    if (['work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -1852,7 +1856,6 @@
     if (S.page === 'links') return pageLinks(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
-    if (S.page === 'meetings') return pageMeetings(main);
   }
 
   /**
@@ -1946,10 +1949,12 @@
        * in an error is worse than not offering it.
        */
       mayCreate() ? h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }) : null,
+      mayCreate() ? h('button', { class: 'btn', text: t('mtgNew'), onclick: function () { openMeeting(null); } }) : null,
       mayCreate() ? h('button', { class: 'btn', text: t('newEvent'), onclick: function () { openEvent(null); } }) : null,
       mayCreate() ? h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }) : null,
     ]));
 
+    meetingStrip(main, mineOnly);
     eventStrip(main, mineOnly);
 
     var pool = S.tasks.filter(function (x) {
@@ -2091,6 +2096,14 @@
    * what is coming, not the events page it replaced. Everything is still
    * there, in the calendar and behind "see all".
    */
+  /**
+   * What is coming up: events and meetings, in one rail.
+   *
+   * Meetings used to live on a tab of their own, which meant the one thing
+   * somebody needed to see on a Tuesday morning was the one thing they had to
+   * go and look for. They are dates like any other and belong here, marked so
+   * that a meeting still reads as a meeting.
+   */
   function eventStrip(main, mineOnly) {
     var today = todayIso();
     var coming = S.events.filter(function (e) {
@@ -2099,7 +2112,7 @@
       // A search covers events as well as tasks — asking for E0007 and being
       // shown the whole calendar would not be a search.
       return matchesQuery(e);
-    });
+    }).map(function (e) { return { kind: 'event', on: e.startsOn, item: e }; });
 
     if (!coming.length) return;
 
@@ -2111,7 +2124,8 @@
           ? h('small', { text: '+' + (coming.length - shown.length) })
           : null,
       ]),
-      h('div', { class: 'strip-rail' }, shown.map(function (event) {
+      h('div', { class: 'strip-rail' }, shown.map(function (entry) {
+        var event = entry.item;
         return h('button', {
           class: 'event-card' + (event.pending ? ' pending' : ''),
           style: '--c:' + colourHex(event.colour),
@@ -2120,6 +2134,57 @@
           h('div', { class: 'ec-when', text: eventWhen(event) }),
           h('div', { class: 'ec-title', text: event.title }),
           event.place ? h('div', { class: 'ec-where', text: event.place }) : null,
+        ]);
+      })),
+    ]));
+  }
+
+  /**
+   * The meetings that are coming, in a rail of their own.
+   *
+   * They were folded in with the events at first, which looked tidier and was
+   * worse: the rail stops at six, the events are sooner, and the committee's
+   * next meeting fell off the end of a list it was supposed to be on. A
+   * meeting is a different kind of thing from a rehearsal anyway — somebody
+   * has to answer it.
+   */
+  function meetingStrip(main, mineOnly) {
+    var today = todayIso();
+    var coming = (S.meetings || []).filter(function (m) {
+      if (m.meetsOn < today || m.status === 'cancelled') return false;
+      if (mineOnly && !(m.people || []).some(function (x) {
+        return x.username === S.user.username;
+      })) return false;
+      return matchesQuery({ code: m.code, title: m.title, place: m.place });
+    }).sort(function (a, b) { return a.meetsOn < b.meetsOn ? -1 : 1; });
+
+    if (!coming.length) return;
+    var shown = coming.slice(0, 6);
+
+    main.appendChild(h('div', { class: 'event-strip' }, [
+      h('div', { class: 'strip-head' }, [
+        h('b', { text: t('navMeetings') }),
+        coming.length > shown.length
+          ? h('small', { text: '+' + (coming.length - shown.length) })
+          : null,
+      ]),
+      h('div', { class: 'strip-rail' }, shown.map(function (m) {
+        var going = (m.people || []).filter(function (x) {
+          return x.username === S.user.username;
+        })[0];
+        return h('button', {
+          class: 'event-card meeting',
+          onclick: function () { openMeeting(m); },
+        }, [
+          h('div', { class: 'ec-when', text: m.meetsOn + (m.meetsAt ? ' · ' + m.meetsAt : '') }),
+          h('div', { class: 'ec-title', text: m.title }),
+          h('div', { class: 'ec-where' }, [
+            h('span', { class: 'chip ' + replyClass(going && going.reply),
+              text: going
+                ? (going.reply === 'accepted' ? t('rsvpGoing')
+                  : going.reply === 'declined' ? t('rsvpNotGoing') : t('rsvpAsk'))
+                : (m.place || '') }),
+          ]),
         ]);
       })),
     ]));
@@ -3686,6 +3751,7 @@
       h('span', { class: 'grow' }),
       h('span', { class: 'key' }, [h('i', { class: 'dot task' }), t('navAll')]),
       h('span', { class: 'key' }, [h('i', { class: 'dot event' }), t('navEvents')]),
+      h('span', { class: 'key' }, [h('i', { class: 'dot meeting' }), t('navMeetings')]),
     ]));
 
     if (view === 'month') main.appendChild(monthGrid(anchor));
@@ -3701,6 +3767,20 @@
       if (task.dueDate !== iso) return;
       if (S.calMineOnly && task.assignees.indexOf(S.user.username) === -1) return;
       out.push({ kind: 'task', at: task.dueTime || '', task: task, title: task.title });
+    });
+
+    /**
+     * A meeting is a date people have to keep, so it belongs on the calendar
+     * next to the events — not on a page of its own that nobody thinks to
+     * open on a Tuesday morning.
+     */
+    S.meetings.forEach(function (m) {
+      if (m.meetsOn !== iso) return;
+      if (m.status === 'cancelled') return;
+      if (S.calMineOnly && !(m.people || []).some(function (x) {
+        return x.username === S.user.username;
+      })) return;
+      out.push({ kind: 'meeting', at: m.meetsAt || '', meeting: m, title: m.title });
     });
 
     if (S.calShowEvents !== false) {
@@ -3728,6 +3808,16 @@
   }
 
   function chipFor(entry) {
+    if (entry.kind === 'meeting') {
+      return h('button', {
+        class: 'cal-chip meeting',
+        title: entry.meeting.title,
+        onclick: function (e) { e.stopPropagation(); openMeeting(entry.meeting); },
+      }, [
+        entry.at ? h('span', { class: 'at', text: entry.at }) : null,
+        entry.meeting.title,
+      ]);
+    }
     if (entry.kind === 'event') {
       var colour = colourHex(entry.event.colour);
       return h('button', {
@@ -5287,11 +5377,11 @@
    * this copy only decides what the page shows first.
    */
   var STANDARD_AGENDA = [
-    { title: 'วาระที่ 1 วาระประธานแจ้งให้ที่ประชุมทราบ', minutes: 10 },
-    { title: 'วาระที่ 2 วาระเรื่องแจ้งเพื่อทราบ', minutes: 20 },
-    { title: 'วาระที่ 3 เรื่องสืบเนื่อง', minutes: 15 },
-    { title: 'วาระที่ 4 เรื่องเสนอเพื่อพิจารณา', minutes: 40 },
-    { title: 'วาระที่ 5 เรื่องอื่น ๆ', minutes: 5 },
+    { title: 'วาระที่ 1 วาระประธานแจ้งให้ที่ประชุมทราบ' },
+    { title: 'วาระที่ 2 วาระเรื่องแจ้งเพื่อทราบ' },
+    { title: 'วาระที่ 3 เรื่องสืบเนื่อง' },
+    { title: 'วาระที่ 4 เรื่องเสนอเพื่อพิจารณา' },
+    { title: 'วาระที่ 5 เรื่องอื่น ๆ' },
   ];
 
   /** Where a start time plus a run of minutes lands, as a clock reading. */
@@ -5311,70 +5401,23 @@
    * afterwards. It gets its own page for that reason rather than another set of
    * fields hanging off the calendar.
    */
-  function pageMeetings(main) {
-    main.appendChild(h('div', { class: 'page-head' }, [
-      h('h1', { text: t('navMeetings') }),
-      h('span', { class: 'grow' }),
-      h('button', {
-        class: 'btn primary', text: t('mtgNew'),
-        onclick: function () { openMeeting(null); },
-      }),
-    ]));
-
-    var list = h('div', { class: 'doc-list' });
-    main.appendChild(list);
-
-    function draw() {
-      clear(list);
-      var all = S.meetings || [];
-      if (!all.length) {
-        list.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('mtgNone') })]));
-        return;
-      }
-      all.forEach(function (m) { list.appendChild(meetingCard(m)); });
-    }
-
-    load();
-    function load() {
-      api('/api/events?do=meetings').then(function (d) {
-        S.meetings = d.meetings || [];
-        draw();
-      }).catch(function (err) {
-        clear(list);
-        list.appendChild(h('div', { class: 'notice err', text: errText(err.code) }));
-      });
-    }
-    S.reloadMeetings = load;
-    draw();
+  /**
+   * Re-reads the meetings and redraws whatever page is showing.
+   *
+   * There is no meetings page any more — they appear in the strip at the top
+   * of the work page and on the calendar — so saving one has to refresh the
+   * page the person is actually looking at.
+   */
+  function reloadMeetings() {
+    return api('/api/events?do=meetings').then(function (d) {
+      S.meetings = d.meetings || [];
+      renderPage();
+    }).catch(function () {});
   }
 
   /** The colour of an answer, which is the whole point of showing it. */
   function replyClass(reply) {
     return reply === 'accepted' ? 'yes' : reply === 'declined' ? 'no' : 'maybe';
-  }
-
-  function meetingCard(m) {
-    var when = m.meetsOn + (m.meetsAt ? ' · ' + m.meetsAt : '');
-    return h('button', {
-      class: 'doc-card' + (m.status === 'cancelled' ? ' bad' : ''),
-      onclick: function () { openMeeting(m); },
-    }, [
-      h('div', { class: 'dc-top' }, [
-        m.code ? h('span', { class: 't-code', text: m.code }) : null,
-        h('span', { class: 'dc-title', text: m.title }),
-        h('span', { class: 'chip ' + replyClass(m.myReply),
-          text: m.myReply === 'accepted' ? t('rsvpGoing')
-            : m.myReply === 'declined' ? t('rsvpNotGoing') : t('rsvpAsk') }),
-      ].filter(Boolean)),
-      h('div', { class: 'dc-sub' }, [
-        h('span', { text: when }),
-        m.place ? h('span', { text: ' · ' + m.place }) : null,
-        h('span', { text: ' · ' + t('rsvpTally')
-          .replace('%a', String(m.counts.accepted))
-          .replace('%d', String(m.counts.declined))
-          .replace('%w', String(m.counts.invited)) }),
-      ].filter(Boolean)),
-    ]);
   }
 
   function openMeeting(meeting) {
@@ -5444,6 +5487,37 @@
     if (isNew) bodyBox.appendChild(detailPane);
 
     /**
+     * A meeting opens as something to read, not something to edit.
+     *
+     * Most people opening a meeting have come to find out when it is and what
+     * is on it. Showing them a form — greyed out, with an empty box where the
+     * attendee picker would be — made the page look broken for everybody who
+     * is not running the meeting, and looked editable to people who are not
+     * allowed to edit. The facts come first; the form arrives when somebody
+     * who may change them asks for it.
+     */
+    var summaryPane = h('div', { class: 'pane mtg-summary' });
+    function drawSummary() {
+      clear(summaryPane);
+      var line = function (label, value, href) {
+        if (!value) return;
+        summaryPane.appendChild(h('div', { class: 'sum-row' }, [
+          h('span', { class: 'sum-label', text: label }),
+          href
+            ? h('a', { class: 'chip dept', target: '_blank', rel: 'noopener', href: href, text: value })
+            : h('span', { class: 'sum-value', text: value }),
+        ]));
+      };
+      line(t('mtgDate'), meeting.meetsOn + (meeting.meetsAt ? ' · ' + meeting.meetsAt : ''));
+      line(t('mtgPlace'), meeting.place);
+      line(t('mtgJoin'), meeting.joinUrl ? t('mtgOpenJoin') : '', meeting.joinUrl);
+      line(t('mtgAgendaUrl'), meeting.agendaUrl ? t('mtgOpenAgenda') : '', meeting.agendaUrl);
+      line(t('mtgMinutesUrl'), meeting.minutesUrl ? t('mtgOpenMinutes') : '', meeting.minutesUrl);
+      if (meeting.note) line(t('mtgTitle'), meeting.note);
+    }
+    if (!isNew) { drawSummary(); bodyBox.appendChild(summaryPane); }
+
+    /**
      * Which agenda a new meeting starts with.
      *
      * The committee's five วาระ are what every set of its minutes uses, so
@@ -5463,38 +5537,90 @@
       draft.agenda = [];
       var agendaDraft = h('div', { class: 'agenda-draft' });
 
+      /**
+       * The agenda being built, with the same shape it will have once saved.
+       *
+       * Headings and the things under them: an item proposed here is 4.1, and
+       * there is no way to make a sixth วาระ, because the committee's minutes
+       * only ever have five. Durations belong to the items; a heading shows
+       * the sum of what is under it.
+       */
       function drawDraftAgenda() {
         clear(agendaDraft);
-        draft.agenda.forEach(function (item, i) {
-          agendaDraft.appendChild(h('div', { class: 'agenda-row' }, [
-            h('span', { class: 't-code', text: String(i + 1) }),
-            h('span', { class: 'grow', text: item.title }),
-            h('span', { class: 'chip', text: item.minutes + ' ' + t('mtgItemMinutes') }),
-            h('button', {
-              class: 'btn sm danger', text: '\u2715', title: t('mtgRemoveItem'),
-              onclick: function () { draft.agenda.splice(i, 1); drawDraftAgenda(); },
-            }),
-          ]));
-        });
+        var heads = draft.agenda.filter(function (x) { return x.heading; });
 
-        var newTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
-        var newMins = h('input', { type: 'number', min: '0', max: '600', value: '10',
-          style: 'max-width:5.5rem' });
-        function add() {
-          if (!newTitle.value.trim()) return;
-          draft.agenda.push({ title: newTitle.value.trim(), minutes: Number(newMins.value) || 0 });
-          drawDraftAgenda();
+        function subsOf(headIndex) {
+          return draft.agenda.filter(function (x) { return !x.heading && x.under === headIndex; });
         }
-        // Enter adds the item, because typing five of them with the mouse is
-        // how somebody decides the agenda is not worth filling in.
-        newTitle.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') { e.preventDefault(); add(); }
-        });
-        agendaDraft.appendChild(h('div', { class: 'agenda-add' }, [
-          newTitle, newMins, h('button', { class: 'btn', text: t('mtgAddItem'), onclick: add }),
-        ]));
 
-        var total = draft.agenda.reduce(function (n, x) { return n + (x.minutes || 0); }, 0);
+        function addBox(headIndex) {
+          var newTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
+          // Deliberately empty: the duration is the proposer's to state.
+          var newMins = h('input', { type: 'number', min: '1', max: '600', value: '',
+            placeholder: t('mtgMinutesAsk'), style: 'max-width:7rem' });
+          var addBtn = h('button', { class: 'btn', text: t('mtgAddItem'), disabled: true });
+          function check() {
+            addBtn.disabled = !newTitle.value.trim() || !(Number(newMins.value) > 0);
+          }
+          function add() {
+            if (addBtn.disabled) return;
+            draft.agenda.push({ title: newTitle.value.trim(),
+              minutes: Number(newMins.value), under: headIndex, heading: false });
+            drawDraftAgenda();
+          }
+          newTitle.addEventListener('input', check);
+          newMins.addEventListener('input', check);
+          newTitle.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); add(); }
+          });
+          newMins.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); add(); }
+          });
+          addBtn.addEventListener('click', add);
+          return h('div', { class: 'agenda-add' }, [newTitle, newMins, addBtn]);
+        }
+
+        function row(item, number, depth) {
+          return h('div', { class: 'agenda-row d' + depth }, [
+            h('span', { class: 't-code', text: number }),
+            h('span', { class: 'grow', text: item.title }),
+            item.minutes
+              ? h('span', { class: 'chip', text: item.minutes + ' ' + t('mtgItemMinutes') })
+              : null,
+            depth ? h('button', {
+              class: 'btn sm danger', text: '\u2715', title: t('mtgRemoveItem'),
+              onclick: function () {
+                draft.agenda.splice(draft.agenda.indexOf(item), 1);
+                drawDraftAgenda();
+              },
+            }) : null,
+          ].filter(Boolean));
+        }
+
+        if (heads.length) {
+          heads.forEach(function (head, i) {
+            var subs = subsOf(i);
+            var mins = subs.reduce(function (n, x) { return n + (x.minutes || 0); }, 0);
+            agendaDraft.appendChild(row(
+              { title: head.title, minutes: mins }, String(i + 1), 0));
+            if (!subs.length) {
+              agendaDraft.appendChild(h('div', { class: 'agenda-empty', text: t('mtgNoSub') }));
+            }
+            subs.forEach(function (sub, j) {
+              agendaDraft.appendChild(row(sub, (i + 1) + '.' + (j + 1), 1));
+            });
+            agendaDraft.appendChild(addBox(i));
+          });
+        } else {
+          draft.agenda.forEach(function (item, i) {
+            agendaDraft.appendChild(row(item, String(i + 1), 1));
+          });
+          agendaDraft.appendChild(addBox(null));
+        }
+
+        var total = draft.agenda.reduce(function (n, x) {
+          return n + (x.heading ? 0 : (x.minutes || 0));
+        }, 0);
         if (total) {
           agendaDraft.appendChild(h('p', { class: 'hint', text: t('mtgLength')
             .replace('%m', String(total))
@@ -5512,7 +5638,7 @@
             [...templateSeg.childNodes].forEach(function (n) { n.className = ''; });
             b.className = 'on';
             draft.agenda = pair[0] === 'standard' ? STANDARD_AGENDA.map(function (x) {
-              return { title: x.title, minutes: x.minutes };
+              return { title: x.title, minutes: 0, heading: true, under: null };
             }) : [];
             drawDraftAgenda();
           },
@@ -5525,7 +5651,7 @@
       ]));
       // Open on the standard agenda, which is the one that was chosen.
       draft.agenda = STANDARD_AGENDA.map(function (x) {
-        return { title: x.title, minutes: x.minutes };
+        return { title: x.title, minutes: 0, heading: true, under: null };
       });
       drawDraftAgenda();
     }
@@ -5546,7 +5672,7 @@
             onclick: function () {
               api('/api/events?do=reply', {
                 method: 'POST', body: { kind: 'meeting', id: meeting.id, reply: pair[0] },
-              }).then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+              }).then(function () { veil.remove(); reloadMeetings(); })
                 .catch(function (err) { fail(errText(err.code)); });
             },
           }));
@@ -5555,7 +5681,13 @@
       }
 
       // Everybody, colour-coded, so a glance answers "who is actually coming".
-      whoPane.appendChild(h('div', { class: 'selected' }, meeting.people.map(function (p) {
+      /**
+       * `.selected` is only styled inside a .picker, and this list is not in
+       * one — so the chips fell back to baseline alignment and a chip holding
+       * a photograph sat higher than one holding initials. Its own class, with
+       * its own row layout.
+       */
+      whoPane.appendChild(h('div', { class: 'mtg-people' }, meeting.people.map(function (p) {
         return h('span', { class: 'chip who ' + replyClass(p.reply) },
           [avatarNode(p.username, 'sm'), nameOf(p.username)]);
       })));
@@ -5569,63 +5701,99 @@
           .replace('%e', meeting.length.endsAt || '—') }));
       }
 
-      meeting.agenda.forEach(function (item) {
-        agendaPane.appendChild(h('div', { class: 'agenda-row' }, [
-          h('span', { class: 't-code', text: String(item.slot) }),
+      var canPropose = mine && meeting.status === 'planned';
+      // Headings are the standing วาระ from the template — identified by
+      // their kind, exactly as the server identifies them. A plain item on a
+      // blank agenda is not a heading just because it sits at the top.
+      var headings = meeting.agenda.filter(function (x) {
+        return x.depth === 0 && x.kind && x.kind !== 'item';
+      });
+
+      /**
+       * One row per item, nested under its วาระ.
+       *
+       * A proposal belongs UNDER one of the standing headings — 4.1, not a
+       * sixth วาระ, because วาระที่ 6 would be wrong in the minutes. So each
+       * heading carries its own "add" control and the add box asks which
+       * heading it is for only when there is a choice to make.
+       */
+      function agendaRow(item) {
+        return h('div', { class: 'agenda-row d' + item.depth }, [
+          h('span', { class: 't-code', text: item.number }),
           h('span', { class: 'grow', text: item.title }),
-          item.minutes ? h('span', { class: 'chip', text: item.minutes + ' ' + t('mtgItemMinutes') }) : null,
-          h('small', { text: t('mtgProposedBy') + ' ' + nameOf(item.proposedBy) }),
-          (item.proposedBy === S.user.username || meeting.mayEdit) ? h('button', {
+          item.minutes
+            ? h('span', { class: 'chip' + (item.hasChildren ? ' sum' : ''),
+                text: item.minutes + ' ' + t('mtgItemMinutes') })
+            : null,
+          item.depth ? h('small', { text: t('mtgProposedBy') + ' ' + nameOf(item.proposedBy) }) : null,
+          (item.depth && (item.proposedBy === S.user.username || meeting.mayEdit)) ? h('button', {
             class: 'btn sm danger', text: '✕', title: t('mtgRemoveItem'),
             onclick: function () {
               api('/api/events?do=agenda&id=' + encodeURIComponent(item.id), { method: 'DELETE' })
-                .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
+                .then(function () { veil.remove(); reloadMeetings(); })
                 .catch(function (err) { fail(errText(err.code)); });
             },
           }) : null,
-        ].filter(Boolean)));
-      });
-
-      // Anybody invited may add to it — that is the point of the thing.
-      if (mine && meeting.status === 'planned') {
-        var itemTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
-        var itemMins = h('input', { type: 'number', min: '0', max: '600', value: '10',
-          style: 'max-width:5.5rem' });
-        agendaPane.appendChild(h('div', { class: 'agenda-add' }, [
-          itemTitle, itemMins,
-          h('button', {
-            class: 'btn', text: t('mtgAddItem'),
-            onclick: function () {
-              if (!itemTitle.value.trim()) return;
-              api('/api/events?do=agenda', {
-                method: 'POST',
-                body: { meetingId: meeting.id, title: itemTitle.value.trim(),
-                        minutes: Number(itemMins.value) || 0 },
-              }).then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
-                .catch(function (err) { fail(errText(err.code)); });
-            },
-          }),
-        ]));
+        ].filter(Boolean));
       }
 
-      [['joinUrl', 'mtgOpenJoin'], ['agendaUrl', 'mtgOpenAgenda'], ['minutesUrl', 'mtgOpenMinutes']]
-        .forEach(function (pair) {
-          if (!meeting[pair[0]]) return;
-          agendaPane.appendChild(h('a', {
-            class: 'chip dept', target: '_blank', rel: 'noopener',
-            href: meeting[pair[0]], text: t(pair[1]),
-          }));
+      function addBox(parentId) {
+        var itemTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
+        // No default: a made-up ten minutes against every item produces a
+        // total nobody chose. The button stays dead until a number is given.
+        var itemMins = h('input', { type: 'number', min: '1', max: '600', value: '',
+          placeholder: t('mtgMinutesAsk'), style: 'max-width:7rem' });
+        var addBtn = h('button', { class: 'btn', text: t('mtgAddItem'), disabled: true });
+        function check() {
+          addBtn.disabled = !itemTitle.value.trim() || !(Number(itemMins.value) > 0);
+        }
+        itemTitle.addEventListener('input', check);
+        itemMins.addEventListener('input', check);
+        addBtn.addEventListener('click', function () {
+          if (addBtn.disabled) return;
+          api('/api/events?do=agenda', {
+            method: 'POST',
+            body: { meetingId: meeting.id, title: itemTitle.value.trim(),
+                    minutes: Number(itemMins.value), parentId: parentId || null },
+          }).then(function () { veil.remove(); reloadMeetings(); })
+            .catch(function (err) { fail(errText(err.code)); });
         });
+        return h('div', { class: 'agenda-add' }, [itemTitle, itemMins, addBtn]);
+      }
+
+      meeting.agenda.forEach(function (item) {
+        agendaPane.appendChild(agendaRow(item));
+        var isHeading = item.depth === 0 && item.kind && item.kind !== 'item';
+        if (!item.hasChildren && isHeading) {
+          agendaPane.appendChild(h('div', { class: 'agenda-empty', text: t('mtgNoSub') }));
+        }
+        // The add box sits under the heading it will add to, so nobody has to
+        // be told which วาระ they are proposing into.
+        if (canPropose && isHeading) agendaPane.appendChild(addBox(item.id));
+      });
+
+      // A blank agenda has no headings, so items go straight on it.
+      if (canPropose && !headings.length) agendaPane.appendChild(addBox(null));
 
       bodyBox.appendChild(agendaPane);
-      // The editable details last, for whoever came to change them.
+      // The form is built either way, but stays out of the page until
+      // somebody who may change these details asks for it.
+      detailPane.hidden = true;
       bodyBox.appendChild(detailPane);
     }
 
-    if (mayEdit) {
-      footer.appendChild(h('button', {
-        class: 'btn primary', text: t('save'),
-        onclick: function () {
+    /**
+     * Editing is a deliberate act, and only for the people who run meetings.
+     *
+     * `mayEdit` comes from the server, which allows an admin, a co-admin, a
+     * secretary, or whoever called the meeting. Everybody else gets the same
+     * dialog without this button — and, since the form is never put into the
+     * page for them, without a row of greyed-out inputs suggesting they might
+     * be one click away from changing the committee's calendar.
+     */
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'), hidden: !isNew,
+      onclick: function () {
           if (!draft.title.trim()) { fail(t('mtgTitle')); return; }
           if (!draft.meetsOn) { fail(t('mtgDate')); return; }
           var body = {
@@ -5637,22 +5805,37 @@
           if (isNew) { body.template = 'blank'; body.agenda = draft.agenda; }
           else { body.id = meeting.id; body.minutesUrl = draft.minutesUrl; }
           api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
-            .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
-            .catch(function (err) { fail(errText(err.code)); });
-        },
-      }));
-      if (!isNew) {
-        footer.appendChild(h('button', {
-          class: 'btn danger', text: t('mtgDelete'),
-          onclick: function () {
-            if (!confirm(t('mtgDeleteSure'))) return;
-            api('/api/events?do=meeting&id=' + encodeURIComponent(meeting.id), { method: 'DELETE' })
-              .then(function () { veil.remove(); if (S.reloadMeetings) S.reloadMeetings(); })
-              .catch(function (err) { fail(errText(err.code)); });
-          },
-        }));
-      }
-    }
+            .then(function () { veil.remove(); reloadMeetings(); })
+          .catch(function (err) { fail(errText(err.code)); });
+      },
+    });
+
+    // Switches the dialog from reading to changing. Shown to nobody else.
+    var editBtn = h('button', {
+      class: 'btn', text: t('mtgEdit'), hidden: isNew || !mayEdit,
+      onclick: function () {
+        detailPane.hidden = false;
+        summaryPane.hidden = true;
+        editBtn.hidden = true;
+        saveBtn.hidden = false;
+        delBtn.hidden = false;
+        detailPane.scrollIntoView({ block: 'nearest' });
+      },
+    });
+
+    var delBtn = h('button', {
+      class: 'btn danger', text: t('mtgDelete'), hidden: true,
+      onclick: function () {
+        if (!confirm(t('mtgDeleteSure'))) return;
+        api('/api/events?do=meeting&id=' + encodeURIComponent(meeting.id), { method: 'DELETE' })
+          .then(function () { veil.remove(); reloadMeetings(); })
+          .catch(function (err) { fail(errText(err.code)); });
+      },
+    });
+
+    footer.appendChild(editBtn);
+    footer.appendChild(saveBtn);
+    footer.appendChild(delBtn);
     footer.appendChild(h('button', { class: 'btn', text: t('close'),
       onclick: function () { veil.remove(); } }));
 
@@ -6241,6 +6424,7 @@
       api('/api/tasks'),
       api('/api/notifications'),
       api('/api/events'),
+      api('/api/events?do=meetings').catch(function () { return { meetings: [] }; }),
     ]).then(function (res) {
       S.departments = res[0].departments;
       S.circles = res[0].circles || [];
@@ -6257,6 +6441,7 @@
       S.notifs = res[3].notifications;
       S.unread = res[3].unread;
       S.events = res[4].events;
+      S.meetings = (res[5] && res[5].meetings) || [];
       S.colours = res[4].colours;
       routeFromHash();
       renderShell();
