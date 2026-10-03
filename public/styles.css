@@ -1339,3 +1339,4 @@ input.code-input {
 .cal-chip.meeting { border-left-color: var(--accent); background: var(--accent-soft); }
 .dot.meeting { background: var(--accent); }
 .event-card.meeting { --c: var(--accent); border-left-color: var(--accent); }
+.agenda-add .add-why { color: var(--danger); flex-basis: 100%; }

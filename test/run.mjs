@@ -4312,5 +4312,79 @@ ok('...and the total is the sum of the two', flat.length.minutes === 20,
   JSON.stringify(flat.length));
 
 
+
+// ---- the agenda exactly as the page builds it ---------------------------
+/**
+ * Jade's bug: five headings on screen, nothing able to go under them, and an
+ * item typed into the box simply never appearing. The page was sending the
+ * five standing วาระ without the `kind` that marks a heading, so they were
+ * stored as ordinary lines — which is a different agenda from the one the
+ * person thought they were building.
+ */
+const asPageSends = [
+  { title: 'วาระที่ 1 วาระประธานแจ้งให้ที่ประชุมทราบ', kind: 'chair', minutes: 0, heading: true, under: null },
+  { title: 'วาระที่ 2 วาระเรื่องแจ้งเพื่อทราบ', kind: 'inform', minutes: 0, heading: true, under: null },
+  { title: 'วาระที่ 3 เรื่องสืบเนื่อง', kind: 'carried', minutes: 0, heading: true, under: null },
+  { title: 'วาระที่ 4 เรื่องเสนอเพื่อพิจารณา', kind: 'decide', minutes: 0, heading: true, under: null },
+  { title: 'วาระที่ 5 เรื่องอื่น ๆ', kind: 'other', minutes: 0, heading: true, under: null },
+  { title: 'คัดเลือกผู้สมัคร', minutes: 20, heading: false, under: 3 },
+];
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: { title: 'Recruit #2 Brief', meetsOn: '2026-11-18', meetsAt: '18:00',
+          agenda: asPageSends },
+});
+const pageId = r.data.id;
+ok('a meeting built the way the page builds it is accepted', r.status === 201,
+  JSON.stringify(r.data).slice(0, 80));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+let pageMtg = r.data.meetings.find((m) => m.id === pageId);
+ok('...its five วาระ really are headings, not ordinary lines',
+  pageMtg.agenda.filter((x) => x.depth === 0 && x.kind !== 'item').length === 5,
+  pageMtg.agenda.map((x) => x.number + ':' + x.kind).join(' '));
+ok('...and the item typed in alongside them lands under วาระที่ 4',
+  pageMtg.agenda.some((x) => x.number === '4.1' && x.title.includes('คัดเลือก')),
+  pageMtg.agenda.map((x) => x.number).join(' '));
+
+// And a further proposal can be filed under a heading, which is what failed.
+const decide = pageMtg.agenda.find((x) => x.number === '4');
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: pageId, title: 'ตารางสัมภาษณ์', minutes: 10, parentId: decide.id },
+});
+ok('...and a later proposal can still be filed under it', r.status === 201,
+  JSON.stringify(r.data));
+
+// ---- repairing the meetings already made that way -----------------------
+/**
+ * The same agenda in its broken state, to prove the migration puts it right
+ * rather than leaving Jade to rebuild every meeting by hand.
+ */
+await sql`
+  UPDATE meeting_agenda SET kind = 'item'
+  WHERE meeting_id = ${pageId} AND parent_id IS NULL`;
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+ok('broken first: nothing counts as a heading',
+  r.data.meetings.find((m) => m.id === pageId)
+    .agenda.filter((x) => x.depth === 0 && x.kind !== 'item').length === 0);
+
+await sql`
+  UPDATE meeting_agenda SET kind = CASE
+    WHEN title LIKE 'วาระที่ 1%' THEN 'chair'
+    WHEN title LIKE 'วาระที่ 2%' THEN 'inform'
+    WHEN title LIKE 'วาระที่ 3%' THEN 'carried'
+    WHEN title LIKE 'วาระที่ 4%' THEN 'decide'
+    WHEN title LIKE 'วาระที่ 5%' THEN 'other'
+    ELSE kind END
+  WHERE parent_id IS NULL AND kind = 'item' AND title LIKE 'วาระที่ %'`;
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+pageMtg = r.data.meetings.find((m) => m.id === pageId);
+ok('...and the repair restores all five without touching what was under them',
+  pageMtg.agenda.filter((x) => x.depth === 0 && x.kind !== 'item').length === 5 &&
+  pageMtg.agenda.some((x) => x.number === '4.1'),
+  pageMtg.agenda.map((x) => x.number).join(' '));
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

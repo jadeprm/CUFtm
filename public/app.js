@@ -5376,12 +5376,20 @@
    * The server holds the same list and is what a template actually produces;
    * this copy only decides what the page shows first.
    */
+  /**
+   * `kind` is what makes one of these a HEADING rather than an ordinary line.
+   *
+   * It was missing here, so every agenda built on this page was saved as five
+   * plain items: no sub-numbering, no add box under each วาระ, and anything
+   * proposed landed at the top level instead of under a heading. The server
+   * keeps the same five kinds and they have to match.
+   */
   var STANDARD_AGENDA = [
-    { title: 'วาระที่ 1 วาระประธานแจ้งให้ที่ประชุมทราบ' },
-    { title: 'วาระที่ 2 วาระเรื่องแจ้งเพื่อทราบ' },
-    { title: 'วาระที่ 3 เรื่องสืบเนื่อง' },
-    { title: 'วาระที่ 4 เรื่องเสนอเพื่อพิจารณา' },
-    { title: 'วาระที่ 5 เรื่องอื่น ๆ' },
+    { kind: 'chair', title: 'วาระที่ 1 วาระประธานแจ้งให้ที่ประชุมทราบ' },
+    { kind: 'inform', title: 'วาระที่ 2 วาระเรื่องแจ้งเพื่อทราบ' },
+    { kind: 'carried', title: 'วาระที่ 3 เรื่องสืบเนื่อง' },
+    { kind: 'decide', title: 'วาระที่ 4 เรื่องเสนอเพื่อพิจารณา' },
+    { kind: 'other', title: 'วาระที่ 5 เรื่องอื่น ๆ' },
   ];
 
   /** Where a start time plus a run of minutes lands, as a clock reading. */
@@ -5558,26 +5566,29 @@
           // Deliberately empty: the duration is the proposer's to state.
           var newMins = h('input', { type: 'number', min: '1', max: '600', value: '',
             placeholder: t('mtgMinutesAsk'), style: 'max-width:7rem' });
-          var addBtn = h('button', { class: 'btn', text: t('mtgAddItem'), disabled: true });
-          function check() {
-            addBtn.disabled = !newTitle.value.trim() || !(Number(newMins.value) > 0);
-          }
+          var addBtn = h('button', { class: 'btn', text: t('mtgAddItem') });
+          var why = h('span', { class: 'hint add-why', hidden: true });
           function add() {
-            if (addBtn.disabled) return;
+            why.hidden = true;
+            if (!newTitle.value.trim()) {
+              why.hidden = false; why.textContent = t('errItemTitleRequired');
+              newTitle.focus(); return;
+            }
+            if (!(Number(newMins.value) > 0)) {
+              why.hidden = false; why.textContent = t('errMinutesRequired');
+              newMins.focus(); return;
+            }
             draft.agenda.push({ title: newTitle.value.trim(),
               minutes: Number(newMins.value), under: headIndex, heading: false });
             drawDraftAgenda();
           }
-          newTitle.addEventListener('input', check);
-          newMins.addEventListener('input', check);
-          newTitle.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') { e.preventDefault(); add(); }
-          });
-          newMins.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') { e.preventDefault(); add(); }
+          [newTitle, newMins].forEach(function (el) {
+            el.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter') { e.preventDefault(); add(); }
+            });
           });
           addBtn.addEventListener('click', add);
-          return h('div', { class: 'agenda-add' }, [newTitle, newMins, addBtn]);
+          return h('div', { class: 'agenda-add' }, [newTitle, newMins, addBtn, why]);
         }
 
         function row(item, number, depth) {
@@ -5638,7 +5649,7 @@
             [...templateSeg.childNodes].forEach(function (n) { n.className = ''; });
             b.className = 'on';
             draft.agenda = pair[0] === 'standard' ? STANDARD_AGENDA.map(function (x) {
-              return { title: x.title, minutes: 0, heading: true, under: null };
+              return { title: x.title, kind: x.kind, minutes: 0, heading: true, under: null };
             }) : [];
             drawDraftAgenda();
           },
@@ -5651,7 +5662,7 @@
       ]));
       // Open on the standard agenda, which is the one that was chosen.
       draft.agenda = STANDARD_AGENDA.map(function (x) {
-        return { title: x.title, minutes: 0, heading: true, under: null };
+        return { title: x.title, kind: x.kind, minutes: 0, heading: true, under: null };
       });
       drawDraftAgenda();
     }
@@ -5743,22 +5754,42 @@
         // total nobody chose. The button stays dead until a number is given.
         var itemMins = h('input', { type: 'number', min: '1', max: '600', value: '',
           placeholder: t('mtgMinutesAsk'), style: 'max-width:7rem' });
-        var addBtn = h('button', { class: 'btn', text: t('mtgAddItem'), disabled: true });
-        function check() {
-          addBtn.disabled = !itemTitle.value.trim() || !(Number(itemMins.value) > 0);
-        }
-        itemTitle.addEventListener('input', check);
-        itemMins.addEventListener('input', check);
+        /**
+         * The button stays alive and SAYS what is missing.
+         *
+         * It used to disable itself until a duration was typed, which from
+         * the other side of the screen looks exactly like a broken page: you
+         * type an item, press the button, and nothing happens, with nothing
+         * on screen explaining why. A refusal that explains itself is the
+         * whole difference.
+         */
+        var addBtn = h('button', { class: 'btn', text: t('mtgAddItem') });
+        var why = h('span', { class: 'hint add-why', hidden: true });
         addBtn.addEventListener('click', function () {
-          if (addBtn.disabled) return;
+          why.hidden = true;
+          if (!itemTitle.value.trim()) {
+            why.hidden = false; why.textContent = t('errItemTitleRequired');
+            itemTitle.focus(); return;
+          }
+          if (!(Number(itemMins.value) > 0)) {
+            why.hidden = false; why.textContent = t('errMinutesRequired');
+            itemMins.focus(); return;
+          }
+          addBtn.disabled = true;
           api('/api/events?do=agenda', {
             method: 'POST',
             body: { meetingId: meeting.id, title: itemTitle.value.trim(),
                     minutes: Number(itemMins.value), parentId: parentId || null },
           }).then(function () { veil.remove(); reloadMeetings(); })
-            .catch(function (err) { fail(errText(err.code)); });
+            .catch(function (err) { addBtn.disabled = false; fail(errText(err.code)); });
         });
-        return h('div', { class: 'agenda-add' }, [itemTitle, itemMins, addBtn]);
+        // Enter is how anybody types a list, so it has to work here too.
+        [itemTitle, itemMins].forEach(function (el) {
+          el.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); addBtn.click(); }
+          });
+        });
+        return h('div', { class: 'agenda-add' }, [itemTitle, itemMins, addBtn, why]);
       }
 
       meeting.agenda.forEach(function (item) {
