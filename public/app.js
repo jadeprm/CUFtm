@@ -5522,6 +5522,22 @@
       line(t('mtgAgendaUrl'), meeting.agendaUrl ? t('mtgOpenAgenda') : '', meeting.agendaUrl);
       line(t('mtgMinutesUrl'), meeting.minutesUrl ? t('mtgOpenMinutes') : '', meeting.minutesUrl);
       if (meeting.note) line(t('mtgTitle'), meeting.note);
+
+      /**
+       * Into somebody's own Google Calendar, in one click.
+       *
+       * The subscribed feed covers people who have set it up; most people
+       * have not, and a meeting they cannot get into their own calendar is a
+       * meeting they will miss. The link carries the joining address and the
+       * agenda, not just a title and a time.
+       */
+      if (meeting.googleUrl) {
+        summaryPane.appendChild(h('div', { class: 'sum-row' }, [
+          h('span', { class: 'sum-label', text: t('mtgAddToCalendar') }),
+          h('a', { class: 'chip dept', target: '_blank', rel: 'noopener',
+            href: meeting.googleUrl, text: t('mtgGoogleCalendar') }),
+        ]));
+      }
     }
     if (!isNew) { drawSummary(); bodyBox.appendChild(summaryPane); }
 

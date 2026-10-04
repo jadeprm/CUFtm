@@ -2,6 +2,9 @@ import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js'
 import { withNode } from '../lib/http.js';
 import { buildIcs } from '../lib/ics.js';
 import { assembledEvents, canSeeEvent } from './events.js';
+import { assembleMeetings } from '../lib/meetingstore.js';
+import { canSeeMeeting } from '../lib/meeting.js';
+import { isSecretary } from '../lib/approval.js';
 import { accessSet } from '../lib/scope.js';
 
 /**
@@ -114,6 +117,21 @@ async function handler(request) {
     ? (await assembledEvents(sql)).filter((e) => canSeeEvent(owner, e))
     : [];
 
+  /**
+   * Meetings ride with the same feeds as events.
+   *
+   * They were missing altogether, so somebody could subscribe the committee's
+   * calendar into Google and still have no sign of the meeting they were
+   * expected at. 'mine' carries only the ones this person was actually
+   * invited to — a calendar full of other people's meetings is noise.
+   */
+  const meetings = ['events', 'mine', 'all'].includes(scope)
+    ? (await assembleMeetings(sql, everyone))
+      .filter((m) => canSeeMeeting(owner, m, m.people, { isSecretary: isSecretary(owner) }))
+      .filter((m) => scope !== 'mine' ||
+        (m.people || []).some((p) => p.username === owner.username))
+    : [];
+
   const who = owner.display_name || owner.sheet_name || owner.username;
   const NAMES = {
     mine: `จุฬาฯแฟร์ · งานของ ${who}`,
@@ -122,7 +140,7 @@ async function handler(request) {
     all: 'จุฬาฯแฟร์ · ทั้งหมด',
   };
 
-  return new Response(buildIcs(tasks, NAMES[scope], nameOf, events), {
+  return new Response(buildIcs(tasks, NAMES[scope], nameOf, events, meetings), {
     status: 200,
     headers: {
       'content-type': 'text/calendar; charset=utf-8',

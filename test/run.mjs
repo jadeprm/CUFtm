@@ -4386,5 +4386,73 @@ ok('...and the repair restores all five without touching what was under them',
   pageMtg.agenda.map((x) => x.number).join(' '));
 
 
+
+// ---- meetings reach Google Calendar -------------------------------------
+/**
+ * The gap Jade found: a meeting had no way into anybody's Google Calendar.
+ * The subscribed feed carried tasks and events only, so somebody could set
+ * the whole thing up and still have no sign of the meeting they were expected
+ * at. Two routes now exist — the feed, and a one-click link for the majority
+ * who never subscribe anything.
+ */
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: {
+    title: 'ประชุมทดสอบปฏิทิน', meetsOn: '2026-11-30', meetsAt: '17:00',
+    joinUrl: 'https://chula.zoom.us/j/999', place: 'ออนไลน์',
+    people: ['Kungking_HeadCon'], template: 'standard',
+  },
+});
+const calMtgId = r.data.id;
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+let calMtg = r.data.meetings.find((m) => m.id === calMtgId);
+const headFour = calMtg.agenda.find((x) => x.number === '4');
+await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: calMtgId, title: 'เรื่องที่ต้องตัดสิน', minutes: 45, parentId: headFour.id },
+});
+
+const feedNow = await feed('mine');
+ok('a meeting the person is invited to reaches the subscribed feed',
+  feedNow.body.includes('ประชุมทดสอบปฏิทิน'),
+  (feedNow.body.match(/SUMMARY:[^\r\n]*/g) || []).slice(-3).join(' | '));
+ok('...marked as a meeting rather than a deadline',
+  /CATEGORIES:Meeting/.test(feedNow.body));
+ok('...carrying the joining link, which Google turns into a button',
+  /URL:https:\/\/chula\.zoom\.us/.test(feedNow.body));
+
+/**
+ * The end time comes from the agenda: 17:00 plus forty-five minutes. A
+ * meeting that blocked a default hour would be wrong on the calendar of
+ * everybody invited.
+ */
+const block = feedNow.body.split('BEGIN:VEVENT')
+  .find((x) => x.includes('ประชุมทดสอบปฏิทิน'));
+ok('...and ending when the agenda says, not an invented hour later',
+  /DTEND:20261130T104500Z/.test(block),
+  (block.match(/DT(START|END):[^\r\n]*/g) || []).join(' '));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+calMtg = r.data.meetings.find((m) => m.id === calMtgId);
+ok('every meeting also carries a one-click Google Calendar link',
+  /^https:\/\/calendar\.google\.com\/calendar\/render\?/.test(calMtg.googleUrl || ''),
+  String(calMtg.googleUrl || '').slice(0, 60));
+const gcal = new URL(calMtg.googleUrl);
+ok('...with the right window and Bangkok as the timezone',
+  gcal.searchParams.get('dates') === '20261130T100000Z/20261130T104500Z' &&
+  gcal.searchParams.get('ctz') === 'Asia/Bangkok',
+  gcal.searchParams.get('dates'));
+ok('...and the agenda in the body, so it is useful two minutes beforehand',
+  (gcal.searchParams.get('details') || '').includes('เรื่องที่ต้องตัดสิน'),
+  (gcal.searchParams.get('details') || '').slice(0, 70));
+
+// Somebody not invited does not get it in their personal feed.
+await sql`DELETE FROM meeting_people WHERE meeting_id = ${calMtgId}
+          AND username = 'Kungking_HeadCon'`;
+const feedAfter = await feed('mine');
+ok('a meeting somebody was not invited to stays out of their own feed',
+  !feedAfter.body.includes('ประชุมทดสอบปฏิทิน'));
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
