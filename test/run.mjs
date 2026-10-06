@@ -4454,5 +4454,80 @@ ok('a meeting somebody was not invited to stays out of their own feed',
   !feedAfter.body.includes('ประชุมทดสอบปฏิทิน'));
 
 
+
+// ---- guests from outside the committee ----------------------------------
+/**
+ * An อาจารย์ที่ปรึกษา or a supplier has no account here and never will, so an
+ * invitation to them can only go out through Google. The committee's side of
+ * that is holding the address and putting it on the link.
+ */
+const { readEmail, readGuests } = await import('../lib/meeting.js');
+ok('an address with no dot in the domain is refused', readEmail('a@b') === null);
+ok('...and one typed as a name is refused', readEmail('Ajarn Somchai') === null);
+ok('...while a real one is kept, lower-cased', readEmail('  Ajarn@Chula.AC.TH ') === 'ajarn@chula.ac.th');
+ok('a pasted line is understood however it was copied',
+  JSON.stringify(readGuests('a@x.ac.th; Jane Doe <jane@y.com>\noops\nb@z.co.th, b@z.co.th')) ===
+  JSON.stringify({ emails: ['a@x.ac.th', 'jane@y.com', 'b@z.co.th'], rejected: ['oops'] }),
+  JSON.stringify(readGuests('a@x.ac.th; Jane Doe <jane@y.com>\noops\nb@z.co.th, b@z.co.th')));
+
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: {
+    title: 'ประชุมกับที่ปรึกษาภายนอก', meetsOn: '2026-12-11', meetsAt: '14:00',
+    joinUrl: 'https://chula.zoom.us/j/777',
+    // The feed checked below belongs to this person, so they have to be on it
+    // — a meeting they were not invited to is rightly absent from their feed.
+    people: ['Kungking_HeadCon'],
+    guests: 'ajarn@chula.ac.th, supplier@example.co.th, ไม่ใช่อีเมล',
+  },
+});
+const guestMtgId = r.data.id;
+ok('a meeting can be created with outside guests', r.status === 201, JSON.stringify(r.data));
+ok('...and the address it could not read is named, not silently dropped',
+  (r.data.guestsRejected || []).length === 1, JSON.stringify(r.data.guestsRejected));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+let guestMtg = r.data.meetings.find((m) => m.id === guestMtgId);
+ok('...the two good ones are kept', guestMtg.guests.length === 2,
+  guestMtg.guests.map((g) => g.email).join(', '));
+
+/**
+ * The link is what actually invites them: Google mails the invitation when
+ * the organiser saves the event. Nothing in this application sends it.
+ */
+const gu = new URL(guestMtg.googleUrl);
+ok('the Google link carries them as guests',
+  gu.searchParams.get('add') === 'ajarn@chula.ac.th,supplier@example.co.th',
+  gu.searchParams.get('add'));
+
+const gFeed = await calApi(makeRequest(`/api/calendar?token=${feedToken}&scope=all`));
+// ICS folds long lines at 75 octets and continues them with a leading space,
+// so a Thai title is split across lines and matches nothing until unfolded.
+const gBody = (await gFeed.text()).replace(/\r\n /g, '');
+const gBlock = gBody.split('BEGIN:VEVENT').find((x) => x.includes('ที่ปรึกษาภายนอก'));
+ok('...and the feed names them on the event itself',
+  Boolean(gBlock) && /ATTENDEE[^\r\n]*mailto:ajarn@chula\.ac\.th/.test(gBlock),
+  gBlock ? (gBlock.match(/ATTENDEE[^\r\n]*/g) || []).join(' | ').slice(0, 90) : 'event not in feed');
+
+// Editing the list removes the one taken out and keeps the one left in.
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin',
+  body: { id: guestMtgId, guests: 'ajarn@chula.ac.th' },
+});
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+guestMtg = r.data.meetings.find((m) => m.id === guestMtgId);
+ok('taking a guest off the list removes only that one',
+  guestMtg.guests.length === 1 && guestMtg.guests[0].email === 'ajarn@chula.ac.th',
+  guestMtg.guests.map((g) => g.email).join(', '));
+
+// Somebody who cannot edit the meeting cannot add guests to it.
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'member',
+  body: { id: guestMtgId, guests: 'gatecrasher@example.com' },
+});
+ok('somebody who may not edit the meeting cannot add a guest',
+  r.status === 403, JSON.stringify(r.data));
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

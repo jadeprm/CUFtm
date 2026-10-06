@@ -2374,25 +2374,47 @@
       var replies = task.replies || [];
       var mine = replies.filter(function (x) { return x.username === S.user.username; })[0];
 
+      /**
+       * Once you have answered, the question stops being asked.
+       *
+       * Leaving both buttons sitting there afterwards reads as though nothing
+       * was recorded — so an answer is shown as an answer, and changing it is
+       * a deliberate second act rather than something a stray tap can do.
+       */
       if (mine) {
-        replyBox.appendChild(h('span', { class: 'hint', text: t('rsvpAsk') }));
-        [['accepted', 'rsvpAccept'], ['declined', 'rsvpDecline']].forEach(function (pair) {
+        var answered = mine.reply === 'accepted' || mine.reply === 'declined';
+
+        function askButtons() {
+          [['accepted', 'rsvpAccept'], ['declined', 'rsvpDecline']].forEach(function (pair) {
+            replyBox.appendChild(h('button', {
+              type: 'button',
+              class: 'btn sm rsvp-' + pair[0] + (mine.reply === pair[0] ? ' on' : ''),
+              text: t(pair[1]),
+              onclick: function () {
+                api('/api/events?do=reply', {
+                  method: 'POST',
+                  body: { kind: 'task', id: task.id, reply: pair[0] },
+                }).then(function () {
+                  mine.reply = pair[0];
+                  drawReplies();
+                  api('/api/tasks').then(function (d) { S.tasks = d.tasks; });
+                }).catch(function (err) { alert(errText(err.code)); });
+              },
+            }));
+          });
+        }
+
+        if (answered && !S.rsvpOpen) {
+          replyBox.appendChild(h('span', { class: 'chip ' + replyClass(mine.reply),
+            text: mine.reply === 'accepted' ? t('rsvpYouAccepted') : t('rsvpYouDeclined') }));
           replyBox.appendChild(h('button', {
-            type: 'button',
-            class: 'btn sm rsvp-' + pair[0] + (mine.reply === pair[0] ? ' on' : ''),
-            text: t(pair[1]),
-            onclick: function () {
-              api('/api/events?do=reply', {
-                method: 'POST',
-                body: { kind: 'task', id: task.id, reply: pair[0] },
-              }).then(function () {
-                mine.reply = pair[0];
-                drawReplies();
-                api('/api/tasks').then(function (d) { S.tasks = d.tasks; });
-              }).catch(function (err) { alert(errText(err.code)); });
-            },
+            type: 'button', class: 'btn sm', text: t('rsvpChange'),
+            onclick: function () { S.rsvpOpen = true; drawReplies(); },
           }));
-        });
+        } else {
+          replyBox.appendChild(h('span', { class: 'hint', text: t('rsvpAsk') }));
+          askButtons();
+        }
       }
 
       // The tally, so the person who set it up can see who is missing.
@@ -5416,6 +5438,19 @@
    * of the work page and on the calendar — so saving one has to refresh the
    * page the person is actually looking at.
    */
+  /**
+   * Refreshes the meetings without redrawing the page underneath.
+   *
+   * renderPage() rebuilds the work page, which is fine when the dialog is
+   * closing and wrong when it is staying open — the dialog would be left
+   * floating over a page that had been torn down and rebuilt beneath it.
+   */
+  function reloadMeetingsQuietly() {
+    return api('/api/events?do=meetings').then(function (d) {
+      S.meetings = d.meetings || [];
+    }).catch(function () {});
+  }
+
   function reloadMeetings() {
     return api('/api/events?do=meetings').then(function (d) {
       S.meetings = d.meetings || [];
@@ -5441,6 +5476,8 @@
       minutesUrl: meeting ? meeting.minutesUrl : '',
       assignees: meeting ? meeting.people.map(function (p) { return p.username; }) : [S.user.username],
       departments: [],
+      // People with no account here, invited by email through Google.
+      guests: meeting ? meeting.guests.map(function (g) { return g.email; }).join(', ') : '',
       template: 'standard',
     };
     var mayEdit = isNew || meeting.mayEdit;
@@ -5473,6 +5510,17 @@
     var peopleBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
     if (mayEdit) buildPeoplePicker(peopleBox, draft);
 
+    /**
+     * Guests from outside the committee.
+     *
+     * A plain box rather than another picker: these people have no account to
+     * pick from, and the address usually arrives pasted out of an email.
+     */
+    var guestsIn = h('textarea', { rows: '2', disabled: !mayEdit,
+      placeholder: 'ajarn@chula.ac.th, supplier@example.co.th' });
+    guestsIn.value = draft.guests;
+    guestsIn.addEventListener('input', function () { draft.guests = guestsIn.value; });
+
     bodyBox.appendChild(notice);
 
     /**
@@ -5491,6 +5539,11 @@
       field(t('mtgAgendaUrl'), input('agendaUrl', 'url')),
       isNew ? null : field(t('mtgMinutesUrl'), input('minutesUrl', 'url')),
       field(t('mtgWho'), peopleBox),
+      h('div', { class: 'field' }, [
+        h('label', { text: t('mtgGuests') }),
+        guestsIn,
+        h('p', { class: 'hint', text: t('mtgGuestsHow') }),
+      ]),
     ].filter(Boolean));
     if (isNew) bodyBox.appendChild(detailPane);
 
@@ -5531,6 +5584,20 @@
        * meeting they will miss. The link carries the joining address and the
        * agenda, not just a title and a time.
        */
+      if ((meeting.guests || []).length) {
+        summaryPane.appendChild(h('div', { class: 'sum-row' }, [
+          h('span', { class: 'sum-label', text: t('mtgGuests') }),
+          h('span', {}, [
+            h('span', { class: 'mtg-people' }, meeting.guests.map(function (g) {
+              return h('span', { class: 'chip dept', text: g.email });
+            })),
+            // Said plainly, because it is the one thing about this that
+            // surprises people: nothing here emails them.
+            h('p', { class: 'hint', text: t('mtgGuestsSend') }),
+          ]),
+        ]));
+      }
+
       if (meeting.googleUrl) {
         summaryPane.appendChild(h('div', { class: 'sum-row' }, [
           h('span', { class: 'sum-label', text: t('mtgAddToCalendar') }),
@@ -5688,22 +5755,61 @@
       var whoPane = h('div', { class: 'pane' });
       var mine = meeting.people.filter(function (p) { return p.username === S.user.username; })[0];
 
+      /**
+       * Your answer, and only then the means to change it.
+       *
+       * Both buttons left standing after you had answered made it look as
+       * though the click had not registered. Now the answer is stated, and
+       * เปลี่ยนคำตอบ brings the buttons back — one deliberate step, so a stray
+       * tap on a phone cannot quietly turn a yes into a no.
+       */
       if (mine) {
         var rsvp = h('div', { class: 'rsvp' });
         var closed = meeting.status !== 'planned';
-        [['accepted', 'rsvpGoing'], ['declined', 'rsvpNotGoing']].forEach(function (pair) {
-          rsvp.appendChild(h('button', {
-            type: 'button', disabled: closed,
-            class: 'btn sm rsvp-' + pair[0] + (mine.reply === pair[0] ? ' on' : ''),
-            text: t(pair[1]),
-            onclick: function () {
-              api('/api/events?do=reply', {
-                method: 'POST', body: { kind: 'meeting', id: meeting.id, reply: pair[0] },
-              }).then(function () { veil.remove(); reloadMeetings(); })
-                .catch(function (err) { fail(errText(err.code)); });
-            },
-          }));
-        });
+        var answeredMtg = mine.reply === 'accepted' || mine.reply === 'declined';
+        var changing = false;
+
+        function paintRsvp() {
+          clear(rsvp);
+          if (answeredMtg && !changing) {
+            rsvp.appendChild(h('span', { class: 'chip ' + replyClass(mine.reply),
+              text: mine.reply === 'accepted' ? t('rsvpYouGoing') : t('rsvpYouNotGoing') }));
+            // Once the meeting has begun the answer is whatever it was, so
+            // there is nothing to offer beyond saying what it is.
+            if (!closed) {
+              rsvp.appendChild(h('button', {
+                type: 'button', class: 'btn sm', text: t('rsvpChange'),
+                onclick: function () { changing = true; paintRsvp(); },
+              }));
+            } else {
+              rsvp.appendChild(h('span', { class: 'hint', text: t('rsvpClosed') }));
+            }
+            return;
+          }
+
+          [['accepted', 'rsvpGoing'], ['declined', 'rsvpNotGoing']].forEach(function (pair) {
+            rsvp.appendChild(h('button', {
+              type: 'button', disabled: closed,
+              class: 'btn sm rsvp-' + pair[0] + (mine.reply === pair[0] ? ' on' : ''),
+              text: t(pair[1]),
+              onclick: function () {
+                api('/api/events?do=reply', {
+                  method: 'POST', body: { kind: 'meeting', id: meeting.id, reply: pair[0] },
+                }).then(function () {
+                  // Answered in place rather than closing the whole dialog —
+                  // saying you are coming is no reason to be thrown out of
+                  // the agenda you were reading.
+                  mine.reply = pair[0];
+                  answeredMtg = true;
+                  changing = false;
+                  paintRsvp();
+                  reloadMeetingsQuietly();
+                }).catch(function (err) { fail(errText(err.code)); });
+              },
+            }));
+          });
+        }
+        paintRsvp();
         whoPane.appendChild(rsvp);
       }
 
@@ -5848,12 +5954,20 @@
             meetsAt: draft.meetsAt || null, place: draft.place,
             joinUrl: draft.joinUrl, agendaUrl: draft.agendaUrl,
             people: draft.assignees,
+            guests: draft.guests,
           };
           if (isNew) { body.template = 'blank'; body.agenda = draft.agenda; }
           else { body.id = meeting.id; body.minutesUrl = draft.minutesUrl; }
           api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
-            .then(function () { veil.remove(); reloadMeetings(); })
-          .catch(function (err) { fail(errText(err.code)); });
+            .then(function (d) {
+              // An address that could not be read is named rather than
+              // silently dropped — the meeting saves either way.
+              if (d && (d.guestsRejected || []).length) {
+                alert(t('mtgGuestsBad').replace('%s', d.guestsRejected.join(', ')));
+              }
+              veil.remove(); reloadMeetings();
+            })
+            .catch(function (err) { fail(errText(err.code)); });
       },
     });
 
