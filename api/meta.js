@@ -66,6 +66,15 @@ async function handler(request) {
   return json({
     hasDatabase,
     /**
+     * Whether the committee has opened the system yet.
+     *
+     * Read from the environment rather than the database so it can be switched
+     * on the evening before launch without a deployment, and so the holding
+     * page costs nothing to serve when it is off.
+     */
+    comingSoon: process.env.COMING_SOON === '1',
+    opensAt: process.env.LAUNCH_AT || null,
+    /**
      * The circles, as definitions only.
      *
      * Who is in one is worked out from the roster the page already has, so

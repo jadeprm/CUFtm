@@ -4529,5 +4529,49 @@ ok('somebody who may not edit the meeting cannot add a guest',
   r.status === 403, JSON.stringify(r.data));
 
 
+
+// ---- an event three days away must not kill the whole run ---------------
+/**
+ * A real crash, found when the clock reached a date where the dev data had an
+ * event exactly three days out. The code that picks a reminder window could
+ * return '3d', but the table of wordings had no '3d' in it — so the lookup
+ * threw inside the loop every reminder shares, and ONE event took down every
+ * notification for that hour, for everybody, with no sign but a failed cron.
+ */
+/**
+ * Three days from BANGKOK's today, not from UTC's.
+ *
+ * The cron works in Asia/Bangkok, so for seven hours of every UTC day the two
+ * disagree about what day it is — and an event placed with UTC arithmetic
+ * lands two days out instead of three, matching no reminder window at all.
+ */
+const [{ bkk3 }] = await sql`
+  SELECT to_char((now() AT TIME ZONE 'Asia/Bangkok')::date + 3, 'YYYY-MM-DD') AS bkk3`;
+const threeDaysOut = bkk3;
+r = await call(eventsApi, '/api/events', {
+  method: 'POST', as: 'admin',
+  body: { title: 'กิจกรรมอีกสามวัน', startsOn: threeDaysOut, allDay: true,
+          notify: ['7d', '3d', '24h', 'due'], people: ['Kungking_HeadCon'] },
+});
+ok('an event three days away can be created', r.status === 201,
+  JSON.stringify(r.data).slice(0, 80));
+
+r = await call(cronApi, '/api/cron');
+ok('...and the hourly run survives it', r.status === 200,
+  JSON.stringify(r.data).slice(0, 120));
+
+const threeDay = await sql`
+  SELECT body FROM notifications
+  WHERE kind = 'event' AND title = 'กิจกรรมอีกสามวัน' LIMIT 1`;
+ok('...and the person is actually told, in words',
+  threeDay.length === 1 && /อีก 3 วัน/.test(threeDay[0].body),
+  threeDay.length ? threeDay[0].body : 'nothing sent');
+
+// Tasks due in the same run are still reminded about, which is what the crash
+// was really costing.
+r = await call(cronApi, '/api/cron');
+ok('...and a second run still completes', r.status === 200);
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

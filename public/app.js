@@ -463,7 +463,61 @@
     box.hidden = !message;
   }
 
+  /** Takes the splash down. Safe to call more than once. */
+  function bootDone() {
+    if (typeof window.__bootDone === 'function') window.__bootDone();
+  }
+
+  /**
+   * The holding page.
+   *
+   * Says what the system is, who it is for, and when it opens — and still
+   * offers a way in, because a committee member who arrives early should not
+   * be locked out of their own system by a poster page.
+   */
+  function renderComingSoon() {
+    $('soon-view').hidden = false;
+    $('auth-view').hidden = true;
+    $('app-view').hidden = true;
+    document.documentElement.lang = S.lang;
+
+    document.querySelectorAll('#soon-view [data-t]').forEach(function (n) {
+      n.textContent = t(n.dataset.t);
+    });
+
+    var when = $('soon-when');
+    if (S.opensAt) {
+      when.hidden = false;
+      when.textContent = t('soonOpens').replace('%s', S.opensAt);
+    } else {
+      when.hidden = true;
+    }
+
+    $('soon-signin').onclick = function () {
+      // Not a reload: the sign-in is already in the page, it was only hidden.
+      $('soon-view').hidden = true;
+      $('auth-view').hidden = false;
+      try {
+        history.replaceState(null, '', location.pathname + '?enter=1' + location.hash);
+      } catch (e) {}
+      var box = $('in-username');
+      if (box) box.focus();
+    };
+  }
+
   function renderAuth() {
+    bootDone();
+    /**
+     * Before the committee opens the system, strangers get the holding page
+     * rather than a sign-in box they have no account for. Anyone who already
+     * has a session never comes through here, and ?enter=1 is the way past it
+     * for the people building the thing.
+     */
+    if (S.comingSoon && !/[?&]enter=1/.test(location.search)) {
+      renderComingSoon();
+      return;
+    }
+    $('soon-view').hidden = true;
     $('auth-view').hidden = false;
     $('app-view').hidden = true;
     document.documentElement.lang = S.lang;
@@ -581,6 +635,8 @@
   });
 
   function renderShell() {
+    bootDone();
+    $('soon-view').hidden = true;
     $('auth-view').hidden = true;
     $('app-view').hidden = false;
     $('brand-name').textContent = t('appName');
@@ -6625,7 +6681,23 @@
   // Read the theme before the first paint so the page never flashes the wrong one.
   try { applyTheme(localStorage.getItem('fair-theme') || 'system'); } catch (e) { applyTheme('system'); }
 
-  api('/api/auth').then(function (data) {
+  /**
+   * Who is this, and is the system open yet.
+   *
+   * Asked together because the answer to the second only matters to somebody
+   * with no session, and waiting for it in series would add a round trip to
+   * every cold start. If the flag cannot be fetched the sign-in is shown — a
+   * holding page that appears because a request failed would lock the
+   * committee out of their own system.
+   */
+  Promise.all([
+    api('/api/auth'),
+    api('/api/meta').catch(function () { return {}; }),
+  ]).then(function (res) {
+    var data = res[0];
+    S.comingSoon = Boolean(res[1] && res[1].comingSoon);
+    S.opensAt = (res[1] && res[1].opensAt) || null;
+
     if (data.user) {
       S.user = data.user;
       S.lang = data.user.lang || S.lang;
@@ -6638,6 +6710,16 @@
     if (err.code === 'NO_DATABASE') showAuthNotice(t('noDatabase'), 'warn');
     else if (err.code === 'SHEET_UNREADABLE') showAuthNotice((err.data && err.data.message) || t('errGeneric'), 'warn');
   });
+
+  /**
+   * A last resort for the splash.
+   *
+   * Everything above takes it down on success and on failure, but a thrown
+   * error somewhere unexpected would leave it covering the page forever. After
+   * twenty seconds it comes down regardless, so the worst case is a visible
+   * sign-in box rather than a screen nobody can get past.
+   */
+  setTimeout(bootDone, 20000);
 
   // Someone else may have changed things while this tab sat idle.
   document.addEventListener('visibilitychange', function () {

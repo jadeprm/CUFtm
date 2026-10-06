@@ -69,8 +69,18 @@ const MESSAGES = {
 };
 
 /** An event is not due — it happens. The wording follows. */
+/**
+ * Every reminder window an event can be in.
+ *
+ * '3d' was missing while the code that picks a window could produce it, so an
+ * event exactly three days away threw a TypeError — and because that happened
+ * inside the one loop the whole hourly run shares, it took every other
+ * reminder down with it. Nobody got anything that hour, for any task, and the
+ * only sign was a failed cron nobody was watching.
+ */
 const EVENT_MESSAGES = {
   '7d': { th: 'อีก 7 วัน', en: 'In 7 days' },
+  '3d': { th: 'อีก 3 วัน', en: 'In 3 days' },
   '24h': { th: 'พรุ่งนี้', en: 'Tomorrow' },
   due: { th: 'วันนี้', en: 'Today' },
 };
@@ -214,6 +224,9 @@ async function handler(request) {
     else if (days === 0) kind = 'due';
     // An event that has happened is not late, it is over — no overdue notice.
     if (!kind || !event.notify.includes(kind)) continue;
+    // Belt as well as braces: a window with no wording is skipped rather than
+    // allowed to take the rest of the run down with it.
+    if (!EVENT_MESSAGES[kind]) continue;
 
     // A timed event on the day itself waits for a civilised hour rather than
     // waking people at 1am about something at 6pm.

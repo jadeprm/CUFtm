@@ -677,6 +677,14 @@ window.STRINGS = {
     errNoRecipients: 'ยังไม่ได้เลือกผู้รับ',
     errBadDepartment: 'ไม่รู้จักฝ่ายนี้',
     noDatabase: 'ยังไม่ได้เชื่อมต่อฐานข้อมูล',
+    soonTitle: 'งานจุฬาฯแฟร์ · ระบบติดตามงาน',
+    soonLead: 'ระบบติดตามงาน การประชุม และเอกสารของคณะกรรมการงานจุฬาฯแฟร์',
+    soonOpens: 'เปิดใช้งาน %s',
+    soonPoint1: 'งานที่ได้รับมอบหมาย รู้ว่าใครทำอะไร ภายในเมื่อไร',
+    soonPoint2: 'กิจกรรมและการประชุม อยู่บนปฏิทินเดียวกัน',
+    soonPoint3: 'เอกสารที่ต้องลงนาม ส่งต่อตามลำดับโดยอัตโนมัติ',
+    soonWho: 'สำหรับคณะกรรมการและทีมงานจุฬาฯแฟร์เท่านั้น',
+    soonSignIn: 'เป็นทีมงานอยู่แล้ว เข้าสู่ระบบ',
   },
 
   en: {
@@ -1335,6 +1343,14 @@ window.STRINGS = {
     errNoRecipients: 'Nobody is selected to receive this.',
     errBadDepartment: 'That is not a department I know.',
     noDatabase: 'No database connected yet.',
+    soonTitle: 'Chula Fair · Task Tracker',
+    soonLead: 'Tasks, meetings and documents for the Chula Fair committee',
+    soonOpens: 'Opens %s',
+    soonPoint1: 'Work you have been given, with who owns it and when it is due',
+    soonPoint2: 'Events and meetings on one calendar',
+    soonPoint3: 'Documents that climb the approval chain on their own',
+    soonWho: 'For the Chula Fair committee and its staff only',
+    soonSignIn: 'Already on the team? Sign in',
   },
 };
 

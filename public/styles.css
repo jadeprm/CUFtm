@@ -1340,3 +1340,47 @@ input.code-input {
 .dot.meeting { background: var(--accent); }
 .event-card.meeting { --c: var(--accent); border-left-color: var(--accent); }
 .agenda-add .add-why { color: var(--danger); flex-basis: 100%; }
+
+/* ---- the holding page, before the system opens ------------------------- */
+
+.soon-wrap {
+  min-height: 100dvh; display: grid; place-items: center;
+  padding: 32px 20px; background: var(--surface-2);
+}
+.soon {
+  max-width: 34rem; text-align: center; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 18px;
+  padding: 36px 28px; box-shadow: var(--shadow-2);
+}
+.soon-mark { border-radius: 20px; }
+.soon h1 { font-size: 1.45rem; margin: 14px 0 6px; }
+.soon-lead { color: var(--ink-soft); margin: 0 0 18px; line-height: 1.65; }
+.soon-when {
+  display: inline-block; margin: 0 0 18px; padding: 6px 14px;
+  border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-weight: 600;
+}
+.soon-list {
+  list-style: none; margin: 0 0 20px; padding: 0;
+  text-align: start; display: flex; flex-direction: column; gap: 10px;
+}
+.soon-list li {
+  padding-inline-start: 1.6rem; position: relative;
+  color: var(--ink-soft); line-height: 1.6;
+}
+.soon-list li::before {
+  content: '·'; position: absolute; inset-inline-start: .5rem;
+  color: var(--accent); font-weight: 700;
+}
+.soon-who { color: var(--ink-faint); font-size: .9rem; margin: 0 0 14px; }
+
+@media (max-width: 480px) {
+  .soon { padding: 28px 20px; }
+  .soon h1 { font-size: 1.25rem; }
+}
+.soon #soon-signin {
+  font: inherit; font-size: .95rem; font-weight: 500;
+  padding: 10px 20px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--accent);
+}
+.soon #soon-signin:hover { border-color: var(--accent); background: var(--accent-soft); }
