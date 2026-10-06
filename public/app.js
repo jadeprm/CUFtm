@@ -5122,6 +5122,29 @@
             : '  ·  ' + t('healthPdfGrowing')),
       }));
 
+      /**
+       * Meeting papers, counted separately from documents.
+       *
+       * Different cause, so a different line: a document in the database is
+       * mid-signature and leaves by itself, whereas an attachment is here only
+       * because Drive was off or refused it when somebody uploaded it, and
+       * nothing comes back later to move it. Shown only once there is something
+       * to say, so the page does not grow a row of zeros.
+       */
+      if ((d.papersHere || 0) + (d.papersInDrive || 0) + (d.paperLinks || 0) > 0) {
+        var pmb = (d.paperBytes || 0) / 1048576;
+        var psize = pmb >= 1 ? pmb.toFixed(1) + ' MB'
+          : Math.round((d.paperBytes || 0) / 1024) + ' KB';
+        lines.push(h('div', {
+          style: (d.papersHere ? 'color:var(--danger)' : 'color:var(--ink-faint)'),
+          text: t('healthPapers')
+            .replace('%d', String(d.papersInDrive || 0))
+            .replace('%l', String(d.paperLinks || 0))
+            .replace('%h', String(d.papersHere || 0))
+            .replace('%s', psize),
+        }));
+      }
+
       // The most common answer, and the least obvious one: nothing is due.
       if (d.remindingToday) {
         lines.push(h('div', { text: t('healthRemindToday') + ': ' + d.remindingToday }));
@@ -5586,11 +5609,26 @@
      * the agenda — not seven form fields they have to scroll past. The details
      * are still there, underneath, for the organiser who came to change them.
      */
+    /**
+     * What the meeting is about, in somebody's own words.
+     *
+     * The column has existed since meetings were added and nothing ever wrote
+     * to it: there was no box for it anywhere in this form, so every meeting
+     * was a title, a time and a place with no room to say "bring last month's
+     * figures". A textarea rather than another one-line input, because the
+     * useful version of this is three sentences.
+     */
+    var noteIn = h('textarea', { rows: '3', disabled: !mayEdit,
+      placeholder: t('mtgNoteHint') });
+    noteIn.value = draft.note || '';
+    noteIn.addEventListener('input', function () { draft.note = noteIn.value; });
+
     var detailPane = h('div', { class: 'pane' }, [
       field(t('mtgTitle'), input('title')),
       field(t('mtgDate'), input('meetsOn', 'date')),
       field(t('mtgStart'), input('meetsAt', 'time')),
       field(t('mtgPlace'), input('place')),
+      field(t('mtgNote'), noteIn),
       field(t('mtgJoin'), input('joinUrl', 'url')),
       field(t('mtgAgendaUrl'), input('agendaUrl', 'url')),
       isNew ? null : field(t('mtgMinutesUrl'), input('minutesUrl', 'url')),
@@ -5627,10 +5665,21 @@
       };
       line(t('mtgDate'), meeting.meetsOn + (meeting.meetsAt ? ' · ' + meeting.meetsAt : ''));
       line(t('mtgPlace'), meeting.place);
+      /**
+       * The description was being shown under the label "หัวข้อการประชุม" —
+       * the TITLE's label — which is the one wrong place for it, since the
+       * title is already the heading of the dialog. It has its own label now,
+       * and keeps its line breaks, because people type paragraphs in there.
+       */
+      if (meeting.note) {
+        summaryPane.appendChild(h('div', { class: 'sum-row' }, [
+          h('span', { class: 'sum-label', text: t('mtgNote') }),
+          h('span', { class: 'sum-value', style: 'white-space:pre-wrap', text: meeting.note }),
+        ]));
+      }
       line(t('mtgJoin'), meeting.joinUrl ? t('mtgOpenJoin') : '', meeting.joinUrl);
       line(t('mtgAgendaUrl'), meeting.agendaUrl ? t('mtgOpenAgenda') : '', meeting.agendaUrl);
       line(t('mtgMinutesUrl'), meeting.minutesUrl ? t('mtgOpenMinutes') : '', meeting.minutesUrl);
-      if (meeting.note) line(t('mtgTitle'), meeting.note);
 
       /**
        * Into somebody's own Google Calendar, in one click.
@@ -5984,7 +6033,159 @@
       // A blank agenda has no headings, so items go straight on it.
       if (canPropose && !headings.length) agendaPane.appendChild(addBox(null));
 
+      /**
+       * The papers.
+       *
+       * Open to anybody invited, not just the organiser: the person holding the
+       * budget spreadsheet is usually not the person who called the meeting, and
+       * making them email it round is how a meeting ends up with half the room
+       * reading a different version.
+       *
+       * Two ways in, side by side, because they are genuinely different jobs. A
+       * link is free and is the right answer when the document already lives in
+       * Drive. A file is for the thing on somebody's laptop that is nowhere else
+       * yet — and it goes to Drive on the way in, so it does not sit in the
+       * database being paid for by the gigabyte.
+       */
+      var filesPane = h('div', { class: 'pane' }, [h('h3', { text: t('mtgFiles') })]);
+      var fileList = h('div', { class: 'mtg-files' });
+      var fileNotice = h('div', { class: 'notice err', hidden: true });
+      var mayAttach = Boolean(mine) || meeting.mayEdit;
+
+      function fileFail(text) { fileNotice.hidden = false; fileNotice.textContent = text; }
+
+      function sizeText(bytes) {
+        if (!bytes) return '';
+        return bytes >= 1024 * 1024
+          ? (bytes / 1024 / 1024).toFixed(1) + ' MB'
+          : Math.round(bytes / 1024) + ' KB';
+      }
+
+      function drawFiles() {
+        clear(fileList);
+        if (!(meeting.files || []).length) {
+          fileList.appendChild(h('p', { class: 'mtg-file-none', text: t('mtgFilesNone') }));
+          return;
+        }
+        meeting.files.forEach(function (f) {
+          /**
+           * A link and a Drive copy open directly; a file still held here is
+           * fetched back through this app. `where` says which, so the page
+           * never offers an "open" that lands on nothing.
+           */
+          var open = f.where === 'here'
+            ? '/api/events?do=mtgfile&id=' + encodeURIComponent(f.id)
+            : f.url;
+          var mayDrop = f.addedBy === S.user.username || meeting.mayEdit;
+
+          fileList.appendChild(h('div', { class: 'mtg-file' }, [
+            h('span', { class: 'f-kind',
+              text: f.where === 'link' ? t('mtgFileKindLink') : (f.kind || 'file') }),
+            open
+              ? h('a', { class: 'f-name', href: open, target: '_blank', rel: 'noopener',
+                  text: f.name })
+              : h('span', { class: 'f-name', text: f.name + ' · ' + t('mtgFileGone') }),
+            h('span', { class: 'f-meta',
+              text: [sizeText(f.size), nameOf(f.addedBy)].filter(Boolean).join(' · ') }),
+            mayDrop ? h('button', {
+              class: 'btn ghost sm', text: t('mtgFileRemove'),
+              onclick: function () {
+                if (!confirm(t('mtgFileRemoveSure'))) return;
+                api('/api/events?do=mtgfile&id=' + encodeURIComponent(f.id), { method: 'DELETE' })
+                  .then(function () { return reloadMeetingsQuietly(); })
+                  .then(function () {
+                    var fresh = (S.meetings || []).filter(function (x) { return x.id === meeting.id; })[0];
+                    if (fresh) meeting.files = fresh.files;
+                    drawFiles();
+                  })
+                  .catch(function (err) { fileFail(errText(err.code)); });
+              },
+            }) : null,
+          ].filter(Boolean)));
+        });
+      }
+      drawFiles();
+      filesPane.appendChild(fileNotice);
+      filesPane.appendChild(fileList);
+
+      if (mayAttach) {
+        var fileIn = h('input', {
+          type: 'file', style: 'display:none',
+          accept: '.pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip',
+        });
+        var pickBtn = h('button', { class: 'btn sm', text: t('mtgAddFile'),
+          onclick: function () { fileIn.click(); } });
+        var linkIn = h('input', { type: 'url', placeholder: t('mtgLinkPlaceholder') });
+
+        function afterAttach(answer) {
+          return reloadMeetingsQuietly().then(function () {
+            var fresh = (S.meetings || []).filter(function (x) { return x.id === meeting.id; })[0];
+            if (fresh) meeting.files = fresh.files;
+            drawFiles();
+            /**
+             * Said out loud when it happens, not discovered later.
+             *
+             * An upload that reached the database but not Drive is a thing
+             * worth knowing while it is still true — the file works either way,
+             * so this is a note rather than an error.
+             */
+            if (answer && answer.driveProblem) {
+              fileNotice.hidden = false;
+              fileNotice.textContent = 'Drive: ' + answer.driveProblem;
+            }
+          });
+        }
+
+        fileIn.addEventListener('change', function () {
+          var file = fileIn.files && fileIn.files[0];
+          if (!file) return;
+          fileNotice.hidden = true;
+          pickBtn.disabled = true;
+          pickBtn.textContent = t('mtgFileSending');
+          fileToBase64(file).then(function (base64) {
+            return api('/api/events?do=mtgfile', {
+              method: 'POST',
+              body: { meetingId: meeting.id, name: file.name, mime: file.type, file: base64 },
+            });
+          })
+            .then(afterAttach)
+            .catch(function (err) { fileFail(errText(err.code)); })
+            .then(function () {
+              pickBtn.disabled = false;
+              pickBtn.textContent = t('mtgAddFile');
+              fileIn.value = '';
+            });
+        });
+
+        filesPane.appendChild(h('div', { class: 'mtg-file-add' }, [
+          pickBtn, fileIn,
+          linkIn,
+          h('button', { class: 'btn sm', text: t('mtgAddLink'),
+            onclick: function () {
+              if (!linkIn.value.trim()) { fileFail(t('errNothingToAttach')); return; }
+              fileNotice.hidden = true;
+              api('/api/events?do=mtgfile', {
+                method: 'POST',
+                body: { meetingId: meeting.id, linkUrl: linkIn.value.trim() },
+              })
+                .then(function (answer) { linkIn.value = ''; return afterAttach(answer); })
+                .catch(function (err) { fileFail(errText(err.code)); });
+            } }),
+        ]));
+        filesPane.appendChild(h('p', { class: 'hint', text: t('mtgFileLimit') }));
+      }
+      /**
+       * Papers above the agenda, deliberately.
+       *
+       * The standard agenda is five headings, each with an empty line and its
+       * own add box, so it runs to most of a screen before anything else gets a
+       * look in — and the papers ended up below all of it. They are reference
+       * material somebody opens the meeting to find, like the joining link, not
+       * something to scroll past five วาระ to reach.
+       */
+      bodyBox.appendChild(filesPane);
       bodyBox.appendChild(agendaPane);
+
       // The form is built either way, but stays out of the page until
       // somebody who may change these details asks for it.
       detailPane.hidden = true;

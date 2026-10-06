@@ -25,6 +25,18 @@
   --done-soft: #e3f3ec;
   --danger: #a32219;
   --danger-soft: #fdeceb;
+  /**
+   * Meetings, in a colour that is nothing else's.
+   *
+   * They used to borrow --accent, which is the fair's pink and already means
+   * "task" everywhere else on the calendar, so a day with a deadline and a
+   * meeting on it showed two chips the same colour. Events own the amber. This
+   * indigo is the one hue in reach of the palette that collides with neither,
+   * and it stays separable in the common forms of colour blindness, where pink
+   * and amber do not.
+   */
+  --meet: #3f3aa6;
+  --meet-soft: #ecebfa;
   /* How urgent a task is, as a ramp: past due, due now, due soon, time yet. */
   --u-late: #b02a1f;
   --u-late-soft: #fdeceb;
@@ -60,6 +72,8 @@
     --done-soft: #12352a;
     --danger: #ff8a7a;
     --danger-soft: #35201c;
+    --meet: #a9a4ff;
+    --meet-soft: #262148;
     --u-late: #ff8a7a;
     --u-late-soft: #3a1f1b;
     --u-now: #ffb07a;
@@ -100,6 +114,8 @@
   --done-soft: #12352a;
   --danger: #ff8a7a;
   --danger-soft: #35201c;
+  --meet: #a9a4ff;
+  --meet-soft: #262148;
   --u-late: #ff8a7a;
   --u-late-soft: #3a1f1b;
   --u-now: #ffb07a;
@@ -1335,11 +1351,59 @@ input.code-input {
 }
 .agenda-add { padding-left: 1.6rem; }
 
-/* Meetings on the calendar and in the upcoming rail. */
-.cal-chip.meeting { border-left-color: var(--accent); background: var(--accent-soft); }
-.dot.meeting { background: var(--accent); }
-.event-card.meeting { --c: var(--accent); border-left-color: var(--accent); }
+/**
+ * Meetings on the calendar and in the upcoming rail.
+ *
+ * The left border is thicker than a task's and the chip carries a faint ring,
+ * so the three kinds are still told apart on a printed month view and by
+ * anybody who cannot separate the hues at all.
+ */
+.cal-chip.meeting {
+  border-left: 4px solid var(--meet);
+  background: var(--meet-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--meet) 22%, transparent);
+}
+.dot.meeting { background: var(--meet); }
+.event-card.meeting { --c: var(--meet); border-left-color: var(--meet); }
+.event-card.meeting .ec-when { color: var(--meet); }
 .agenda-add .add-why { color: var(--danger); flex-basis: 100%; }
+
+/* ---- papers attached to a meeting -------------------------------------- */
+
+/**
+ * A file and a pasted link sit in one list on purpose: to the person who
+ * attached them they are the same act, and reading a meeting's papers should
+ * not mean looking in two places.
+ */
+.mtg-files { display: flex; flex-direction: column; gap: 2px; }
+.mtg-file {
+  display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+  padding: .4rem 0; border-bottom: 1px solid var(--line-soft);
+}
+.mtg-file:last-child { border-bottom: none; }
+.mtg-file .f-name { flex: 1 1 10rem; word-break: break-word; }
+.mtg-file .f-meta { color: var(--ink-faint); font-size: .82rem; flex: none; }
+.mtg-file .f-kind {
+  flex: none; font-size: .72rem; letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 4px;
+  background: var(--meet-soft); color: var(--meet); font-weight: 600;
+}
+.mtg-file-add { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; }
+.mtg-file-add input[type="url"] { flex: 1 1 12rem; }
+.mtg-file-none { color: var(--ink-faint); font-size: .88rem; font-style: italic; }
+
+/**
+ * On a phone the three controls wrap one per line, which puts the button that
+ * adds the link a whole row below the box the link was typed into — far enough
+ * that it reads as a separate thing rather than the other half of the same
+ * action. Two rows instead: picking a file on its own, then the box and its
+ * button side by side where they belong.
+ */
+@media (max-width: 560px) {
+  .mtg-file-add { display: grid; grid-template-columns: 1fr auto; align-items: center; }
+  .mtg-file-add > button:first-of-type { grid-column: 1 / -1; justify-self: start; }
+  .mtg-file-add input[type="url"] { min-width: 0; }
+}
 
 /* ---- the holding page, before the system opens ------------------------- */
 

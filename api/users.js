@@ -157,6 +157,23 @@ async function handler(request) {
              count(*)::int AS files,
              count(DISTINCT doc_id)::int AS docs
       FROM doc_files`;
+    /**
+     * Meeting papers held here rather than in Drive.
+     *
+     * Same story as the documents above and worth its own line, because the
+     * cause is different: a document sits here because it is mid-signature and
+     * leaves on its own, whereas an attachment is only here because Drive was
+     * unconfigured or refused it at the moment somebody uploaded it, and
+     * nothing comes back later to move it. A number growing here means files
+     * that will stay until somebody does something about them.
+     */
+    const [papers] = await sql`
+      SELECT coalesce(sum(byte_size) FILTER (WHERE bytes IS NOT NULL), 0)::bigint AS bytes,
+             count(*) FILTER (WHERE bytes IS NOT NULL)::int AS here,
+             count(*) FILTER (WHERE drive_url IS NOT NULL)::int AS "inDrive",
+             count(*) FILTER (WHERE link_url <> '')::int AS links
+      FROM meeting_files`;
+
     const [flow] = await sql`
       SELECT count(*) FILTER (WHERE sent_at IS NOT NULL
                                 AND drive_file_id IS NULL)::int AS waiting,
@@ -176,6 +193,10 @@ async function handler(request) {
       pdfBytes: Number(pdf?.bytes || 0),
       pdfFiles: Number(pdf?.files || 0),
       pdfDocs: Number(pdf?.docs || 0),
+      paperBytes: Number(papers?.bytes || 0),
+      papersHere: Number(papers?.here || 0),
+      papersInDrive: Number(papers?.inDrive || 0),
+      paperLinks: Number(papers?.links || 0),
       docsWaitingToArchive: Number(flow?.waiting || 0),
       docsArchived: Number(flow?.archived || 0),
       docsNotYetPurged: Number(flow?.notYetPurged || 0),

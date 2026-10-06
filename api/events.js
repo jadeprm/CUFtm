@@ -7,6 +7,7 @@ import { isSecretary } from '../lib/approval.js';
 import {
   assembleMeetings, createMeeting, updateMeeting, removeMeeting,
   addAgendaItem, editAgendaItem, removeAgendaItem, replyToInvitation, canSeeMeeting,
+  addAttachment, removeAttachment, downloadAttachment,
 } from '../lib/meetingstore.js';
 import { circleSummary } from '../lib/circles.js';
 
@@ -179,7 +180,8 @@ async function handler(request) {
      * Serverless Function and the Hobby plan allows twelve, which are all
      * spoken for. The work itself is in lib/meetingstore.js.
      */
-    if (action.startsWith('meeting') || action === 'agenda' || action === 'reply') {
+    if (action.startsWith('meeting') || action.startsWith('mtg') ||
+        action === 'agenda' || action === 'reply') {
       const roster = await sql`SELECT * FROM users`;
       const secretary = isSecretary(me);
       const kit = { people: roster, isSecretary: secretary, json };
@@ -205,6 +207,13 @@ async function handler(request) {
       if (action === 'agenda' && request.method === 'PATCH') return editAgendaItem(sql, me, await request.json().catch(() => ({})), kit);
       if (action === 'agenda' && request.method === 'DELETE') return removeAgendaItem(sql, me, url.searchParams.get('id'), kit);
       if (action === 'reply' && request.method === 'POST') return replyToInvitation(sql, me, await request.json().catch(() => ({})), kit);
+
+      // Papers attached to a meeting. `mtgfile` rather than another file under
+      // api/ for the same twelve-function reason as everything else here.
+      if (action === 'mtgfile' && request.method === 'POST') return addAttachment(sql, me, await request.json().catch(() => ({})), kit);
+      if (action === 'mtgfile' && request.method === 'DELETE') return removeAttachment(sql, me, url.searchParams.get('id'), kit);
+      if (action === 'mtgfile' && request.method === 'GET') return downloadAttachment(sql, me, url.searchParams.get('id'), kit);
+
       return json({ error: 'BAD_REQUEST' }, 400);
     }
 

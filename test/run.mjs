@@ -4573,5 +4573,305 @@ r = await call(cronApi, '/api/cron');
 ok('...and a second run still completes', r.status === 200);
 
 
+
+// ===========================================================================
+head('68. Papers attached to a meeting');
+
+/**
+ * Two ways to attach a paper, and they are not variations on each other.
+ *
+ * A link is a pointer and costs nothing; a file has to be stored, and where it
+ * is stored decides whether this deployment pays Neon for it. Both end up in
+ * one list because to the person attaching them it is one action — which is
+ * exactly why the rules for each have to be checked separately.
+ */
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: {
+    title: 'ประชุมพิจารณางบประมาณ',
+    note: 'กรุณาอ่านตัวเลขของเดือนที่แล้วมาก่อน',
+    meetsOn: '2026-12-15', meetsAt: '13:00',
+    people: ['Kungking_HeadCon'],
+    template: 'standard',
+  },
+});
+const paperMtgId = r.data.id;
+ok('a meeting can be created with a description', r.status === 201, JSON.stringify(r.data).slice(0, 70));
+
+let mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+let paperMtg = mtgList.data.meetings.find((m) => m.id === paperMtgId);
+ok('...and the description comes back on it, not swallowed',
+  paperMtg.note === 'กรุณาอ่านตัวเลขของเดือนที่แล้วมาก่อน', paperMtg.note);
+ok('...and it starts with no papers', Array.isArray(paperMtg.files) && paperMtg.files.length === 0,
+  JSON.stringify(paperMtg.files));
+
+// ---- a pasted link ----
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, linkUrl: 'https://drive.google.com/file/d/abc123/view' },
+});
+ok('a link can be attached', r.status === 201 && r.data.where === 'link', JSON.stringify(r.data));
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === paperMtgId);
+ok('...and it is named by its host rather than 180 characters of URL',
+  paperMtg.files.length === 1 && paperMtg.files[0].name === 'drive.google.com',
+  paperMtg.files[0] && paperMtg.files[0].name);
+ok('...and it carries no byte size, because it stores no bytes',
+  paperMtg.files[0].size === 0 && paperMtg.files[0].where === 'link',
+  JSON.stringify(paperMtg.files[0]));
+
+/**
+ * A javascript: link in a meeting invitation would run in the browser of
+ * everybody invited. The URL cleaner is shared with joinUrl, and this is the
+ * check that it is actually reached on this path too.
+ */
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, linkUrl: 'javascript:alert(document.cookie)' },
+});
+ok('a javascript: link is not a link', r.status === 400 && r.data.error === 'NOTHING_TO_ATTACH',
+  JSON.stringify(r.data));
+
+// ---- a real file, when there is a Drive to put it in ----
+/**
+ * The point of this one is the storage bill, not the upload.
+ *
+ * She pays Neon by the gigabyte and said plainly that she did not want meeting
+ * papers eating it. So a file that reaches Drive must leave NOTHING behind in
+ * the database — not kept "just in case", the way a document in mid-signature
+ * is, because a meeting paper is finished the moment it arrives.
+ */
+const pdfBytes = Buffer.concat([
+  Buffer.from('%PDF-1.4\n'), Buffer.alloc(2048, 0x20), Buffer.from('\n%%EOF\n'),
+]);
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: {
+    meetingId: paperMtgId, name: 'งบประมาณ.pdf',
+    mime: 'application/pdf', file: pdfBytes.toString('base64'),
+  },
+});
+const driveFileRow = r.data.id;
+ok('a file can be attached', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+ok('...and with an archive configured it goes to Drive', r.data.where === 'drive', r.data.where);
+
+const afterUpload = await sql`
+  SELECT byte_size, drive_url, (bytes IS NULL) AS cleared
+  FROM meeting_files WHERE id = ${driveFileRow}`;
+ok('...and its bytes are dropped from the database at once, not kept as a second copy',
+  afterUpload[0].cleared === true, JSON.stringify(afterUpload[0]));
+ok('...while the size and the Drive link are still recorded',
+  afterUpload[0].byte_size === pdfBytes.length && /drive\.google\.com/.test(afterUpload[0].drive_url),
+  `${afterUpload[0].byte_size} · ${afterUpload[0].drive_url}`);
+
+/**
+ * The name must not pick up a second extension on the way.
+ *
+ * The documents side passes a name WITHOUT one and relies on ".pdf" being
+ * added; this side passes whatever the person's file was called. Adding one
+ * unconditionally produced "งบประมาณ.pdf.pdf", which is the sort of filename
+ * that makes somebody think the system is broken.
+ */
+const inDrive = [...driveFiles.values()].slice(-1)[0];
+ok('...and the Drive copy keeps the name it arrived with, extension and all',
+  inDrive.name === 'งบประมาณ.pdf', inDrive.name);
+
+// ---- the same thing with no Drive configured ----
+/**
+ * A committee halfway through setting Drive up must still be able to attach
+ * the agenda to its own meeting, so the database is the fallback — and then the
+ * download route is the only way the file comes back, which makes it the thing
+ * to check hardest.
+ */
+const paperToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+delete process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: {
+    meetingId: paperMtgId, name: 'รายงาน.pdf',
+    mime: 'application/pdf', file: pdfBytes.toString('base64'),
+  },
+});
+const paperFileId = r.data.id;
+ok('with no archive configured the file is still accepted', r.status === 201,
+  JSON.stringify(r.data).slice(0, 70));
+ok('...and the answer says plainly that it is being held here', r.data.where === 'here', r.data.where);
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === paperMtgId);
+const paperRow = paperMtg.files.find((f) => f.id === paperFileId);
+ok('...its real size is recorded', paperRow.size === pdfBytes.length, String(paperRow.size));
+ok('...and its type is read back as pdf', paperRow.kind === 'pdf', paperRow.kind);
+
+/**
+ * The listing must never carry the bytes.
+ *
+ * Every page load reads this, and a meeting with four attachments would move
+ * megabytes out of Neon each time — slow, and on this plan paid for by the
+ * gigabyte too. The size is in the listing; the bytes are not.
+ */
+ok('...but the listing itself carries no bytes',
+  !('bytes' in paperRow) && !('file' in paperRow), Object.keys(paperRow).join(','));
+
+// ---- downloading it back ----
+let raw = await eventsApi(makeRequest(
+  '/api/events?do=mtgfile&id=' + encodeURIComponent(paperFileId), { as: 'admin' }));
+const got = Buffer.from(await raw.arrayBuffer());
+ok('the file comes back byte for byte', raw.status === 200 && got.equals(pdfBytes),
+  `${raw.status} · ${got.length} bytes`);
+/**
+ * These are bytes somebody else uploaded, handed back on this app's own
+ * origin. If a browser ever decides to render one as a page, it runs with
+ * every signed-in person's session cookie available to it.
+ */
+ok('...as a download, never as a page on this origin',
+  /^attachment/.test(raw.headers.get('content-disposition') || '') &&
+  raw.headers.get('x-content-type-options') === 'nosniff',
+  raw.headers.get('content-disposition'));
+
+// A pasted link is not a file, so asking for its bytes is a mistake worth a
+// clear answer rather than an empty download.
+r = await call(eventsApi,
+  '/api/events?do=mtgfile&id=' + encodeURIComponent(paperMtg.files[0].id), { as: 'admin' });
+ok('asking to download a link says so, and hands back the link',
+  r.status === 400 && r.data.error === 'IS_A_LINK' && /drive\.google\.com/.test(r.data.url),
+  JSON.stringify(r.data));
+
+process.env.GOOGLE_DRIVE_REFRESH_TOKEN = paperToken;
+
+// ---- a Drive that refuses ----
+/**
+ * The file must survive an archive that is down, and the trouble must be said
+ * out loud rather than swallowed: "attached, but the archive did not take it"
+ * is worth knowing while it is still true.
+ */
+driveRefuses = true;
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, name: 'ยังไม่ขึ้น.pdf',
+          mime: 'application/pdf', file: pdfBytes.toString('base64') },
+});
+driveRefuses = false;
+ok('a file still attaches when Drive refuses it', r.status === 201 && r.data.where === 'here',
+  JSON.stringify(r.data).slice(0, 90));
+ok('...and the reason travels back rather than being swallowed',
+  r.data.driveProblem === 'DRIVE_REFUSED', String(r.data.driveProblem));
+const refusedRow = await sql`
+  SELECT (bytes IS NOT NULL) AS held FROM meeting_files WHERE id = ${r.data.id}`;
+ok('...with the bytes kept here, since nowhere else has them',
+  refusedRow[0].held === true, JSON.stringify(refusedRow[0]));
+
+// ---- what may not be attached ----
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, name: 'evil.html', mime: 'text/html',
+          file: Buffer.from('<script>fetch("/api/users")</script>').toString('base64') },
+});
+ok('an HTML file is refused outright', r.status === 400 && r.data.error === 'FILE_TYPE_NOT_ALLOWED',
+  JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, name: 'evil.svg', mime: 'image/svg+xml',
+          file: Buffer.from('<svg onload="alert(1)"/>').toString('base64') },
+});
+ok('...and so is an SVG, which is a page wearing a picture’s name',
+  r.status === 400 && r.data.error === 'FILE_TYPE_NOT_ALLOWED', JSON.stringify(r.data));
+
+/**
+ * A spreadsheet picked off a phone often arrives with no content type at all,
+ * so the extension gets a say — but only to choose among the types already
+ * allowed, never to admit one that is not.
+ */
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, name: 'ตัวเลข.xlsx', mime: '',
+          file: Buffer.from('PK\u0003\u0004 not really a workbook').toString('base64') },
+});
+ok('a file with no stated type is placed by its extension', r.status === 201,
+  JSON.stringify(r.data).slice(0, 60));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, name: 'run.exe', mime: '',
+          file: Buffer.from('MZ').toString('base64') },
+});
+ok('...but an extension cannot admit a type that is not allowed',
+  r.status === 400 && r.data.error === 'FILE_TYPE_NOT_ALLOWED', JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: paperMtgId, name: 'huge.pdf', mime: 'application/pdf',
+          file: Buffer.alloc(4 * 1024 * 1024, 0x41).toString('base64') },
+});
+ok('a file over three megabytes is refused, with the limit named',
+  r.status === 400 && r.data.error === 'FILE_TOO_BIG' && r.data.limit === 3 * 1024 * 1024,
+  JSON.stringify({ e: r.data.error, limit: r.data.limit }));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin', body: { meetingId: paperMtgId },
+});
+ok('attaching nothing at all says so', r.status === 400 && r.data.error === 'NOTHING_TO_ATTACH',
+  JSON.stringify(r.data));
+
+// ---- who may attach, and who may take away ----
+/**
+ * Anybody invited may attach, which is the whole point: the person holding the
+ * budget spreadsheet is usually not the person who called the meeting.
+ */
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'editor',
+  body: { meetingId: paperMtgId, linkUrl: 'https://example.ac.th/paper.pdf', name: 'เอกสารของกุ๊งกิ๊ง' },
+});
+const editorFileId = r.data.id;
+ok('somebody merely invited may attach a paper', r.status === 201, JSON.stringify(r.data).slice(0, 60));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'member',
+  body: { meetingId: paperMtgId, linkUrl: 'https://example.com/gatecrash.pdf' },
+});
+ok('...but somebody who was not invited may not', r.status === 403 && r.data.error === 'NOT_INVITED',
+  JSON.stringify(r.data));
+
+r = await call(eventsApi,
+  '/api/events?do=mtgfile&id=' + encodeURIComponent(paperFileId), { method: 'DELETE', as: 'editor' });
+ok('an attendee cannot remove somebody else’s paper',
+  r.status === 403 && r.data.error === 'NOT_YOUR_FILE', JSON.stringify(r.data));
+
+r = await call(eventsApi,
+  '/api/events?do=mtgfile&id=' + encodeURIComponent(editorFileId), { method: 'DELETE', as: 'editor' });
+ok('...but they can remove their own', r.status === 200, JSON.stringify(r.data));
+
+r = await call(eventsApi,
+  '/api/events?do=mtgfile&id=' + encodeURIComponent(paperFileId), { method: 'DELETE', as: 'admin' });
+ok('...and whoever runs the meeting can remove any of them', r.status === 200, JSON.stringify(r.data));
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === paperMtgId);
+ok('...and the removed ones are really gone',
+  !paperMtg.files.some((f) => f.id === paperFileId || f.id === editorFileId),
+  paperMtg.files.map((f) => f.name).join(', '));
+
+/**
+ * Somebody who cannot see the meeting cannot fetch its papers either. Worth
+ * its own check because the download route is a separate entrance to the same
+ * data and is the obvious place for a permission rule to be left out.
+ */
+raw = await eventsApi(makeRequest(
+  '/api/events?do=mtgfile&id=' + encodeURIComponent(
+    paperMtg.files.length ? paperMtg.files[0].id : 'nothing'), { as: 'member' }));
+ok('somebody outside the meeting cannot download its papers',
+  raw.status === 403 || raw.status === 404, String(raw.status));
+
+// Deleting the meeting takes its papers with it, rather than leaving rows
+// pointing at a meeting that no longer exists.
+await call(eventsApi, '/api/events?do=meeting&id=' + encodeURIComponent(paperMtgId),
+  { method: 'DELETE', as: 'admin' });
+const orphans = await sql`SELECT count(*)::int AS n FROM meeting_files WHERE meeting_id = ${paperMtgId}`;
+ok('cancelling a meeting takes its papers with it', orphans[0].n === 0, String(orphans[0].n));
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
