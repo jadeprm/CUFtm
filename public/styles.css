@@ -1096,69 +1096,14 @@ button.avatar { border: none; padding: 0; cursor: pointer; font: inherit; }
 .pop.menu .item:hover { background: var(--surface-2); }
 .pop.menu .item.danger { color: var(--danger); }
 
-@media (max-width: 720px) {
-  /* The switches live in the profile menu on a narrow screen; two copies of
-     the same control is how a top bar runs out of room. */
-  .topbar-right > .lang-toggle { display: none; }
-}
-
-/* A face people tap has to be tappable: 26px was smaller than a fingertip. */
-@media (max-width: 720px) {
-  .avatar, button.avatar { width: 38px; height: 38px; font-size: 13px; }
-}
-
 /* ---------------------------------------------------------------------------
-   Navigation: across the top on a computer, along the bottom on a phone.
-
-   The top bar laid its tabs out in a row that had nowhere to go at 390px, so
-   they stacked into a column half a screen tall — the app opened showing its
-   own menu instead of anybody's work. Along the bottom is where a thumb
-   reaches and where every phone app puts this.
+   Navigation: across the top on a computer. On a phone it is a bar along the
+   bottom, and that — with everything else about the phone layout — lives in
+   phone.css, loaded only below 720px. Only what a computer must NOT show of
+   the phone interface is here.
    --------------------------------------------------------------------------- */
 #tabs .ti, #tabs .ts { display: none; }
-
-@media (max-width: 720px) {
-  #tabs {
-    position: fixed;
-    left: 0; right: 0; bottom: 0;
-    z-index: 40;
-    display: flex;
-    background: var(--surface);
-    border-top: 1px solid var(--line);
-    /* Clear of the iPhone's home indicator, which otherwise sits on top of
-       whichever tab is in the middle. */
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    box-shadow: 0 -2px 12px rgba(20, 12, 16, .06);
-  }
-  #tabs a {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    padding: 8px 2px 7px;
-    border-radius: 0;
-    background: none;
-    font-size: 11px;
-    line-height: 1.25;
-  }
-  #tabs a.on { background: none; color: var(--accent); }
-  #tabs .ti { display: block; font-size: 17px; line-height: 1; }
-  #tabs .tl { display: none; }
-  #tabs .ts {
-    display: block;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* The top bar keeps only what identifies the app and what interrupts you. */
-  .topbar-in { gap: 8px; }
-  .brand-sub, #brand-sub { display: none; }
-  main { padding-bottom: 5.5rem; }
-}
+.bar-title, .fab, .grab { display: none; }
 
 /* ---------------------------------------------------------------------------
    The short code, and searching by it.
@@ -1325,6 +1270,10 @@ input.code-input {
  * photograph rides higher than one carrying initials.
  */
 .mtg-people { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* The list peopleList() builds sits one level down; it needs the same row
+   layout, or chips with a photo ride higher than chips with initials. */
+.mtg-people .selected, .ppl-wrap .selected { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ppl-wrap { display: flex; flex-direction: column; gap: 6px; }
 .mtg-people .chip { height: 26px; }
 
 .mtg-summary .sum-row {
@@ -1448,3 +1397,193 @@ input.code-input {
   border: 1px solid var(--line); background: var(--surface-2); color: var(--accent);
 }
 .soon #soon-signin:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+/* ---- when people are free, and whose booking wins ---------------------- */
+
+/**
+ * The week as a short list of rows, not a 7 × 24 grid.
+ *
+ * A grid looks thorough and is miserable on a phone, which is where most of
+ * this committee will open it. Three rows saying "จันทร์ 17:00–22:00" carry the
+ * same fact in a form somebody will actually finish.
+ */
+.free-list { display: flex; flex-direction: column; gap: 2px; margin: .4rem 0; }
+.free-row {
+  display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+  padding: .35rem 0; border-bottom: 1px solid var(--line-soft);
+}
+.free-row:last-child { border-bottom: none; }
+.free-day { font-weight: 600; min-width: 5.5rem; flex: none; }
+.free-when { font-variant-numeric: tabular-nums; }
+.free-why { color: var(--ink-faint); font-size: .85rem; flex: 1 1 6rem; }
+.free-none { color: var(--ink-faint); font-size: .88rem; font-style: italic; margin: .3rem 0; }
+.free-head { margin: 1rem 0 .2rem; font-size: .95rem; }
+/**
+ * The add row is one sentence — "Monday, 17:00 to 22:00, add" — so it has to
+ * read across rather than down. Every input in this app is width:100% by
+ * default, which is right in a stacked form and turns this into five
+ * full-width boxes, so each one is given the width its content needs.
+ */
+.free-add { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.free-add select { width: auto; flex: 0 0 auto; min-width: 7rem; }
+.free-add input[type="time"] { width: auto; flex: 0 0 auto; }
+.free-add input[type="date"] { width: auto; flex: 0 0 auto; min-width: 9.5rem; }
+.free-add.away input[type="text"] { width: auto; flex: 1 1 8rem; min-width: 6rem; }
+.free-dash { color: var(--ink-faint); flex: none; }
+
+@media (max-width: 560px) {
+  /* Day on its own line, then the two times side by side with the dash. */
+  .free-add { display: grid; grid-template-columns: 1fr auto 1fr; gap: .4rem; }
+  .free-add select { grid-column: 1 / -1; width: 100%; }
+  .free-add > button { grid-column: 1 / -1; justify-self: start; }
+  .free-add.away input[type="text"] { grid-column: 1 / -1; width: 100%; }
+  .free-add input[type="time"], .free-add input[type="date"] { width: 100%; min-width: 0; }
+  .free-day { min-width: 4.5rem; }
+}
+
+/**
+ * The clash warning.
+ *
+ * Deliberately not styled as an error. Nothing has gone wrong and nothing is
+ * being refused — somebody is about to book over somebody else's afternoon and
+ * is being told so first. Red here would read as "you cannot", which is the one
+ * thing this does not mean.
+ */
+.clash-list { display: flex; flex-direction: column; gap: .8rem; margin-top: .6rem; }
+.clash {
+  padding: .6rem .7rem; border-radius: var(--radius);
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.clash-who { display: flex; gap: .45rem; align-items: center; margin-bottom: .3rem; }
+.clash-why { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .2rem; }
+.clash-why li { font-size: .9rem; }
+.clash-why li.away { color: var(--u-now); }
+.clash-why li.booked { color: var(--ink-soft); }
+
+/* The mark on something that has been pushed down the order. */
+.chip.outranked {
+  border-color: var(--u-soon); color: var(--u-soon); background: var(--u-soon-soft);
+}
+
+/* ---------------------------------------------------------------------------
+   Line icons, drawn by icon() in app.js. Here rather than in phone.css because
+   the board/list switch uses them on a computer too.
+   --------------------------------------------------------------------------- */
+.ic { display: inline-grid; place-items: center; flex: none; }
+.ic svg {
+  width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.view-seg button { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---------------------------------------------------------------------------
+   The board.
+
+   One column per status, in the order work moves. A card is the same card as
+   in the list — same code, chips and faces — re-flowed for a narrow column:
+   the faces drop under the chips instead of squeezing the title to one word a
+   line. The page widens for it, because five columns in a 68rem measure left
+   each about 200px.
+   --------------------------------------------------------------------------- */
+main.board-wide { max-width: 104rem; }
+.kanban {
+  display: grid; grid-template-columns: repeat(5, minmax(15rem, 1fr));
+  gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 10px;
+}
+.kb-col {
+  background: var(--surface-2); border: 1.5px solid var(--line-soft); border-radius: 14px;
+  padding: 10px; min-height: 14rem; display: flex; flex-direction: column; gap: 8px;
+  transition: background-color .12s ease, border-color .12s ease;
+}
+.kb-col.drop-on { border-color: var(--accent); border-style: dashed; background: var(--accent-soft); }
+.kb-head {
+  display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px;
+  font-size: 13.5px; font-weight: 600; color: var(--ink);
+}
+.kb-head .n {
+  margin-left: auto; font-size: 12px; font-weight: 600; color: var(--ink-soft);
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: 999px;
+  padding: 0 8px; font-variant-numeric: tabular-nums;
+}
+.kb-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--ink-faint); }
+.kb-dot.s-doing { background: var(--doing); }
+.kb-dot.s-review { background: var(--accent); }
+.kb-dot.s-feedback { background: var(--done); opacity: .6; }
+.kb-dot.s-done { background: var(--done); }
+
+.kb-list { gap: 8px; }
+.kb-list li.task { grid-template-columns: auto 1fr; padding: 10px 11px; gap: 3px 9px; }
+.kb-list li.task .t-meta { grid-column: 2; }
+/* The faces go last, under the chips, rather than in a third column. */
+.kb-list li.task .t-side { grid-column: 2; order: 9; justify-content: flex-start; margin-top: 2px; }
+.kb-list li.task .t-title { font-size: 14px; }
+.kb-list li.task[draggable="true"] { cursor: grab; }
+.kb-list li.task[draggable="true"]:active { cursor: grabbing; }
+.kb-list li.task.dragging { opacity: .4; }
+.kb-empty {
+  border: 1.5px dashed var(--line); border-radius: 10px; padding: 22px 10px;
+  text-align: center; font-size: 12.5px; color: var(--ink-faint);
+}
+.kb-more {
+  border: none; background: none; font: inherit; font-size: 12.5px; color: var(--accent);
+  padding: 4px; cursor: pointer; text-align: center;
+}
+
+/* ---------- getting-started guide ----------
+   On every screen size, so here rather than in phone.css; phone.css turns it
+   into a bottom sheet like every other dialog. */
+.guide-modal { width: min(32rem, 100%); }
+.guide-modal > footer > .btn:first-child { margin-right: auto; }
+.gd-list {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px;
+}
+.gd-item {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px;
+  font-size: 14px; color: var(--ink-soft);
+}
+.gd-item.now { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.gd-item.done { color: var(--done); }
+.gd-item.done > span:last-child { text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
+.gd-dot {
+  width: 18px; height: 18px; border-radius: 50%; border: 2px solid currentColor; flex: none; opacity: .7;
+}
+.gd-item.now .gd-dot { opacity: 1; box-shadow: inset 0 0 0 3px var(--surface); background: currentColor; }
+.gd-ic { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; }
+.gd-ic svg {
+  width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.gd-item .gd-ic { width: 18px; height: 18px; }
+.gd-card {
+  border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--surface-2);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.gd-card > .gd-ic {
+  width: 40px; height: 40px; padding: 8px; border-radius: 11px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.gd-card.done { align-items: center; text-align: center; }
+.gd-card.done > .gd-ic { background: var(--done-soft); color: var(--done); }
+.gd-card > b { font-size: 1rem; }
+.gd-card > p { margin: 0; color: var(--ink-soft); font-size: 13.5px; line-height: 1.55; }
+.gd-card .hint { font-size: 13px; }
+.gd-steps { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.gd-li { display: flex; align-items: center; gap: 10px; font-size: 14px; line-height: 1.45; }
+.gd-n {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 700;
+}
+.gd-tx { flex: 1; min-width: 0; }
+.gd-li .gd-ic {
+  width: 30px; height: 30px; padding: 5px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-soft);
+}
+.gd-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.gd-actions .btn { text-decoration: none; }
+
+/* ---------- task viewers ---------- */
+.field > .field-hint { display: block; color: var(--ink-faint); font-size: 12px; line-height: 1.45; margin: -2px 0 6px; }
+.chip.watching, .chip.viewers-n { display: inline-flex; align-items: center; gap: 4px; }
+.chip.watching { background: var(--surface-3); color: var(--ink-soft); font-weight: 600; }
+.chip.watching .ic svg, .chip.viewers-n .ic svg { width: 13px; height: 13px; }
+.notice.watching-note { border-style: dashed; }

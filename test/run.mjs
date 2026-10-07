@@ -271,6 +271,8 @@ const { default: tasksApi } = await import('../api/tasks.js');
 const { default: cronApi } = await import('../api/cron.js');
 const { default: pushApi } = await import('../api/push.js');
 const { default: eventsApi } = await import('../api/events.js');
+const { canPrioritiseOver, unavailableReason, clashesFor, weekdayOf, overlaps } =
+  await import('../lib/availability.js');
 const { default: calApi } = await import('../api/calendar.js');
 const { default: notifApi } = await import('../api/notifications.js');
 const { default: lineApi } = await import('../api/line.js');
@@ -353,6 +355,16 @@ await sql`DELETE FROM announcements`;
 await sql`DELETE FROM user_departments`;
 await sql`DELETE FROM sessions`;
 await sql`DELETE FROM meta`;
+/**
+ * Meetings are not tied to a user row, so deleting the users never took them
+ * with it — every run left its meetings behind, dated relative to the day it
+ * ran. Once the morning digest learned to mention today's meetings, a pile of
+ * them dated today made "somebody with nothing due is left alone" false for a
+ * reason that had nothing to do with the digest. The children go with them
+ * (ON DELETE CASCADE); the decisions about whose booking wins are cleared too.
+ */
+await sql`DELETE FROM meetings`;
+await sql`DELETE FROM precedence`;
 await sql`DELETE FROM users`;
 
 // ===========================================================================
@@ -1503,7 +1515,18 @@ const feed = async (scope) => {
   return { status: res.status, type: res.headers.get('content-type'), body: await res.text() };
 };
 
+await sql`UPDATE users SET calendar_seen_at = NULL WHERE username = 'Kungking_HeadCon'`;
+r = await call(authApi, '/api/auth', { as: 'content' });
+ok('before Google has fetched the feed, the guide is told it has not',
+  r.data.user && r.data.user.calendarSeenAt === null, JSON.stringify(r.data.user && r.data.user.calendarSeenAt));
 let f = await feed('mine');
+const [{ calendar_seen_at: seenAt }] = await sql`SELECT calendar_seen_at FROM users WHERE username = 'Kungking_HeadCon'`;
+ok('a fetch of the feed is noted, so the guide knows the calendar is connected', Boolean(seenAt));
+r = await call(authApi, '/api/auth', { as: 'content' });
+ok('...and the person\'s own account says so', Boolean(r.data.user && r.data.user.calendarSeenAt));
+await feed('mine');
+const [{ calendar_seen_at: seenAgain }] = await sql`SELECT calendar_seen_at FROM users WHERE username = 'Kungking_HeadCon'`;
+ok('...without a write on every fetch (once an hour is enough)', new Date(seenAgain).getTime() === new Date(seenAt).getTime());
 ok('the personal feed is served as a calendar',
   f.status === 200 && f.type.includes('text/calendar'), f.type);
 ok('...and names itself after the person', /X-WR-CALNAME:.*Kungking/.test(f.body));
@@ -2008,12 +2031,25 @@ ok('...and then gets nothing', afterOff.length === 1 && afterOff[0].to === 'Uadm
   JSON.stringify(afterOff.map((m) => m.to)));
 
 // Nobody with an empty list is messaged at all.
+/**
+ * Empty means empty of events and meetings too, not only tasks.
+ *
+ * The digest also lists events in the coming week, and the import test above
+ * puts Jade on an event fixed on 15 October. For most of the year that is
+ * further off than a week; from 8 October it is not, and this check started
+ * failing because the calendar had moved rather than because anything broke.
+ */
 await sql`DELETE FROM line_digests_sent`;
 await sql`DELETE FROM task_people WHERE username = 'Jade_Pres'`;
+await sql`DELETE FROM event_people WHERE username = 'Jade_Pres'`;
+await sql`DELETE FROM meeting_people WHERE username = 'Jade_Pres'`;
+await sql`DELETE FROM events WHERE id NOT IN (SELECT event_id FROM event_people)
+                              AND id NOT IN (SELECT event_id FROM event_departments)`;
 lineSent.length = 0;
 await call(cronApi, '/api/cron');
 ok('somebody with nothing due is left alone',
-  lineSent.filter((m) => m.kind === 'push').length === 0);
+  lineSent.filter((m) => m.kind === 'push').length === 0,
+  JSON.stringify(lineSent.filter((m) => m.kind === 'push').map((m) => [m.to, String(m.text || '').slice(0, 160)])));
 
 // A blocked account is dropped rather than retried every morning.
 await sql`DELETE FROM line_digests_sent`;
@@ -2175,7 +2211,9 @@ ok('...and a choice shows the list', out.includes('งานของฉัน')
 
 out = await say('จัดการงาน');
 ok('managing lists tasks to pick from', out.includes('เลือกงานที่ต้องการแก้'), out.split('\n')[0]);
-ok('...numbered', /1\. /.test(out));
+// A card now, where the number sits on its own beside the title rather than
+// as the start of a line of text.
+ok('...numbered', /(^|\n)1\.(\s|$)/m.test(out));
 
 out = await say('1');
 ok('picking a number names the task and offers actions',
@@ -3126,25 +3164,67 @@ r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
 ok('a unit editor CAN give work to their own section', r.status === 201, JSON.stringify(r.data).slice(0, 80));
 const unitTaskId = r.data.task?.id;
 
+/**
+ * These four used to assert the opposite, and were right to at the time.
+ *
+ * Jade asked for the rule to go: "change the access for all user to being able
+ * to appoint any user regardless of rank or department." The fair works across
+ * departments constantly, and a unit head who needed one person from สถานที่
+ * for an afternoon had to go through somebody more senior to ask. What replaces
+ * the rule is not nothing — the person appointed still gets an invitation to
+ * accept or decline, and whoever appoints them is warned first if they are not
+ * free. These now hold the new rule to the same standard.
+ */
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
   body: { title: 'งานข้ามหน่วย', department: 'content', assignees: ['Fah_StaffCon'], notify: [] } });
-ok('...but not to somebody in another section',
-  r.status === 403 && r.data.error === 'OUTSIDE_YOUR_UNIT', JSON.stringify(r.data));
+ok('a unit editor can now give work to somebody in another section',
+  r.status === 201, JSON.stringify(r.data).slice(0, 70));
 
-const leftBehind = await sql`SELECT count(*)::int AS n FROM tasks WHERE title = 'งานข้ามหน่วย'`;
-ok('...and the refused task is not left half-made', leftBehind[0].n === 0, String(leftBehind[0].n));
+const crossUnit = await sql`
+  SELECT username FROM task_people p JOIN tasks t ON t.id = p.task_id
+  WHERE t.title = 'งานข้ามหน่วย'`;
+ok('...and the person outside the section really is on it',
+  crossUnit.some((x) => x.username === 'Fah_StaffCon'),
+  crossUnit.map((x) => x.username).join(', '));
 
-// Tagging a whole department is assigning everybody in it, so the same rule holds.
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
   body: { title: 'แท็กทั้งฝ่าย', department: 'content',
           departments: [{ key: 'content', scope: 'all' }], notify: [] } });
-ok('...and tagging the whole department is refused for the same reason',
-  r.status === 403 && r.data.error === 'OUTSIDE_YOUR_UNIT', JSON.stringify(r.data).slice(0, 70));
+ok('...and tagging a whole department is allowed too',
+  r.status === 201, JSON.stringify(r.data).slice(0, 70));
 
+/**
+ * Widened on a task of its own, not on unitTaskId.
+ *
+ * unitTaskId is the one the checks further down use to prove that somebody NOT
+ * on a task cannot close it — adding Fah to it here would quietly make that
+ * check pass for the wrong reason, which is worse than it failing.
+ */
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
+  body: { title: 'งานที่จะขยายทีหลัง', department: 'content',
+          assignees: ['Ploy_StaffCon'], notify: [] } });
+const widenId = r.data.task?.id;
 r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'unitlead',
-  body: { id: unitTaskId, assignees: ['Ploy_StaffCon', 'Fah_StaffCon'] } });
-ok('...and they cannot widen their own task later either',
-  r.status === 403 && r.data.error === 'OUTSIDE_YOUR_UNIT', JSON.stringify(r.data));
+  body: { id: widenId, assignees: ['Ploy_StaffCon', 'Fah_StaffCon'] } });
+ok('...and they can widen their own task later', r.status === 200, JSON.stringify(r.data).slice(0, 60));
+const widened = await sql`SELECT username FROM task_people WHERE task_id = ${widenId}`;
+ok('...with both people really on it afterwards', widened.length === 2,
+  widened.map((x) => x.username).join(', '));
+
+/**
+ * The rank rules that did NOT change, checked here so that opening assignment
+ * up cannot be mistaken for opening everything up. A member still cannot create
+ * work, and a unit head still cannot touch anybody's account.
+ */
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member',
+  body: { title: 'สมาชิกยังสร้างไม่ได้', assignees: ['Fah_StaffCon'] } });
+ok('a member still cannot create work for anybody',
+  r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE', JSON.stringify(r.data));
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'unitlead',
+  body: { username: 'Fah_StaffCon', access: 'editor' } });
+ok('...and a unit editor still cannot change anybody\u2019s access',
+  r.status === 403, JSON.stringify(r.data).slice(0, 60));
 
 // ---- what they can still do ---------------------------------------------
 r = await call(tasksApi, '/api/tasks', { as: 'member' });
@@ -3320,7 +3400,7 @@ ok('searching reaches the description, not just the title',
 
 await lineApi(lineHook(sayToBot('Udoc1', 'T9999')));
 ok('a code nobody has says so plainly',
-  /ไม่มีรายการ/.test(lastReply()), lastReply().split('\n').slice(0, 3).join(' | '));
+  /ไม่มีรายการ|ไม่พบ/.test(lastReply()), lastReply().split('\n').slice(0, 3).join(' | '));
 
 // ===========================================================================
 head('59. เลขรันเอกสาร: the committee\u2019s own document numbers');
@@ -4872,6 +4952,586 @@ await call(eventsApi, '/api/events?do=meeting&id=' + encodeURIComponent(paperMtg
 const orphans = await sql`SELECT count(*)::int AS n FROM meeting_files WHERE meeting_id = ${paperMtgId}`;
 ok('cancelling a meeting takes its papers with it', orphans[0].n === 0, String(orphans[0].n));
 
+
+
+// ===========================================================================
+head('69. Who is free, and whose booking wins');
+
+/**
+ * The rank rule, written out in full.
+ *
+ * Jade settled it in two steps: first that a co-admin may override an admin,
+ * then that "other co-admins are not immune, admin and co-admin can override
+ * anyone". So the top two levels outrank every booking including each other's
+ * and their own level's, and an editor is the only one the "below their rank"
+ * half still applies to. Written as a table because this is the sort of rule
+ * that gets quietly broken by a refactor that looks like a simplification.
+ */
+const actorAt = (access) => ({ username: `actor_${access}`, access });
+const ownerAt = (access) => ({ username: `owner_${access}`, access });
+const RANK_TABLE = [
+  // actor,     owner,      may prioritise?
+  // The top two outrank everything, each other and their own level included.
+  ['admin',     'admin',    true],
+  ['admin',     'coadmin',  true],
+  ['admin',     'editor',   true],
+  ['admin',     'unitlead', true],
+  ['admin',     'inner',    true],
+  ['coadmin',   'admin',    true],
+  ['coadmin',   'coadmin',  true],
+  ['coadmin',   'editor',   true],
+  ['coadmin',   'unitlead', true],
+  ['coadmin',   'inner',    true],
+  // An editor settles clashes below them and cannot touch the people running
+  // the fair — this is the only row where "below their rank" still bites.
+  ['editor',    'unitlead', true],
+  ['editor',    'inner',    true],
+  ['editor',    'editor',   false],
+  ['editor',    'coadmin',  false],
+  ['editor',    'admin',    false],
+  // Below editor, nobody may overrule anybody. They are still warned.
+  ['unitlead',  'inner',    false],
+  ['unitlead',  'unitlead', false],
+  ['inner',     'inner',    false],
+];
+let rankWrong = [];
+for (const [actor, owner, want] of RANK_TABLE) {
+  const got = canPrioritiseOver(actorAt(actor), ownerAt(owner));
+  if (got !== want) rankWrong.push(`${actor} over ${owner}: expected ${want}, got ${got}`);
+}
+ok('every rank pairing behaves as Jade described', rankWrong.length === 0,
+  rankWrong.join(' | ') || `${RANK_TABLE.length} pairings`);
+
+ok('a co-admin outranks an admin', canPrioritiseOver(actorAt('coadmin'), ownerAt('admin')) === true);
+ok('...and an admin outranks a co-admin, so it runs both ways',
+  canPrioritiseOver(actorAt('admin'), ownerAt('coadmin')) === true);
+ok('...and a co-admin is not immune to another co-admin',
+  canPrioritiseOver(actorAt('coadmin'), ownerAt('coadmin')) === true);
+ok('...nor an admin to another admin',
+  canPrioritiseOver(actorAt('admin'), ownerAt('admin')) === true);
+/**
+ * The line that still means something. If an editor could outrank a co-admin
+ * the rank rule would be decorative, so this is the check that actually keeps
+ * it honest.
+ */
+ok('an editor still cannot outrank anybody at or above their own level',
+  canPrioritiseOver(actorAt('editor'), ownerAt('coadmin')) === false &&
+  canPrioritiseOver(actorAt('editor'), ownerAt('editor')) === false);
+
+/** Your own booking is always yours to move out of your own way. */
+const self = { username: 'same_person', access: 'inner' };
+ok('anybody may prioritise over their own booking, whatever their rank',
+  canPrioritiseOver(self, { username: 'same_person', access: 'inner' }) === true);
+
+// ---- the clock maths ----
+ok('back-to-back is not a clash', overlaps(540, 600, 600, 660) === false, '09:00–10:00 then 10:00–11:00');
+ok('...but a real overlap is', overlaps(540, 600, 570, 660) === true, '09:00–10:00 vs 09:30–11:00');
+ok('...and one inside another is', overlaps(540, 660, 570, 600) === true);
+
+ok('a Monday is read as a Monday', weekdayOf('2026-10-05') === 'mon', weekdayOf('2026-10-05'));
+ok('...and a Sunday as a Sunday', weekdayOf('2026-10-11') === 'sun', weekdayOf('2026-10-11'));
+
+// ---- somebody's own account of their time ----
+/**
+ * Nobody fills this in. That is the design constraint, not a complaint: there
+ * are four hundred people on this committee and most will never open the page,
+ * so a blank availability has to mean "always free" or the warning fires on
+ * every appointment and gets ignored within a week.
+ */
+ok('somebody who has filled nothing in is free',
+  unavailableReason({ on: '2026-10-05', at: '09:00' }, {}) === null);
+
+const weeknights = {
+  windows: [
+    { day: 'mon', from: '17:00', to: '22:00' },
+    { day: 'tue', from: '17:00', to: '22:00' },
+    { day: 'sat', from: '09:00', to: '18:00' },
+  ],
+};
+ok('an hour inside a stated window is free',
+  unavailableReason({ on: '2026-10-05', at: '18:00', to: '19:00' }, weeknights) === null,
+  'Monday 18:00');
+let whyNot = unavailableReason({ on: '2026-10-05', at: '09:00', to: '10:00' }, weeknights);
+ok('...an hour outside it is not, and the free hours come back with the answer',
+  whyNot && whyNot.kind === 'outsideHours' && whyNot.windows.join() === '17:00–22:00',
+  JSON.stringify(whyNot));
+whyNot = unavailableReason({ on: '2026-10-07', at: '18:00' }, weeknights);
+ok('...and a weekday they named no hours for at all is an off day',
+  whyNot && whyNot.kind === 'offDay' && whyNot.day === 'wed', JSON.stringify(whyNot));
+/**
+ * An all-day thing cannot be placed at an hour, so having ANY free window that
+ * day is enough. Refusing it because 09:00 is outside their evenings would warn
+ * about every all-day event for every student on the committee.
+ */
+ok('an all-day thing only needs them to be free at some point that day',
+  unavailableReason({ on: '2026-10-05' }, weeknights) === null);
+
+// ---- days away ----
+const exams = {
+  blocks: [{ fromOn: '2026-12-01', toOn: '2026-12-15', reason: 'สอบปลายภาค' }],
+};
+whyNot = unavailableReason({ on: '2026-12-08', at: '18:00' }, exams);
+ok('a stretch of days away covers every hour of every day in it',
+  whyNot && whyNot.kind === 'away' && whyNot.reason === 'สอบปลายภาค', JSON.stringify(whyNot));
+ok('...and the day after it ends is free again',
+  unavailableReason({ on: '2026-12-16', at: '18:00' }, exams) === null);
+
+const classAfternoon = {
+  blocks: [{ fromOn: '2026-10-05', toOn: '2026-10-05', fromAt: '13:00', toAt: '16:00', reason: 'เรียน' }],
+};
+ok('a block with hours only bites on those hours',
+  unavailableReason({ on: '2026-10-05', at: '17:00' }, classAfternoon) === null, '17:00');
+ok('...and does bite inside them',
+  (unavailableReason({ on: '2026-10-05', at: '14:00' }, classAfternoon) || {}).kind === 'away', '14:00');
+
+// ---- clashes against other people's bookings ----
+const rosterForClash = [
+  { username: 'Jade_Pres', displayName: 'Jade', access: 'admin' },
+  { username: 'Kaew_VP', displayName: 'Kaew', access: 'coadmin' },
+  { username: 'Kungking_HeadCon', displayName: 'Kungking', access: 'editor' },
+  { username: 'New_UnitCon', displayName: 'New', access: 'unitlead' },
+  { username: 'Ploy_StaffCon', displayName: 'Ploy', access: 'inner' },
+];
+const ployIsBusy = {
+  Ploy_StaffCon: {
+    booked: [{ kind: 'meeting', id: 'mt_x', code: 'M0001', title: 'ประชุมฝ่าย',
+               on: '2026-10-05', at: '14:00', to: '15:30', createdBy: 'Jade_Pres' }],
+  },
+};
+const when = { on: '2026-10-05', at: '15:00', to: '16:00' };
+
+let found = clashesFor(rosterForClash[2], when, ['Ploy_StaffCon'], rosterForClash, ployIsBusy);
+ok('an editor is told when somebody is already booked',
+  found.length === 1 && found[0].clashes[0].kind === 'booked',
+  JSON.stringify(found[0] && found[0].clashes[0]).slice(0, 90));
+ok('...and is told what they are booked with, by name and code',
+  found[0].clashes[0].title === 'ประชุมฝ่าย' && found[0].clashes[0].code === 'M0001');
+/**
+ * The clash belongs to a meeting the DIRECTOR called, so an editor cannot
+ * declare their own task the more important one — it is the owner's rank that
+ * decides, not the rank of the person who is double-booked.
+ */
+ok('...but cannot outrank a meeting the director called',
+  found[0].clashes[0].mayPrioritise === false && found[0].mayPrioritiseAll === false,
+  JSON.stringify({ one: found[0].clashes[0].mayPrioritise, all: found[0].mayPrioritiseAll }));
+
+found = clashesFor(rosterForClash[1], when, ['Ploy_StaffCon'], rosterForClash, ployIsBusy);
+ok('a co-admin CAN outrank the same meeting, because the director is not immune to them',
+  found[0].clashes[0].mayPrioritise === true && found[0].mayPrioritiseAll === true);
+
+found = clashesFor(rosterForClash[3], when, ['Ploy_StaffCon'], rosterForClash, ployIsBusy);
+ok('a unit editor is still told about the clash, they just cannot overrule it',
+  found.length === 1 && found[0].clashes[0].mayPrioritise === false,
+  'warned, not blocked');
+
+ok('somebody free at that hour produces no warning at all',
+  clashesFor(rosterForClash[0], { on: '2026-10-05', at: '09:00', to: '10:00' },
+    ['Ploy_StaffCon'], rosterForClash, ployIsBusy).length === 0);
+
+/**
+ * A person's own stated availability carries no override, whatever the rank of
+ * whoever is appointing them. A head who books over an exam week does not make
+ * the exam go away, and offering a director a button that claimed otherwise
+ * would be the system lying about what it can do.
+ */
+const ployHasExams = {
+  Ploy_StaffCon: { blocks: [{ fromOn: '2026-12-01', toOn: '2026-12-15', reason: 'สอบ' }] },
+};
+found = clashesFor(rosterForClash[0], { on: '2026-12-08', at: '14:00' },
+  ['Ploy_StaffCon'], rosterForClash, ployHasExams);
+ok('even the director cannot outrank somebody’s own exam week',
+  found[0].clashes[0].kind === 'away' && found[0].clashes[0].mayPrioritise === false &&
+  found[0].mayPrioritiseAll === false, JSON.stringify(found[0].clashes[0]));
+
+// The thing being edited is not in its own way.
+found = clashesFor(rosterForClash[0], { ...when, ignoreId: 'mt_x' },
+  ['Ploy_StaffCon'], rosterForClash, ployIsBusy);
+ok('moving a meeting does not report it as clashing with itself', found.length === 0);
+
+// ---- the same thing through the API ----
+head('70. Availability through the API');
+
+r = await call(usersApi, '/api/users?do=free', {
+  method: 'PUT', as: 'member',
+  body: { windows: [{ day: 'mon', from: '17:00', to: '22:00' },
+                    { day: 'sat', from: '09:00', to: '18:00' }] },
+});
+ok('a person can say when they are free', r.status === 200 && r.data.windows.length === 2,
+  JSON.stringify(r.data.windows));
+ok('...and the week comes back starting on Monday, not alphabetically',
+  r.data.windows[0].day === 'mon' && r.data.windows[1].day === 'sat',
+  r.data.windows.map((w) => w.day).join(','));
+
+r = await call(usersApi, '/api/users?do=free', {
+  method: 'PUT', as: 'member', body: { windows: [{ day: 'mon', from: '22:00', to: '17:00' }] },
+});
+ok('a window that ends before it starts is refused rather than guessed at',
+  r.status === 400 && r.data.error === 'ENDS_BEFORE_IT_STARTS', JSON.stringify(r.data));
+
+r = await call(usersApi, '/api/users?do=free', {
+  method: 'PUT', as: 'member', body: { username: 'Jade_Pres', windows: [] } });
+ok('one person cannot rewrite another’s free hours',
+  r.status === 403 && r.data.error === 'NOT_YOUR_AVAILABILITY', JSON.stringify(r.data));
+
+r = await call(usersApi, '/api/users?do=block', {
+  method: 'POST', as: 'member',
+  body: { fromOn: '2026-12-01', toOn: '2026-12-15', reason: 'สอบปลายภาค' } });
+ok('a stretch of days away can be added', r.status === 200 && r.data.blocks.length === 1,
+  JSON.stringify(r.data.blocks).slice(0, 80));
+const blockId = r.data.blocks[0].id;
+
+/**
+ * The dates are everybody's business — that is the point of the feature. The
+ * REASON is not: "ไปงานศพ" is nobody else's business, and a system that showed
+ * it to whoever happened to be assigning work would teach people to stop
+ * writing anything down.
+ */
+r = await call(usersApi, '/api/users?do=free&username=Ploy_StaffCon', { as: 'editor' });
+ok('somebody else can see the dates, which is the point',
+  r.status === 200 && r.data.blocks.length === 1 &&
+  r.data.blocks[0].fromOn === '2026-12-01', JSON.stringify(r.data.blocks));
+ok('...but not the reason, which is nobody else’s business',
+  r.data.blocks[0].reason === '', JSON.stringify(r.data.blocks[0].reason));
+
+r = await call(usersApi, '/api/users?do=free', { as: 'member' });
+ok('...while the person themselves still sees their own reason',
+  r.data.blocks[0].reason === 'สอบปลายภาค', r.data.blocks[0].reason);
+
+r = await call(usersApi, '/api/users?do=block&id=' + encodeURIComponent(blockId),
+  { method: 'DELETE', as: 'editor' });
+ok('one person cannot delete another’s days away',
+  r.status === 403 && r.data.error === 'NOT_YOUR_AVAILABILITY', JSON.stringify(r.data));
+
+// ---- the check the forms actually make ----
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานบ่ายวันจันทร์', dueDate: '2026-12-07', dueTime: '14:00',
+          assignees: ['Ploy_StaffCon'], notify: [] },
+});
+ok('a task can be put on somebody during their exams — it warns, it does not block',
+  r.status === 201, JSON.stringify(r.data).slice(0, 60));
+const examTaskId = r.data.task?.id;
+
+r = await call(usersApi, '/api/users?do=clashes', {
+  method: 'POST', as: 'editor',
+  body: { on: '2026-12-07', at: '14:00', people: ['Ploy_StaffCon'] },
+});
+ok('the form is told that person is away', r.status === 200 && r.data.clashes.length === 1,
+  JSON.stringify(r.data.clashes).slice(0, 110));
+const awaySaid = r.data.clashes[0].clashes.find((c) => c.kind === 'away');
+const bookedSaid = r.data.clashes[0].clashes.find((c) => c.kind === 'booked');
+ok('...and why, and what else they already have at that hour',
+  Boolean(awaySaid) && Boolean(bookedSaid) && bookedSaid.title === 'งานบ่ายวันจันทร์',
+  JSON.stringify({ away: awaySaid && awaySaid.kind, booked: bookedSaid && bookedSaid.title }));
+ok('...with the display name, so the warning names a person not a username',
+  r.data.clashes[0].displayName && r.data.clashes[0].displayName !== 'Ploy_StaffCon',
+  r.data.clashes[0].displayName);
+
+/**
+ * The editor may outrank the task because an ADMIN created it and an editor
+ * does not outrank an admin — so this must come back false. If it ever came
+ * back true the whole rank rule would be decorative.
+ */
+ok('an editor may not outrank a task the director set',
+  bookedSaid.mayPrioritise === false, String(bookedSaid.mayPrioritise));
+
+r = await call(usersApi, '/api/users?do=clashes', {
+  method: 'POST', as: 'coadmin',
+  body: { on: '2026-12-07', at: '14:00', people: ['Ploy_StaffCon'] },
+});
+const coadminSaw = r.data.clashes[0].clashes.find((c) => c.kind === 'booked');
+ok('...but a co-admin may, even over the director', coadminSaw.mayPrioritise === true);
+ok('...though still not over the exam week itself',
+  r.data.clashes[0].clashes.find((c) => c.kind === 'away').mayPrioritise === false);
+
+// ---- declaring precedence, and who is allowed to ----
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'coadmin',
+  body: { title: 'งานที่สำคัญกว่า', dueDate: '2026-12-07', dueTime: '14:00',
+          assignees: ['Ploy_StaffCon'], notify: [], prioritise: true },
+});
+const winnerId = r.data.task?.id;
+ok('a co-admin can book over the director’s task and say theirs counts',
+  r.status === 201, JSON.stringify(r.data).slice(0, 60));
+
+let precRows = await sql`SELECT * FROM precedence WHERE item_id = ${winnerId}`;
+ok('...and that decision is written down', precRows.length === 1, JSON.stringify(precRows[0] || {}).slice(0, 90));
+ok('...against the right task, for the right person',
+  precRows[0].over_id === examTaskId && precRows[0].username === 'Ploy_StaffCon',
+  `${precRows[0].over_id} / ${precRows[0].username}`);
+
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+const beaten = r.data.tasks.find((t) => t.id === examTaskId);
+ok('...and the person on both can see which one was outranked',
+  beaten && (beaten.outrankedBy || []).length === 1,
+  JSON.stringify(beaten && beaten.outrankedBy));
+
+/**
+ * The page computes the clashes to draw its warning. If the SAVE trusted that
+ * list, a member could post mayPrioritise:true and walk over the director's
+ * calendar. It is worked out again on the server, so the flag in the request
+ * decides nothing.
+ */
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'unitlead',
+  body: { title: 'งานที่อ้างว่าสำคัญ', dueDate: '2026-12-07', dueTime: '14:00',
+          assignees: ['Ploy_StaffCon'], notify: [], prioritise: true },
+});
+const liarId = r.data.task?.id;
+ok('somebody who may not prioritise can still make the booking', r.status === 201);
+precRows = await sql`SELECT * FROM precedence WHERE item_id = ${liarId}`;
+ok('...but asking for precedence they do not have writes nothing',
+  precRows.length === 0, `${precRows.length} row(s)`);
+
+// ---- a decision stops applying when the thing moves ----
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'coadmin', body: { id: winnerId, dueDate: '2026-12-09' } });
+ok('moving the winning task to another day is allowed', r.status === 200);
+precRows = await sql`SELECT * FROM precedence WHERE item_id = ${winnerId}`;
+ok('...and it stops outranking a task it no longer shares a day with',
+  precRows.length === 0, `${precRows.length} row(s)`);
+
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+ok('...so the other task is no longer marked as beaten',
+  (r.data.tasks.find((t) => t.id === examTaskId).outrankedBy || []).length === 0);
+
+// Deleting takes the decision with it rather than leaving a dangling note.
+await call(tasksApi, '/api/tasks?id=' + encodeURIComponent(liarId), { method: 'DELETE', as: 'admin' });
+r = await call(usersApi, '/api/users?do=clashes', {
+  method: 'POST', as: 'admin',
+  body: { on: '2026-12-07', at: '14:00', people: ['Ploy_StaffCon'], ignoreId: examTaskId },
+});
+const stillThere = (r.data.clashes[0] || { clashes: [] }).clashes
+  .filter((c) => c.kind === 'booked' && c.id === liarId);
+ok('a deleted task stops showing up as a clash', stillThere.length === 0);
+
+
+// ===========================================================================
+head('71. Cards on LINE: tasks, events, meetings');
+
+/**
+ * What LINE refuses, checked on every card this section produces.
+ *
+ * A Flex message that breaks one rule is not sent at all — LINE answers 400
+ * and the person sees nothing, not a slightly wrong card. So the rules are
+ * checked here rather than discovered on a phone: colours in hex only (the
+ * word "transparent" is refused), no empty text, button labels of 20
+ * characters at most, postback data of 300 at most, at most 12 bubbles to a
+ * carousel, and the whole message under 50KB.
+ */
+function flexProblems(message) {
+  const bad = [];
+  if (!message) return ['no card at all'];
+  const walk = (node, path) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach((c, i) => walk(c, `${path}[${i}]`)); return; }
+    for (const key of ['color', 'backgroundColor', 'borderColor']) {
+      if (node[key] !== undefined && !/^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/.test(node[key])) {
+        bad.push(`${path}.${key}=${node[key]}`);
+      }
+    }
+    if (node.type === 'text' && !String(node.text || '').length) bad.push(`${path}: empty text`);
+    if (node.type === 'box' && (!Array.isArray(node.contents))) bad.push(`${path}: box without contents`);
+    if (node.action) {
+      if (node.action.label && node.action.label.length > 20) bad.push(`${path}: label "${node.action.label}"`);
+      if (node.action.data && node.action.data.length > 300) bad.push(`${path}: data too long`);
+    }
+    for (const [k, v] of Object.entries(node)) if (v && typeof v === 'object') walk(v, `${path}.${k}`);
+  };
+  walk(message, 'msg');
+  if (message.type === 'carousel' && message.contents.length > 12) bad.push('carousel over 12');
+  if (JSON.stringify(message).length > 50000) bad.push(`over 50KB: ${JSON.stringify(message).length}`);
+  return bad;
+}
+const lastFlex = () => (lineSent.filter((m) => m.kind === 'reply').slice(-1)[0]?.flex || [])[0] || null;
+const pressOnBot = (userId, data) => ([{
+  type: 'postback', replyToken: 'rt_' + Math.random().toString(36).slice(2),
+  source: { type: 'user', userId }, postback: { data },
+}]);
+
+// Accounts of its own: earlier sections link and unlink LINE ids as they go.
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Ucard1', 'Jade_Pres', 'Jade') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+
+// A task shaped like a real one: late, in progress, with sub-tasks and people.
+const yesterdayIso = (() => { const d = new Date(Date.now() - 2 * 864e5 + 7 * 3600e3); return d.toISOString().slice(0, 10); })();
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin',
+  body: { title: 'การ์ด: เตรียมเวทีกลาง', description: 'จัดเวที ไฟ เสียง และป้ายหน้างาน',
+          dueDate: yesterdayIso, dueTime: '18:00', priority: 'high',
+          assignees: ['Jade_Pres', 'Kungking_HeadCon'], notify: [] } });
+const cardTask = r.data.task;
+await sql`UPDATE tasks SET status = 'doing' WHERE id = ${cardTask.id}`;
+await sql`INSERT INTO task_parts (id, task_id, title, done, position)
+          VALUES ('cp1', ${cardTask.id}, 'ไฟ', true, 1), ('cp2', ${cardTask.id}, 'เสียง', false, 2),
+                 ('cp3', ${cardTask.id}, 'ป้าย', false, 3)
+          ON CONFLICT DO NOTHING`.catch(() => {});
+
+await lineApi(lineHook(sayToBot('Ucard1', cardTask.code)));
+let card = lastFlex();
+ok('typing a task code answers with a card, not a line of text', card && card.type === 'bubble',
+  card ? card.type : lastReply().slice(0, 60));
+let seen = lastReply();
+ok('...headed by where it stands', seen.includes('กำลังทำ') && seen.includes(cardTask.code), seen.split('\n').slice(0, 3).join(' | '));
+ok('...with the five-step tracker, every stage named', ['รับงาน', 'กำลังทำ', 'รอตรวจ', 'ตรวจแล้ว', 'เสร็จ'].every((x) => seen.includes(x)));
+ok('...and how far along it is as a number', seen.includes('25%'), (seen.match(/\d+%/) || [''])[0]);
+const parts = await sql`SELECT count(*)::int AS n FROM task_parts WHERE task_id = ${cardTask.id}`;
+if (parts[0].n) {
+  ok('...the sub-tasks as a bar with a count', seen.includes('1/3 เสร็จ'), (seen.match(/\d+\/\d+ เสร็จ/) || ['none'])[0]);
+}
+ok('...says plainly when it is late, and by how much', /เลยกำหนด \d+ วัน/.test(seen), (seen.match(/เลยกำหนด \d+ วัน/) || ['none'])[0]);
+ok('...names the people on it', seen.includes('ผู้รับผิดชอบ'));
+ok('...and offers the next step to somebody allowed to take it',
+  JSON.stringify(card).includes(`task:status:${cardTask.id}:review`));
+ok('the card is one LINE will accept', flexProblems(card).length === 0, flexProblems(card).slice(0, 4).join(' | '));
+
+// Pressing the button moves it, and the reply is the card moved on.
+await lineApi(lineHook(pressOnBot('Ucard1', `task:status:${cardTask.id}:review`)));
+const nowAt = await sql`SELECT status FROM tasks WHERE id = ${cardTask.id}`;
+ok('pressing the next-step button moves the task', nowAt[0].status === 'review', nowAt[0].status);
+ok('...and the reply is the card with the tracker moved on', lastReply().includes('รอตรวจ') && lastReply().includes('50%'),
+  (lastReply().match(/\d+%/) || [''])[0]);
+
+/**
+ * Somebody who is not on the task sees the card — they may see the work of
+ * their department — but no button, and a forged postback changes nothing.
+ */
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Ucard3', 'Yam_HeadSpon', 'Yam') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+await lineApi(lineHook(pressOnBot('Ucard3', `task:status:${cardTask.id}:done`)));
+const still = await sql`SELECT status FROM tasks WHERE id = ${cardTask.id}`;
+ok('a forged button press from somebody not allowed changes nothing', still[0].status === 'review', still[0].status);
+
+// ---- my progress ----
+await lineApi(lineHook(sayToBot('Ucard1', 'ความคืบหน้า')));
+card = lastFlex();
+ok('"ความคืบหน้า" answers with a card per open task', card && (card.type === 'carousel' || card.type === 'bubble'),
+  card ? `${card.type}${card.contents && card.contents.length ? ' × ' + card.contents.length : ''}` : 'none');
+ok('...that LINE will accept, however many tasks there are', card && flexProblems(card).length === 0,
+  card ? flexProblems(card).slice(0, 3).join(' | ') : '');
+
+// Tapping a row in a list opens the card.
+await lineApi(lineHook(sayToBot('Ucard1', 'งาน')));
+const listCard = lastFlex();
+ok('rows in a task list can be tapped', JSON.stringify(listCard || {}).includes('"data":"open:task:'));
+await lineApi(lineHook(pressOnBot('Ucard1', `open:task:${cardTask.id}`)));
+ok('...and tapping one opens that task\'s card', lastReply().includes('การ์ด: เตรียมเวทีกลาง') && lastReply().includes('ความคืบหน้า'));
+
+// ---- events ----
+r = await call(eventsApi, '/api/events', { method: 'POST', as: 'admin',
+  body: { title: 'การ์ด: ซ้อมใหญ่', startsOn: '2026-12-18', startsAt: '14:00', endsAt: '17:00',
+          allDay: false, place: 'หอประชุมจุฬาฯ', notify: [] } });
+const cardEvent = r.data.event;
+await lineApi(lineHook(sayToBot('Ucard1', cardEvent.code)));
+card = lastFlex();
+seen = lastReply();
+ok('an event code answers with an event card', card && card.type === 'bubble' && seen.includes('การ์ด: ซ้อมใหญ่'));
+ok('...the date as a calendar leaf, the hours and the place', seen.includes('18') && seen.includes('ธ.ค.') &&
+  seen.includes('14:00–17:00') && seen.includes('หอประชุมจุฬาฯ'));
+ok('...with a button that adds it to Google Calendar, at Bangkok time',
+  JSON.stringify(card).includes('calendar.google.com') && JSON.stringify(card).includes('20261218T140000'));
+ok('...which LINE will accept', flexProblems(card).length === 0, flexProblems(card).slice(0, 3).join(' | '));
+await lineApi(lineHook(sayToBot('Ucard1', 'กิจกรรม')));
+ok('the events list is cards now, not text', Boolean(lastFlex()), lastReply().slice(0, 40));
+
+// ---- meetings ----
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin',
+  body: { title: 'การ์ด: ประชุมใหญ่', meetsOn: '2026-12-10', meetsAt: '17:00', place: 'ห้อง 701',
+          joinUrl: 'https://chula.zoom.us/j/1', people: ['Kungking_HeadCon'], template: 'standard' } });
+const cardMeetingId = r.data.id;
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Ucard2', 'Kungking_HeadCon', 'Kungking') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+await lineApi(lineHook(sayToBot('Ucard2', 'ประชุม')));
+card = lastFlex();
+seen = lastReply();
+ok('"ประชุม" answers with meeting cards', Boolean(card) && seen.includes('การ์ด: ประชุมใหญ่'), seen.slice(0, 60));
+ok('...showing who has answered', /มา \d+.*ยังไม่ตอบ \d+.*ไม่มา \d+/.test(seen.replace(/\n/g, ' ')));
+ok('...the agenda', seen.includes('ระเบียบวาระ') && seen.includes('วาระที่ 1'));
+ok('...a button to join online', JSON.stringify(card).includes('chula.zoom.us'));
+ok('...and the buttons to answer the invitation', JSON.stringify(card).includes(`meeting:reply:${cardMeetingId}:accepted`));
+ok('...which LINE will accept', flexProblems(card).length === 0, flexProblems(card).slice(0, 3).join(' | '));
+await lineApi(lineHook(pressOnBot('Ucard2', `meeting:reply:${cardMeetingId}:accepted`)));
+const replied = await sql`SELECT reply FROM meeting_people WHERE meeting_id = ${cardMeetingId} AND username = 'Kungking_HeadCon'`;
+ok('pressing เข้าร่วม answers the invitation', replied[0] && replied[0].reply === 'accepted', replied[0] && replied[0].reply);
+ok('...and the card that comes back says so', lastReply().includes('คุณตอบรับแล้ว'));
+await lineApi(lineHook(pressOnBot('Ucard3', `meeting:reply:${cardMeetingId}:accepted`)));
+const notInvited = await sql`SELECT count(*)::int AS n FROM meeting_people WHERE meeting_id = ${cardMeetingId} AND username = 'Yam_HeadSpon'`;
+ok('somebody not invited cannot answer for themselves into the meeting', notInvited[0].n === 0);
+
+await sql`DELETE FROM tasks WHERE id = ${cardTask.id}`;
+await sql`DELETE FROM events WHERE id = ${cardEvent.id}`;
+await sql`DELETE FROM meetings WHERE id = ${cardMeetingId}`;
+
+// ===========================================================================
+head('72. Viewers: following a task without doing it');
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'content', body: {
+  title: 'ผู้ติดตาม: ทำโปสเตอร์', department: 'content', assignees: ['Kungking_HeadCon'],
+  viewers: ['Kluayhom_HeadMerchant', 'Kungking_HeadCon', 'no_such_person'], notify: ['created'] } });
+const watched = r.data.task;
+ok('a task can be created with viewers', r.status === 201 && Array.isArray(watched.viewers), String(r.status));
+ok('...keeping the real person who is not on it',
+  watched.viewers.length === 1 && watched.viewers[0] === 'Kluayhom_HeadMerchant', JSON.stringify(watched.viewers));
+ok('...dropping someone already doing it, and a name that is nobody', !watched.viewers.includes('Kungking_HeadCon'));
+ok('a viewer is not one of the people on it', !watched.assignees.includes('Kluayhom_HeadMerchant'));
+
+let note = await sql`SELECT body FROM notifications WHERE task_id = ${watched.id} AND username = 'Kluayhom_HeadMerchant' AND kind = 'watch'`;
+ok('the viewer is told they are following it', note.length === 1, note[0] && note[0].body);
+
+r = await call(tasksApi, '/api/tasks', { as: 'merch' });
+let seenByViewer = r.data.tasks.find((x) => x.id === watched.id);
+ok('the viewer, from another department, can see it', Boolean(seenByViewer));
+ok('...and is told it is one they follow', seenByViewer && seenByViewer.watching === true);
+ok('...but may not move it, edit it or hand work in',
+  seenByViewer && !seenByViewer.maySetStatus && !seenByViewer.mayEdit && !seenByViewer.mayAttach);
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: watched.id, status: 'done' } });
+ok('...and the server refuses a status change from them', r.status === 403, String(r.status));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: watched.id, viewers: [] } });
+ok('...or a change to who is following', r.status === 403, String(r.status));
+
+r = await call(tasksApi, '/api/tasks', { as: 'content' });
+ok('to the person doing it, it is not "watching"', r.data.tasks.find((x) => x.id === watched.id).watching === false);
+
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'content', body: { id: watched.id, status: 'doing' } });
+note = await sql`SELECT body FROM notifications WHERE task_id = ${watched.id} AND username = 'Kluayhom_HeadMerchant' AND kind = 'progress'`;
+ok('when it moves along, the viewer hears about it', note.length === 1 && note[0].body.includes('กำลังทำ'), note[0] && note[0].body);
+const doerTold = await sql`SELECT 1 FROM notifications WHERE task_id = ${watched.id} AND username = 'Kungking_HeadCon' AND kind = 'progress'`;
+ok('...and the person who moved it is not told what they just did', doerTold.length === 0);
+await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'content', body: { id: watched.id, title: 'ผู้ติดตาม: ทำโปสเตอร์ (แก้)' } });
+note = await sql`SELECT 1 FROM notifications WHERE task_id = ${watched.id} AND username = 'Kluayhom_HeadMerchant' AND kind = 'progress'`;
+ok('...but not about every other edit', note.length === 1);
+
+// LINE: "ความคืบหน้า" shows what I follow too, marked as such.
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Uview1', 'Kluayhom_HeadMerchant', 'Kluayhom') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+await lineApi(lineHook(sayToBot('Uview1', 'ความคืบหน้า')));
+const viewCard = lastFlex();
+seen = lastReply();
+ok('on LINE, "ความคืบหน้า" includes the tasks I follow', seen.includes('ผู้ติดตาม: ทำโปสเตอร์'), seen.slice(0, 80));
+ok('...marked as followed, with no buttons to move it',
+  seen.includes('ติดตามอยู่') && !JSON.stringify(viewCard).includes(`task:status:${watched.id}`));
+ok('...which LINE will accept', flexProblems(viewCard).length === 0, flexProblems(viewCard).slice(0, 3).join(' | '));
+
+// Putting a viewer on the task makes them one of the people doing it.
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'content', body: {
+  id: watched.id, assignees: ['Kungking_HeadCon', 'Kluayhom_HeadMerchant'] } });
+ok('a viewer put on the task stops being a viewer', r.data.task.viewers.length === 0 &&
+  r.data.task.assignees.includes('Kluayhom_HeadMerchant'), JSON.stringify(r.data.task.viewers));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'content', body: {
+  id: watched.id, assignees: ['Kungking_HeadCon'], viewers: ['Kluayhom_HeadMerchant', 'Yam_HeadSpon'] } });
+ok('viewers can be changed later by whoever set it up', r.status === 200 &&
+  r.data.task.viewers.join() === 'Kluayhom_HeadMerchant,Yam_HeadSpon', JSON.stringify(r.data.task.viewers));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'content', body: { id: watched.id, viewers: ['Yam_HeadSpon'] } });
+ok('...and removed', r.data.task.viewers.join() === 'Yam_HeadSpon');
+r = await call(tasksApi, '/api/tasks', { as: 'merch' });
+ok('someone no longer following it, from outside the department, no longer sees it', !r.data.tasks.some((x) => x.id === watched.id));
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'content', body: { title: 'ผู้ติดตาม: ชิ้นงาน', viewers: ['Yam_HeadSpon'] } });
+const pieceTask = r.data.task;
+r = await call(tasksApi, '/api/tasks?do=part', { method: 'POST', as: 'content', body: { taskId: pieceTask.id, title: 'ชิ้นหนึ่ง', assignee: 'Yam_HeadSpon' } });
+ok('handing a viewer a piece of the work puts them on the task instead',
+  r.data.task.viewers.length === 0 && r.data.task.assignees.includes('Yam_HeadSpon'));
+
+await sql`DELETE FROM tasks WHERE id IN (${watched.id}, ${pieceTask.id})`;
+const viewersGone = await sql`SELECT count(*)::int AS n FROM task_viewers WHERE task_id IN (${watched.id}, ${pieceTask.id})`;
+ok("deleting a task takes its viewers with it", viewersGone[0].n === 0);
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

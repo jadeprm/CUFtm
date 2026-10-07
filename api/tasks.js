@@ -1,5 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser, canEditTasks, cannotAssign } from '../lib/auth.js';
+import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
 import { isDepartment, matchUnit } from '../lib/departments.js';
 import {
   isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet,
@@ -25,6 +26,7 @@ import { withNode } from '../lib/http.js';
 
 const SCOPES = ['all', 'heads', 'members'];
 const NOTIFY_KINDS = ['created', '7d', '3d', '24h', 'due'];
+const STATUS_TH = { todo: 'ยังไม่เริ่ม', doing: 'กำลังทำ', review: 'รอตรวจ', feedback: 'ตรวจแล้ว', done: 'เสร็จแล้ว' };
 
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
 const cleanDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
@@ -72,7 +74,9 @@ export async function assembled(sql) {
                   'id', l.id, 'partId', l.part_id, 'url', l.url, 'label', l.label,
                   'kind', l.kind, 'addedBy', l.added_by, 'createdAt', l.created_at)
                   ORDER BY l.created_at)
-                FROM task_links l WHERE l.task_id = t.id), '[]') AS links
+                FROM task_links l WHERE l.task_id = t.id), '[]') AS links,
+      COALESCE((SELECT json_agg(v.username ORDER BY v.username)
+                FROM task_viewers v WHERE v.task_id = t.id), '[]') AS watchers
     FROM tasks t
     ORDER BY
       CASE t.status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'feedback' THEN 2
@@ -88,8 +92,21 @@ export async function assembled(sql) {
     return [];
   };
 
+  /**
+   * What has been declared more important than each of these.
+   *
+   * One small query rather than a join every page load pays for: the table
+   * only ever holds contested bookings, so it is empty for most committees and
+   * tiny for the rest. Asked without an id list for the same reason — the whole
+   * table is smaller than the list of ids would be.
+   */
+  const beaten = await precedenceOver(sql, 'task');
+
   return rows.map((t) => ({
     id: t.id,
+    // What somebody decided takes precedence over this, so the person who is
+    // on both can see which one to turn up to.
+    outrankedBy: beaten[t.id] || [],
     // The short code people quote to each other: T0042.
     code: t.code || null,
     title: t.title,
@@ -110,8 +127,11 @@ export async function assembled(sql) {
     departments: asArray(t.depts),
     parts: asArray(t.parts),
     links: asArray(t.links),
+    // Following it, not doing it — see task_viewers in lib/db.js.
+    viewers: asArray(t.watchers),
   }));
 }
+
 
 /** Stamps each task with what this person is allowed to do to it. */
 const withRights = (me, tasks) =>
@@ -123,6 +143,9 @@ const withRights = (me, tasks) =>
     // The piece of this task that is this person's own, if any — what the
     // card shows them instead of making them open it to find out.
     myPart: (task.parts || []).find((p) => p.assignee === me?.username) || null,
+    // Here because somebody asked them to keep an eye on it, not to do it.
+    watching: Boolean(me) && (task.viewers || []).includes(me.username) &&
+      !(task.assignees || []).includes(me.username),
   }));
 
 /**
@@ -209,6 +232,40 @@ function readTags(body) {
     : [];
   return { assignees, departments };
 }
+
+/**
+ * Who should follow a task without working on it.
+ *
+ * Anybody active — the same open rule as assigning — except the people who
+ * are already on it: they see it anyway, and being both would put them in two
+ * lists that mean different things. Doing the work wins.
+ */
+function readViewers(body) {
+  if (!Array.isArray(body.viewers)) return null;
+  return [...new Set(body.viewers.map((v) => clean(v, 64)).filter(Boolean))].slice(0, 300);
+}
+
+async function writeViewers(sql, taskId, wanted, actor) {
+  const onIt = (await sql`SELECT username FROM task_people WHERE task_id = ${taskId}`).map((r) => r.username);
+  const asked = wanted.filter((u) => !onIt.includes(u));
+  const real = asked.length
+    ? (await sql`SELECT username FROM users WHERE active = true AND username = ANY(${asked})`).map((r) => r.username)
+    : [];
+  const before = (await sql`SELECT username FROM task_viewers WHERE task_id = ${taskId}`).map((r) => r.username);
+  await sql`DELETE FROM task_viewers WHERE task_id = ${taskId} AND username <> ALL(${real})`;
+  if (real.length) {
+    await sql`
+      INSERT INTO task_viewers (task_id, username, added_by)
+      SELECT ${taskId}, u, ${actor} FROM unnest(${real}::text[]) AS u
+      ON CONFLICT DO NOTHING`;
+  }
+  return real.filter((u) => !before.includes(u));
+}
+
+/** Somebody put on the task stops being a mere viewer of it. */
+const promoteViewers = (sql, taskId) => sql`
+  DELETE FROM task_viewers v USING task_people p
+  WHERE v.task_id = ${taskId} AND p.task_id = v.task_id AND p.username = v.username`;
 
 async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
   const targets = usernames.filter((u) => u !== actor); // nobody needs telling what they just did
@@ -301,6 +358,7 @@ async function handlePart(sql, me, request, url) {
     if (assignee && assignee !== me.username) {
       await sql`INSERT INTO task_people (task_id, username) VALUES (${task.id}, ${assignee})
                 ON CONFLICT DO NOTHING`;
+      await promoteViewers(sql, task.id);
       await notifyAssigned(sql, { id: task.id }, [assignee], me.username, 'part',
         task.title, `${me.display_name || me.username}: ${title}`);
     }
@@ -338,6 +396,7 @@ async function handlePart(sql, me, request, url) {
         if (!who) return json({ error: 'NO_SUCH_USER' }, 400);
         await sql`INSERT INTO task_people (task_id, username) VALUES (${row.task_id}, ${assignee})
                   ON CONFLICT DO NOTHING`;
+        await promoteViewers(sql, row.task_id);
         if (assignee !== me.username && assignee !== row.assignee) {
           await notifyAssigned(sql, { id: row.task_id }, [assignee], me.username, 'part',
             task.title, `${me.display_name || me.username}: ${row.title}`);
@@ -519,7 +578,11 @@ async function handler(request) {
        * refused for the same reason as one who names those people directly.
        */
       const willGetIt = await expandPeople(sql, assignees, departments);
-      const roster = await sql`SELECT username, unit FROM users WHERE active = true`;
+      // access and the display name ride along: the same roster answers the
+      // assign check and, below, whose booking this person may outrank.
+      const fullRoster = await sql`
+        SELECT username, unit, access, display_name FROM users WHERE active = true`;
+      const roster = fullRoster.map((p) => ({ ...p, displayName: p.display_name }));
       const blocked = cannotAssign(me, willGetIt, roster);
       if (blocked) {
         await sql`DELETE FROM tasks WHERE id = ${id}`;
@@ -528,9 +591,31 @@ async function handler(request) {
 
       const expanded = await writeTags(sql, id, assignees, departments);
 
+      /**
+       * "I know it clashes, and mine is the one that counts."
+       *
+       * Only recorded when the person actually asked for it, and whose booking
+       * they may outrank is worked out again on this side — the page's own
+       * answer is for drawing the warning, never for deciding it.
+       */
+      if (body.prioritise) {
+        await applyPrecedence(sql, me, {
+          kind: 'task', itemId: id, roster,
+          when: { on: cleanDate(body.dueDate), at: cleanTime(body.dueTime) },
+          people: expanded,
+        });
+      }
+
       if (notify.includes('created')) {
         await notifyAssigned(sql, { id }, expanded, me.username, 'created',
           title, `${me.display_name || me.username} added you to this task.`);
+      }
+
+      const viewers = readViewers(body);
+      if (viewers && viewers.length) {
+        const watching = await writeViewers(sql, id, viewers, me.username);
+        await notifyAssigned(sql, { id }, watching, me.username, 'watch',
+          title, `${me.display_name || me.username} ให้คุณติดตามความคืบหน้างานนี้ (ดูได้อย่างเดียว)`);
       }
 
       const all = await assembled(sql);
@@ -614,6 +699,19 @@ async function handler(request) {
           updated_at  = now()
         WHERE id = ${id}`;
 
+      /**
+       * Whether this task still sits where the clash decision was taken.
+       *
+       * A decision about a Tuesday afternoon means nothing once the task has
+       * moved to Thursday, and leaving the note behind would tell somebody to
+       * skip a meeting for a deadline that is no longer on the same day.
+       */
+      const moved = (body.dueDate !== undefined && cleanDate(body.dueDate) !== existing.dueDate) ||
+        (body.dueTime !== undefined && cleanTime(body.dueTime) !== existing.dueTime);
+      if (moved) await clearPrecedence(sql, 'task', id);
+
+      let nowOn = null;
+
       // Tags are replaced wholesale, but only when the caller sent them.
       if (body.assignees !== undefined || body.departments !== undefined) {
         const current = await sql`SELECT username FROM task_people WHERE task_id = ${id}`;
@@ -627,17 +725,62 @@ async function handler(request) {
         // The same rule as creating: a unit editor cannot widen a task they
         // own to reach people outside their section.
         const willGetIt = await expandPeople(sql, assignees, departments);
-        const roster = await sql`SELECT username, unit FROM users WHERE active = true`;
+        const fullRoster = await sql`
+          SELECT username, unit, access, display_name FROM users WHERE active = true`;
+        const roster = fullRoster.map((p) => ({ ...p, displayName: p.display_name }));
         const blocked = cannotAssign(me, willGetIt, roster);
         if (blocked) return json({ error: blocked, unit: me.unit || null }, 403);
 
         const expanded = await writeTags(sql, id, assignees, departments);
+        nowOn = expanded;
 
         const added = expanded.filter((u) => !before.has(u));
         if (added.length && String(existing.notify).includes('created')) {
           await notifyAssigned(sql, { id }, added, me.username, 'created',
             existing.title, `${me.display_name || me.username} added you to this task.`);
         }
+        await promoteViewers(sql, id);
+      }
+
+      // Viewers are part of the task's set-up, so only someone who may edit
+      // it reaches here — a status-only caller was turned away above.
+      const viewers = readViewers(body);
+      if (viewers) {
+        const watching = await writeViewers(sql, id, viewers, me.username);
+        await notifyAssigned(sql, { id }, watching, me.username, 'watch',
+          existing.title, `${me.display_name || me.username} ให้คุณติดตามความคืบหน้างานนี้ (ดูได้อย่างเดียว)`);
+      }
+
+      /**
+       * Telling the viewers it moved.
+       *
+       * Following progress is the whole reason somebody is a viewer, so a
+       * status change is the one thing they hear about. Nobody else is told
+       * here: the people on it are the ones moving it.
+       */
+      if (isStatus(body.status) && body.status !== existing.status) {
+        const watchers = (await sql`SELECT username FROM task_viewers WHERE task_id = ${id}`).map((r) => r.username);
+        if (watchers.length) {
+          await notifyAssigned(sql, { id }, watchers, me.username, 'progress',
+            existing.title, `${me.display_name || me.username}: ${STATUS_TH[existing.status] || existing.status} → ${STATUS_TH[body.status] || body.status}`);
+        }
+      }
+
+      if (body.prioritise) {
+        const [fresh] = await sql`SELECT due_date, due_time FROM tasks WHERE id = ${id}`;
+        const on = toIsoDate(fresh?.due_date);
+        const people = nowOn ||
+          (await sql`SELECT username FROM task_people WHERE task_id = ${id}`).map((r) => r.username);
+        const rank = (await sql`
+          SELECT username, unit, access, display_name FROM users WHERE active = true`)
+          .map((p) => ({ ...p, displayName: p.display_name }));
+        // Taken afresh rather than added to: deciding again replaces the
+        // earlier decision instead of stacking a second one on top of it.
+        await clearPrecedence(sql, 'task', id);
+        await applyPrecedence(sql, me, {
+          kind: 'task', itemId: id, roster: rank,
+          when: { on, at: fresh?.due_time || null }, people,
+        });
       }
 
       const all = await assembled(sql);

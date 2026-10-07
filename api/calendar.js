@@ -47,6 +47,18 @@ async function handler(request) {
     WHERE calendar_token = ${token} AND active = true AND suspended = false`;
   if (!owner) return json({ error: 'BAD_TOKEN' }, 401);
 
+  /**
+   * Noted, at most once an hour: somebody's calendar is subscribed. Awaited,
+   * because a serverless function may be frozen the moment it returns and an
+   * unawaited write would sometimes never happen — but a failure is ignored,
+   * since the feed is what Google is waiting for and matters more.
+   */
+  try {
+    await sql`UPDATE users SET calendar_seen_at = now()
+              WHERE username = ${owner.username}
+                AND (calendar_seen_at IS NULL OR calendar_seen_at < now() - interval '1 hour')`;
+  } catch (e) { /* the feed still goes out */ }
+
   owner.departments = (
     await sql`SELECT department FROM user_departments WHERE username = ${owner.username}`
   ).map((r) => r.department);

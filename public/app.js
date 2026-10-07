@@ -92,6 +92,8 @@
      also the order every menu and segmented control shows them in.
      ---------------------------------------------------------------------- */
   var STATUS_LIST = ['todo', 'doing', 'review', 'feedback', 'done'];
+  // Monday first, because that is how a Thai week is written and read.
+  var WEEK_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
   var PRIORITY_LIST = ['low', 'medium', 'high', 'highest'];
 
   var STATUS_KEY = {
@@ -634,6 +636,259 @@
     b.addEventListener('click', function () { setTheme(b.dataset.theme); });
   });
 
+  /* ---------- the phone -------------------------------------------------- */
+
+  /**
+   * One question every phone-only decision asks: is this a phone?
+   *
+   * The same 720px line as phone.css, read through matchMedia so the script
+   * and the stylesheet can never disagree about which side of it the screen is
+   * on. Crossing it — a tablet turned on its side, a window dragged narrow —
+   * redraws, because the two layouts are built differently, not just styled.
+   */
+  var PHONE_MQ = window.matchMedia ? window.matchMedia('(max-width: 720px)') : { matches: false };
+  function isPhone() { return Boolean(PHONE_MQ.matches); }
+  (function () {
+    var redraw = function () { if (S.user) { renderShell(); renderPage(); } };
+    if (PHONE_MQ.addEventListener) PHONE_MQ.addEventListener('change', redraw);
+    else if (PHONE_MQ.addListener) PHONE_MQ.addListener(redraw);
+  }());
+
+  /**
+   * How much of the screen is actually visible, kept in CSS variables.
+   *
+   * On an iPhone the keyboard does not shrink the page — it slides over it — so
+   * a sheet sized to the window put its save button behind the keyboard, and
+   * Safari's collapsing toolbar moves the bottom edge as you scroll. The
+   * visual viewport is the part a person can see; sheets are sized to that.
+   */
+  (function trackViewport() {
+    var vv = window.visualViewport;
+    var root = document.documentElement;
+    function sync() {
+      var height = vv ? vv.height : window.innerHeight;
+      root.style.setProperty('--vvh', Math.round(height) + 'px');
+      root.style.setProperty('--vvt', Math.round(vv ? vv.offsetTop : 0) + 'px');
+      // With the keyboard up the home indicator is covered anyway, so the
+      // space kept clear for it would only be a gap above the keys.
+      root.classList.toggle('kb-open', Boolean(vv) && window.innerHeight - height > 140);
+    }
+    sync();
+    if (vv) { vv.addEventListener('resize', sync); vv.addEventListener('scroll', sync); }
+    window.addEventListener('resize', sync);
+  }());
+
+  /** Small line icons, drawn here so they look the same on every phone. */
+  var ICON = {
+    eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
+    task: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M9 11.5l2.2 2.2L15.5 9"/>',
+    event: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/><circle cx="12" cy="14.5" r="1.6"/>',
+    meeting: '<circle cx="8" cy="9" r="2.8"/><circle cx="16" cy="9" r="2.8"/><path d="M3 19c.5-2.8 2.5-4.4 5-4.4s4.5 1.6 5 4.4M11 19c.5-2.8 2.5-4.4 5-4.4s4.5 1.6 5 4.4"/>',
+    upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v4.5h16V15"/>',
+    filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>',
+    doc: '<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4"/>',
+    chevron: '<path d="M9 6l6 6-6 6"/>',
+    board: '<rect x="3.5" y="4" width="5" height="16" rx="1.5"/><rect x="9.5" y="4" width="5" height="11" rx="1.5"/><rect x="15.5" y="4" width="5" height="13" rx="1.5"/>',
+    list: '<path d="M8 6.5h12M8 12h12M8 17.5h12"/><circle cx="4.5" cy="6.5" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17.5" r="1"/>',
+  };
+  function icon(name, cls) {
+    var span = document.createElement('span');
+    span.className = 'ic' + (cls ? ' ' + cls : '');
+    span.setAttribute('aria-hidden', 'true');
+    // A fixed string from the table above — nothing from a person reaches this.
+    span.innerHTML = '<svg viewBox="0 0 24 24">' + (ICON[name] || '') + '</svg>';
+    return span;
+  }
+
+  /**
+   * Every dialog, as a sheet that rises from the bottom.
+   *
+   * Applied to whatever lands in #modal-root rather than written into each of
+   * the twelve dialogs, so a dialog added next month is a sheet on a phone
+   * without anybody remembering to make it one. What it changes:
+   *
+   *   · a handle to drag it down by, which is how every phone closes a sheet;
+   *   · a footer button that only repeats the ✕ in the header is hidden — it
+   *     was the third of three buttons that wrapped onto two lines each;
+   *   · a footer left with nothing in it is hidden, rather than being a grey
+   *     strip of nothing above the home indicator.
+   *
+   * Watching the footers matters as much as watching the dialogs: the task
+   * dialog repaints its buttons every time it switches between reading and
+   * editing, and each repaint would otherwise bring the duplicate back.
+   */
+  function tidySheet(veil) {
+    var modal = veil.querySelector(':scope > .modal');
+    if (!modal) return;
+    if (!veil.classList.contains('sheet')) {
+      veil.classList.add('sheet');
+      modal.insertBefore(h('div', { class: 'grab', 'aria-hidden': 'true' }), modal.firstChild);
+      dragToDismiss(veil, modal);
+    }
+    var header = modal.querySelector(':scope > header');
+    var hasCross = Boolean(header) && Array.prototype.some.call(header.querySelectorAll('button'),
+      function (b) { return /^[✕×]$/.test((b.textContent || '').trim()); });
+    modal.querySelectorAll(':scope > footer').forEach(function (footer) {
+      var useful = 0;
+      Array.prototype.forEach.call(footer.children, function (el) {
+        var repeat = hasCross && (el.textContent || '').trim() === t('close');
+        el.classList.toggle('ph-dup', repeat);
+        if (!repeat && !el.hidden && !el.classList.contains('grow')) useful += 1;
+      });
+      footer.classList.toggle('ph-empty', useful === 0);
+    });
+  }
+
+  var tidyQueued = false;
+  new MutationObserver(function () {
+    if (tidyQueued) return;
+    tidyQueued = true;
+    requestAnimationFrame(function () {
+      tidyQueued = false;
+      if (!isPhone()) return;
+      document.querySelectorAll('#modal-root > .veil').forEach(tidySheet);
+    });
+  }).observe($('modal-root'), { childList: true, subtree: true });
+
+  /**
+   * Drag the handle or the header down to close.
+   *
+   * Closes by clicking the veil, not by removing the dialog, so each dialog's
+   * own close still runs — the task dialog puts the list back the way it was,
+   * the meeting dialog refreshes. A dialog that ignores a click on its veil
+   * stays open, and the sheet springs back rather than vanishing.
+   */
+  function dragToDismiss(veil, modal) {
+    var startY = null;
+    var dy = 0;
+    modal.addEventListener('touchstart', function (e) {
+      if (!isPhone() || !e.touches[0]) return;
+      var el = e.target;
+      if (el.closest('button, a, input, select, textarea, .seg')) return;
+      if (!el.classList.contains('grab') && !el.closest('.modal > header')) return;
+      startY = e.touches[0].clientY;
+      dy = 0;
+      modal.style.transition = 'none';
+    }, { passive: true });
+    modal.addEventListener('touchmove', function (e) {
+      if (startY === null || !e.touches[0]) return;
+      dy = Math.max(0, e.touches[0].clientY - startY);
+      modal.style.transform = 'translateY(' + dy + 'px)';
+    }, { passive: true });
+    var finish = function () {
+      if (startY === null) return;
+      startY = null;
+      modal.style.transition = '';
+      if (dy > 90) veil.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      if (veil.isConnected) modal.style.transform = '';
+    };
+    modal.addEventListener('touchend', finish);
+    modal.addEventListener('touchcancel', finish);
+  }
+
+  /**
+   * A short list of things to do, rising from the bottom.
+   *
+   * What a phone shows instead of a row of buttons it has no room for: each
+   * choice is a full-width row a thumb cannot miss, with a line under it
+   * saying what it does, because "กิจกรรม" and "นัดประชุม" are not obviously
+   * different things to somebody in their first week.
+   */
+  function actionSheet(title, items) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var list = h('div', { class: 'act-list' }, items.filter(Boolean).map(function (it) {
+      return h('button', {
+        type: 'button', class: 'act' + (it.danger ? ' danger' : ''),
+        onclick: function () { veil.remove(); it.onclick(); },
+      }, [
+        it.icon ? icon(it.icon, 'act-ic') : null,
+        h('span', { class: 'act-tx' }, [
+          h('b', { text: it.label }),
+          it.sub ? h('small', { text: it.sub }) : null,
+        ]),
+      ]);
+    }));
+    veil.appendChild(h('div', { class: 'modal act-sheet' }, [
+      h('header', {}, [
+        h('h2', { text: title }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [list]),
+    ]));
+    $('modal-root').appendChild(veil);
+    return veil;
+  }
+
+  /** What the + button offers on the work page and the calendar. */
+  function openCreateSheet() {
+    actionSheet(t('phCreateWhat'), [
+      { icon: 'task', label: t('newTask'), sub: t('phNewTaskSub'), onclick: function () { openTask(null); } },
+      { icon: 'event', label: t('newEvent'), sub: t('phNewEventSub'), onclick: function () { openEvent(null); } },
+      { icon: 'meeting', label: t('mtgNew'), sub: t('phNewMeetingSub'), onclick: function () { openMeeting(null); } },
+      { icon: 'upload', label: t('importTasks'), sub: t('phImportSub'), onclick: function () { openImport(); } },
+    ]);
+  }
+
+  /**
+   * The + button: what it does depends on the page, and on some pages it is
+   * not there at all — announcements and the admin page are forms already, and
+   * a button that makes "something" on them would be a guess.
+   */
+  function paintFab() {
+    var fab = $('fab');
+    if (!fab) return;
+    var action = null;
+    if ((S.page === 'work' || S.page === 'calendar') && mayCreate()) action = openCreateSheet;
+    if (S.page === 'docs') action = function () { openDocUpload(); };
+    fab.hidden = !action;
+    fab.onclick = action;
+    fab.setAttribute('aria-label', S.page === 'docs' ? t('docNew') : t('phCreateWhat'));
+  }
+
+  /** The name of the page, for the top bar on a phone. */
+  function pageTitle() {
+    return t({
+      work: 'navWork', calendar: 'navCalendar', docs: 'navDocs', announce: 'navAnnounce',
+      admin: 'navAdmin', profile: 'profile', links: 'navLinks',
+    }[S.page] || 'navWork');
+  }
+
+  /**
+   * A list of people that stays a line long on a phone.
+   *
+   * Ten people as ten full-width chips was most of the screen in the task Jade
+   * photographed — the detail she opened the task to read was below it. On a
+   * phone, more than four collapse to a row of faces and a count, and open on
+   * a tap. On a computer, where they sit side by side, nothing changes.
+   */
+  function peopleList(usernames, chipClass) {
+    var chips = function () {
+      return usernames.map(function (u) {
+        return h('span', { class: 'chip who' + (chipClass ? ' ' + chipClass(u) : '') },
+          [avatarNode(u, 'sm'), nameOf(u)]);
+      });
+    };
+    if (!isPhone() || usernames.length <= 4) return h('span', { class: 'selected' }, chips());
+
+    var box = h('div', { class: 'ppl-fold' });
+    function fold() {
+      clear(box);
+      box.appendChild(h('button', { type: 'button', class: 'ppl-sum', onclick: unfold }, [
+        h('span', { class: 'stack' }, usernames.slice(0, 5).map(function (u) { return avatarNode(u, 'sm'); })),
+        h('span', { class: 'ppl-n', text: t('phPeopleN').replace('%n', String(usernames.length)) }),
+        h('span', { class: 'ppl-more', text: t('phShowAll') }),
+      ]));
+    }
+    function unfold() {
+      clear(box);
+      box.appendChild(h('span', { class: 'selected' }, chips()));
+      box.appendChild(h('button', { type: 'button', class: 'ppl-less', text: t('phShowLess'), onclick: fold }));
+    }
+    fold();
+    return box;
+  }
+
   function renderShell() {
     bootDone();
     $('soon-view').hidden = true;
@@ -641,6 +896,9 @@
     $('app-view').hidden = false;
     $('brand-name').textContent = t('appName');
     $('brand-sub').textContent = t('appSub');
+    // On a phone the page's own name takes the brand's place: there is room
+    // for one of the two, and knowing which page you are on is the useful one.
+    $('bar-title').textContent = pageTitle();
     document.querySelectorAll('#app-view [data-t]').forEach(function (n) { n.textContent = t(n.dataset.t); });
     document.querySelectorAll('.lang-toggle button').forEach(function (b) {
       b.classList.toggle('on', b.dataset.lang === S.lang);
@@ -716,6 +974,10 @@
     e.stopPropagation();
     var order = ['system', 'light', 'dark'];
     setTheme(order[(order.indexOf(S.theme || 'system') + 1) % order.length]);
+  });
+  $('me-guide').addEventListener('click', function () {
+    ['bell-pop', 'me-pop'].forEach(function (id) { $(id).hidden = true; });
+    guideStatus().then(function (steps) { openGuide(steps, true); });
   });
   $('me-lang').addEventListener('click', function (e) {
     e.stopPropagation();
@@ -967,7 +1229,8 @@
       h('span', { class: 'grow' }),
       namesBtn,
       secBtn,
-      h('button', { class: 'btn primary', text: t('docNew'), onclick: function () { openDocUpload(); } }),
+      // On a phone the + button in the corner does this.
+      isPhone() ? null : h('button', { class: 'btn primary', text: t('docNew'), onclick: function () { openDocUpload(); } }),
     ]));
 
     /**
@@ -1905,6 +2168,12 @@
      ====================================================================== */
   function renderPage() {
     var main = clear($('main'));
+    main.classList.remove('board-wide');
+    paintFab();
+    // A page is always opened from its top. Without this, moving between
+    // tabs on a phone kept the old scroll position and landed mid-list.
+    if (isPhone() && S.lastPainted !== S.page) window.scrollTo(0, 0);
+    S.lastPainted = S.page;
     if (S.page === 'work') return pageTasks(main);
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'docs') return pageDocs(main);
@@ -1930,10 +2199,24 @@
   }
 
   /* ---------- tasks ----------------------------------------------------- */
-  function visibleTasks(mineOnly) {
+  /**
+   * "My tasks": the ones I am doing, and the ones I was asked to follow — the
+   * point of being made a viewer is to have it in front of you. The card says
+   * which is which (see taskRow).
+   */
+  function isMine(task) {
+    return task.assignees.indexOf(S.user.username) !== -1 ||
+      (task.viewers || []).indexOf(S.user.username) !== -1;
+  }
+
+  function visibleTasks(mineOnly, anyStatus) {
     return S.tasks.filter(function (task) {
-      if (mineOnly && task.assignees.indexOf(S.user.username) === -1) return false;
-      if (S.filter === 'open' && task.status === 'done') return false;
+      if (mineOnly && !isMine(task)) return false;
+      // On the board the columns ARE the statuses, so the status tab does
+      // not narrow anything — every status has a column to sit in.
+      if (anyStatus) {
+        // fall through to the other filters
+      } else if (S.filter === 'open' && task.status === 'done') return false;
       /**
        * Every status, from the one list.
        *
@@ -1943,7 +2226,7 @@
        * while the count beside the tab was right. Reading the statuses from
        * STATUS_LIST means a status can never be forgotten here again.
        */
-      if (STATUS_LIST.indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
+      if (!anyStatus && STATUS_LIST.indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
       if (!matchesQuery(task)) return false;
       if (S.who && task.assignees.indexOf(S.who) === -1) return false;
       if (S.prio && task.priority !== S.prio) return false;
@@ -1979,6 +2262,265 @@
   }
 
   /**
+   * The four ways to narrow the task list — priority, department, section and
+   * person — as dropdowns.
+   *
+   * Built in one place because there are two places they appear: in a row on a
+   * computer, and in a sheet on a phone, where four dropdowns across the top of
+   * the page were most of the reason it looked too big. `after` is what to do
+   * once one has changed: redraw the page, and on a phone redraw the sheet as
+   * well, because picking a department changes which sections and people the
+   * other two can offer.
+   */
+  function taskFilterSelects(after) {
+    /**
+     * Department first, person second.
+     *
+     * A flat list of every person stops working the moment the roster grows
+     * past the heads, which it is about to. Picking a department narrows the
+     * person list to that department, so the second dropdown stays short.
+     */
+    var deptSelect = h('select', {
+      onchange: function (e) { S.dept = e.target.value; S.who = ''; S.unit = ''; after(); },
+    }, [h('option', { value: '', text: t('allDepartments') })].concat(
+      myDepartments().map(function (d) {
+        return h('option', { value: d.key, text: deptOptionLabel(d), selected: S.dept === d.key });
+      })
+    ));
+
+    /**
+     * Sections, narrowed to the chosen department when there is one.
+     *
+     * With no department picked this lists every section on offer, prefixed by
+     * its department so two called "Stage" could never be confused. It hides
+     * itself when there is nothing to choose between.
+     */
+    var unitChoices = S.dept
+      ? unitsOf(S.dept).map(function (u) { return { dept: S.dept, unit: u, label: u }; })
+      : myUnits().map(function (x) { return { dept: x.dept, unit: x.unit, label: deptLabel(x.dept) + ' · ' + x.unit }; });
+    var unitSelect = unitChoices.length
+      ? h('select', {
+          onchange: function (e) { S.unit = e.target.value; after(); },
+        }, [h('option', { value: '', text: t('allUnits') })].concat(
+          unitChoices.map(function (x) {
+            return h('option', { value: x.unit, text: x.label, selected: S.unit === x.unit });
+          })
+        ))
+      : null;
+
+    var peopleForPicker = S.users.filter(function (u) {
+      return u.active && (!S.dept || (u.departments || []).indexOf(S.dept) !== -1);
+    });
+    var whoSelect = h('select', {
+      onchange: function (e) { S.who = e.target.value; after(); },
+    }, [h('option', { value: '', text: t('everyone') })].concat(
+      groupedPeopleOptions(peopleForPicker)
+    ));
+
+    var prioSelect = h('select', {
+      onchange: function (e) { S.prio = e.target.value; after(); },
+    }, [h('option', { value: '', text: t('priority') })].concat(
+      PRIORITY_LIST.map(function (p) {
+        return h('option', { value: p, text: prioLabel(p), selected: S.prio === p });
+      })
+    ));
+
+    return { prio: prioSelect, dept: deptSelect, unit: unitSelect, who: whoSelect };
+  }
+
+  /**
+   * The four dropdowns, in a sheet, on a phone.
+   *
+   * Redrawn in place after each change, because picking a department changes
+   * what the section and person dropdowns can offer — and the list behind it
+   * redraws too, so the count on each status chip is right the moment the
+   * sheet closes.
+   */
+  function openTaskFilterSheet() {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var body = h('div', { class: 'body' });
+    var clearBtn = h('button', {
+      class: 'btn', text: t('phClearFilters'),
+      onclick: function () { S.prio = ''; S.dept = ''; S.unit = ''; S.who = ''; renderPage(); draw(); },
+    });
+    function draw() {
+      clear(body);
+      var picks = taskFilterSelects(function () { renderPage(); draw(); });
+      [[t('priority'), picks.prio], [t('departments'), picks.dept],
+       [t('phUnit'), picks.unit], [t('assignTo'), picks.who]].forEach(function (pair) {
+        if (pair[1]) body.appendChild(h('div', { class: 'field' }, [h('label', { text: pair[0] }), pair[1]]));
+      });
+      clearBtn.disabled = !taskFilterCount();
+    }
+    draw();
+    veil.appendChild(h('div', { class: 'modal' }, [
+      h('header', {}, [
+        h('h2', { text: t('phFilters') }),
+        h('button', { class: 'btn ghost sm', text: '\u2715', onclick: function () { veil.remove(); } }),
+      ]),
+      body,
+      h('footer', {}, [
+        clearBtn,
+        h('button', { class: 'btn primary', text: t('phDone'), onclick: function () { veil.remove(); } }),
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+  }
+
+  /** How many of the four are narrowing the list right now. */
+  function taskFilterCount() {
+    return [S.prio, S.dept, S.unit, S.who].filter(Boolean).length;
+  }
+
+  /* ---------- the board ------------------------------------------------- */
+
+  /**
+   * Board or list — remembered on this device.
+   *
+   * The board is the default: it answers "where does everything stand" at a
+   * glance, which is the question the committee meets to ask. The list stays
+   * one tap away because it answers a different one — "what is about to bite
+   * me" — better, sorted by urgency across every status at once.
+   */
+  function workView() {
+    if (S.workView) return S.workView;
+    try { S.workView = localStorage.getItem('fair-work-view') || 'board'; } catch (e) { S.workView = 'board'; }
+    return S.workView;
+  }
+  function setWorkView(v) {
+    S.workView = v;
+    try { localStorage.setItem('fair-work-view', v); } catch (e) {}
+    renderPage();
+  }
+
+  /**
+   * Moving a card, shown at once and confirmed after.
+   *
+   * The same optimistic pattern as the rest of the page: the card lands in its
+   * new column the moment it is dropped, and goes back with a message if the
+   * server says no — which it only does to somebody who is not on the task.
+   */
+  function moveTask(task, status) {
+    if (!task || task.status === status) return;
+    var before = task.status;
+    task.status = status;
+    renderPage();
+    api('/api/tasks', { method: 'PATCH', body: { id: task.id, status: status } })
+      .then(function (d) { S.tasks = d.tasks; renderPage(); refreshNotifications(); })
+      .catch(function (err) { task.status = before; renderPage(); alert(errText(err.code)); });
+  }
+
+  /** On a phone the status box opens a sheet rather than a tiny dropdown. */
+  function openStatusSheet(task) {
+    actionSheet(t('kbMoveTo'), STATUS_LIST.map(function (st) {
+      return {
+        label: (MARK[st] ? MARK[st] + '  ' : '') + statusLabel(st),
+        sub: st === task.status ? t('kbNow') : null,
+        onclick: function () { moveTask(task, st); },
+      };
+    }));
+  }
+
+  /**
+   * The finished column is cut short.
+   *
+   * It only ever grows — a month into the fair it would be the tallest column
+   * by far, pushing nothing useful down the page. The most recent dozen show;
+   * the rest are a tap away.
+   */
+  var DONE_SHOWN = 12;
+
+  function kanbanBoard(rows, phone) {
+    var board = h('div', { class: 'kanban' + (phone ? ' kb-phone' : '') });
+
+    STATUS_LIST.forEach(function (st) {
+      var items = rows.filter(function (r) { return r.status === st; });
+      var shown = items;
+      var hidden = 0;
+      if (st === 'done' && !S.kbAllDone && items.length > DONE_SHOWN) {
+        shown = items.slice(0, DONE_SHOWN);
+        hidden = items.length - DONE_SHOWN;
+      }
+
+      var list = h('ul', { class: 'tasks kb-list' }, shown.map(function (task) {
+        var card = taskRow(task);
+        /**
+         * Dragging is for a mouse. On a phone a long press is already "select
+         * text" or "scroll", and HTML drag-and-drop does not exist on iOS at
+         * all — so there the status box on each card opens a sheet instead.
+         */
+        if (!phone && task.maySetStatus && !task.pending) {
+          card.draggable = true;
+          card.addEventListener('dragstart', function (e) {
+            S.dragId = task.id;
+            card.classList.add('dragging');
+            try { e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; } catch (x) {}
+          });
+          card.addEventListener('dragend', function () {
+            S.dragId = null;
+            card.classList.remove('dragging');
+            board.querySelectorAll('.drop-on').forEach(function (c) { c.classList.remove('drop-on'); });
+          });
+        }
+        return card;
+      }));
+
+      var col = h('section', { class: 'kb-col', dataset: { status: st } }, [
+        h('div', { class: 'kb-head' }, [
+          h('i', { class: 'kb-dot s-' + st }),
+          h('span', { text: statusLabel(st) }),
+          h('span', { class: 'n', text: String(items.length) }),
+        ]),
+        items.length ? list : h('div', { class: 'kb-empty', text: phone ? t('kbEmptyPhone') : t('kbEmpty') }),
+        hidden ? h('button', {
+          type: 'button', class: 'kb-more', text: t('kbMore').replace('%n', String(hidden)),
+          onclick: function () { S.kbAllDone = true; renderPage(); },
+        }) : null,
+      ]);
+
+      if (!phone) {
+        col.addEventListener('dragover', function (e) {
+          if (!S.dragId) return;
+          e.preventDefault();
+          try { e.dataTransfer.dropEffect = 'move'; } catch (x) {}
+          col.classList.add('drop-on');
+        });
+        col.addEventListener('dragleave', function (e) {
+          if (!col.contains(e.relatedTarget)) col.classList.remove('drop-on');
+        });
+        col.addEventListener('drop', function (e) {
+          e.preventDefault();
+          col.classList.remove('drop-on');
+          var task = S.tasks.filter(function (x) { return x.id === S.dragId; })[0];
+          S.dragId = null;
+          moveTask(task, st);
+        });
+      }
+      board.appendChild(col);
+    });
+
+    /**
+     * On a phone the columns sit side by side and swipe, one to a screen with
+     * the edge of the next showing so it is obvious there is more. Redrawing
+     * after a move would otherwise snap back to the first column, so where
+     * the board was scrolled to is kept and restored.
+     */
+    if (phone) {
+      requestAnimationFrame(function () { board.scrollLeft = S.kbScroll || 0; });
+      board.addEventListener('scroll', function () {
+        S.kbScroll = board.scrollLeft;
+        var cols = board.querySelectorAll('.kb-col');
+        var w = cols.length > 1 ? cols[1].offsetLeft - cols[0].offsetLeft : 1;
+        var at = Math.max(0, Math.min(cols.length - 1, Math.round(board.scrollLeft / w)));
+        document.querySelectorAll('.ph-chips button').forEach(function (b, i) {
+          b.classList.toggle('on', i === at);
+        });
+      }, { passive: true });
+    }
+    return board;
+  }
+
+  /**
    * One page for everything that has a date on it.
    *
    * Mine, everyone's, and the events used to be three tabs, which meant
@@ -1989,14 +2531,63 @@
    */
   function pageTasks(main) {
     var mineOnly = S.scope !== 'all';
+    var phone = isPhone();
+    var board = workView() === 'board';
+    // The board wants the width of the window, not the width of a column of
+    // text; every other page keeps the narrower measure.
+    main.classList.toggle('board-wide', board && !phone);
 
-    main.appendChild(h('div', { class: 'page-head' }, [
+    /**
+     * On a phone: one line. Mine / everyone, then search and filters as two
+     * round buttons. Making things is the + button in the corner.
+     */
+    if (phone) {
+      var nFilters = taskFilterCount();
+      main.appendChild(h('div', { class: 'ph-toolbar' }, [
+        h('div', { class: 'seg scope-seg' }, [['mine', 'scopeMine'], ['all', 'scopeAll']].map(function (pair) {
+          return h('button', {
+            class: S.scope === pair[0] ? 'on' : '', text: t(pair[1]),
+            onclick: function () { S.scope = pair[0]; renderPage(); },
+          });
+        })),
+        h('span', { class: 'grow' }),
+        // Board ⇄ list. The icon shows what you will GET, not what you have.
+        h('button', {
+          type: 'button', class: 'ph-ibtn ph-view',
+          'aria-label': board ? t('viewList') : t('viewBoard'),
+          onclick: function () { setWorkView(board ? 'list' : 'board'); },
+        }, [icon(board ? 'list' : 'board')]),
+        h('button', {
+          type: 'button', class: 'ph-ibtn ph-find' + (S.phSearch || S.q ? ' on' : ''),
+          'aria-label': t('searchPlaceholder'),
+          onclick: function () {
+            S.phSearch = !(S.phSearch || S.q);
+            if (!S.phSearch) S.q = '';
+            renderPage();
+            if (S.phSearch) { var box = document.querySelector('.ph-search input'); if (box) box.focus(); }
+          },
+        }, [icon('search')]),
+        h('button', {
+          type: 'button', class: 'ph-ibtn ph-filter' + (nFilters ? ' on' : ''),
+          'aria-label': t('phFilters'),
+          onclick: openTaskFilterSheet,
+        }, [icon('filter'), nFilters ? h('span', { class: 'badge-n', text: String(nFilters) }) : null]),
+      ]));
+    }
+
+    if (!phone) main.appendChild(h('div', { class: 'page-head' }, [
       h('div', { class: 'seg scope-seg' }, [['mine', 'scopeMine'], ['all', 'scopeAll']].map(function (pair) {
         return h('button', {
           class: S.scope === pair[0] ? 'on' : '',
           text: t(pair[1]),
           onclick: function () { S.scope = pair[0]; renderPage(); },
         });
+      })),
+      h('div', { class: 'seg view-seg' }, [['board', 'viewBoard', 'board'], ['list', 'viewList', 'list']].map(function (x) {
+        return h('button', {
+          class: workView() === x[0] ? 'on' : '', title: t(x[1]),
+          onclick: function () { setWorkView(x[0]); },
+        }, [icon(x[2]), h('span', { text: t(x[1]) })]);
       })),
       h('span', { class: 'grow' }),
       /**
@@ -2010,11 +2601,11 @@
       mayCreate() ? h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }) : null,
     ]));
 
-    meetingStrip(main, mineOnly);
-    eventStrip(main, mineOnly);
+    if (phone) phoneStrip(main, mineOnly);
+    else { meetingStrip(main, mineOnly); eventStrip(main, mineOnly); }
 
     var pool = S.tasks.filter(function (x) {
-      return !mineOnly || x.assignees.indexOf(S.user.username) !== -1;
+      return !mineOnly || isMine(x);
     });
     var counts = {
       all: pool.length,
@@ -2039,57 +2630,8 @@
       }, [pair[1], h('span', { class: 'n', text: String(counts[pair[0]]) })]);
     }));
 
-    /**
-     * Department first, person second.
-     *
-     * A flat list of every person stops working the moment the roster grows
-     * past the heads, which it is about to. Picking a department narrows the
-     * person list to that department, so the second dropdown stays short.
-     */
-    var deptSelect = h('select', {
-      onchange: function (e) { S.dept = e.target.value; S.who = ''; S.unit = ''; renderPage(); },
-    }, [h('option', { value: '', text: t('allDepartments') })].concat(
-      myDepartments().map(function (d) {
-        return h('option', { value: d.key, text: deptOptionLabel(d), selected: S.dept === d.key });
-      })
-    ));
-
-    /**
-     * Sections, narrowed to the chosen department when there is one.
-     *
-     * With no department picked this lists every section on offer, prefixed by
-     * its department so two called "Stage" could never be confused. It hides
-     * itself when there is nothing to choose between.
-     */
-    var unitChoices = S.dept
-      ? unitsOf(S.dept).map(function (u) { return { dept: S.dept, unit: u, label: u }; })
-      : myUnits().map(function (x) { return { dept: x.dept, unit: x.unit, label: deptLabel(x.dept) + ' · ' + x.unit }; });
-    var unitSelect = unitChoices.length
-      ? h('select', {
-          onchange: function (e) { S.unit = e.target.value; renderPage(); },
-        }, [h('option', { value: '', text: t('allUnits') })].concat(
-          unitChoices.map(function (x) {
-            return h('option', { value: x.unit, text: x.label, selected: S.unit === x.unit });
-          })
-        ))
-      : null;
-
-    var peopleForPicker = S.users.filter(function (u) {
-      return u.active && (!S.dept || (u.departments || []).indexOf(S.dept) !== -1);
-    });
-    var whoSelect = h('select', {
-      onchange: function (e) { S.who = e.target.value; renderPage(); },
-    }, [h('option', { value: '', text: t('everyone') })].concat(
-      groupedPeopleOptions(peopleForPicker)
-    ));
-
-    var prioSelect = h('select', {
-      onchange: function (e) { S.prio = e.target.value; renderPage(); },
-    }, [h('option', { value: '', text: t('priority') })].concat(
-      PRIORITY_LIST.map(function (p) {
-        return h('option', { value: p, text: prioLabel(p), selected: S.prio === p });
-      })
-    ));
+    var picks = taskFilterSelects(renderPage);
+    var prioSelect = picks.prio, deptSelect = picks.dept, unitSelect = picks.unit, whoSelect = picks.who;
 
     // The three dropdowns are one group, so they wrap together onto a second
     // line rather than splitting up awkwardly on a narrow window.
@@ -2121,11 +2663,58 @@
       }, 220);
     });
 
-    main.appendChild(h('div', { class: 'filters' }, [
-      seg, h('span', { class: 'grow' }),
-      searchBox,
-      h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
-    ]));
+    if (phone) {
+      if (S.phSearch || S.q) {
+        main.appendChild(h('div', { class: 'ph-search' }, [searchBox]));
+      }
+      if (board) {
+        /**
+         * On the board the chips are a map of the columns: tapping one swipes
+         * the board to it, and the one lit up follows the swipe.
+         */
+        main.appendChild(h('div', { class: 'ph-chips' }, STATUS_LIST.map(function (st, i) {
+          return h('button', {
+            type: 'button', class: i === 0 ? 'on' : '',
+            onclick: function () {
+              var col = document.querySelector('.kanban .kb-col[data-status="' + st + '"]');
+              var rail = document.querySelector('.kanban');
+              if (col && rail) rail.scrollTo({ left: col.offsetLeft - rail.offsetLeft - 14, behavior: 'smooth' });
+            },
+          }, [statusLabel(st), h('span', { class: 'n', text: String(counts[st]) })]);
+        })));
+      } else {
+        // The same tabs, as a line of chips that scrolls instead of wrapping.
+        seg.className = 'ph-chips';
+        main.appendChild(seg);
+      }
+
+      /**
+       * What is narrowing the list, said where the list starts.
+       *
+       * With the dropdowns tucked into a sheet, a filter set yesterday would
+       * otherwise be invisible today — and "where did half my tasks go" is
+       * the question that follows. One line names them and clears them.
+       */
+      if (taskFilterCount()) {
+        var named = [];
+        if (S.prio) named.push(prioLabel(S.prio));
+        if (S.dept) named.push(deptLabel(S.dept));
+        if (S.unit) named.push(S.unit);
+        if (S.who) named.push(nameOf(S.who));
+        main.appendChild(h('div', { class: 'ph-active' }, named.map(function (x) {
+          return h('span', { class: 'chip', text: x });
+        }).concat([h('button', {
+          type: 'button', text: t('phClearFilters'),
+          onclick: function () { S.prio = ''; S.dept = ''; S.unit = ''; S.who = ''; renderPage(); },
+        })])));
+      }
+    } else {
+      main.appendChild(h('div', { class: 'filters' }, [
+        board ? null : seg, board ? null : h('span', { class: 'grow' }),
+        searchBox,
+        h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
+      ]));
+    }
 
     if (!S.seesEverything) {
       main.appendChild(h('p', {
@@ -2134,7 +2723,11 @@
       }));
     }
 
-    var rows = visibleTasks(mineOnly);
+    var rows = visibleTasks(mineOnly, board);
+    if (board && pool.length) {
+      main.appendChild(kanbanBoard(rows, phone));
+      return;
+    }
     if (!rows.length) {
       main.appendChild(h('div', { class: 'empty' }, [
         h('strong', { text: pool.length ? t('emptyFilter') : (mineOnly ? t('emptyMine') : t('emptyAll')) }),
@@ -2160,16 +2753,32 @@
    * go and look for. They are dates like any other and belong here, marked so
    * that a meeting still reads as a meeting.
    */
-  function eventStrip(main, mineOnly) {
+  /** The events still ahead, that this view should show. */
+  function comingEvents(mineOnly) {
     var today = todayIso();
-    var coming = S.events.filter(function (e) {
+    return S.events.filter(function (e) {
       if ((e.endsOn || e.startsOn) < today) return false;
       if (mineOnly && (e.people || []).length && e.people.indexOf(S.user.username) === -1) return false;
       // A search covers events as well as tasks — asking for E0007 and being
       // shown the whole calendar would not be a search.
       return matchesQuery(e);
-    }).map(function (e) { return { kind: 'event', on: e.startsOn, item: e }; });
+    });
+  }
 
+  function eventCard(event) {
+    return h('button', {
+      class: 'event-card' + (event.pending ? ' pending' : ''),
+      style: '--c:' + colourHex(event.colour),
+      onclick: function () { openEvent(event); },
+    }, [
+      h('div', { class: 'ec-when', text: eventWhen(event) }),
+      h('div', { class: 'ec-title', text: event.title }),
+      event.place ? h('div', { class: 'ec-where', text: event.place }) : null,
+    ]);
+  }
+
+  function eventStrip(main, mineOnly) {
+    var coming = comingEvents(mineOnly);
     if (!coming.length) return;
 
     var shown = coming.slice(0, 6);
@@ -2180,20 +2789,39 @@
           ? h('small', { text: '+' + (coming.length - shown.length) })
           : null,
       ]),
-      h('div', { class: 'strip-rail' }, shown.map(function (entry) {
-        var event = entry.item;
-        return h('button', {
-          class: 'event-card' + (event.pending ? ' pending' : ''),
-          style: '--c:' + colourHex(event.colour),
-          onclick: function () { openEvent(event); },
-        }, [
-          h('div', { class: 'ec-when', text: eventWhen(event) }),
-          h('div', { class: 'ec-title', text: event.title }),
-          event.place ? h('div', { class: 'ec-where', text: event.place }) : null,
-        ]);
-      })),
+      h('div', { class: 'strip-rail' }, shown.map(eventCard)),
     ]));
   }
+
+  /**
+   * Meetings and events in one rail, by date, on a phone.
+   *
+   * Two rails were two headings and two rows of cards — about 230px, more than
+   * a quarter of the screen, before the first task. One rail sorted by when
+   * keeps everything that is coming and gives the work back its space. The
+   * meeting cards keep their indigo, so the two kinds are still told apart at
+   * a glance.
+   */
+  function phoneStrip(main, mineOnly) {
+    var all = comingMeetings(mineOnly).map(function (m) {
+      return { on: m.meetsOn, at: m.meetsAt || '', card: function () { return meetingCard(m, true); } };
+    }).concat(comingEvents(mineOnly).map(function (e) {
+      return { on: e.startsOn, at: e.allDay ? '' : (e.startsAt || ''), card: function () { return eventCard(e); } };
+    })).sort(function (a, b) {
+      if (a.on !== b.on) return a.on < b.on ? -1 : 1;
+      return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;
+    });
+    if (!all.length) return;
+    var shown = all.slice(0, 8);
+    main.appendChild(h('div', { class: 'event-strip' }, [
+      h('div', { class: 'strip-head' }, [
+        h('b', { text: t('upcoming') }),
+        all.length > shown.length ? h('small', { text: '+' + (all.length - shown.length) }) : null,
+      ]),
+      h('div', { class: 'strip-rail' }, shown.map(function (x) { return x.card(); })),
+    ]));
+  }
+
 
   /**
    * The meetings that are coming, in a rail of their own.
@@ -2204,16 +2832,49 @@
    * meeting is a different kind of thing from a rehearsal anyway — somebody
    * has to answer it.
    */
-  function meetingStrip(main, mineOnly) {
+  /** The meetings still ahead, that this view should show. */
+  function comingMeetings(mineOnly) {
     var today = todayIso();
-    var coming = (S.meetings || []).filter(function (m) {
+    return (S.meetings || []).filter(function (m) {
       if (m.meetsOn < today || m.status === 'cancelled') return false;
       if (mineOnly && !(m.people || []).some(function (x) {
         return x.username === S.user.username;
       })) return false;
       return matchesQuery({ code: m.code, title: m.title, place: m.place });
     }).sort(function (a, b) { return a.meetsOn < b.meetsOn ? -1 : 1; });
+  }
 
+  /**
+   * One meeting as a card in a rail.
+   *
+   * `friendlyDate` prints "18 พ.ย." instead of 2026-11-18 — used by the phone,
+   * whose rail mixes meetings and events and would otherwise show two date
+   * styles side by side.
+   */
+  function meetingCard(m, friendlyDate) {
+    var going = (m.people || []).filter(function (x) {
+      return x.username === S.user.username;
+    })[0];
+    var day = friendlyDate ? fmtDate(m.meetsOn, { day: 'numeric', month: 'short' }) : m.meetsOn;
+    return h('button', {
+      class: 'event-card meeting',
+      onclick: function () { openMeeting(m); },
+    }, [
+      h('div', { class: 'ec-when', text: day + (m.meetsAt ? ' · ' + m.meetsAt : '') }),
+      h('div', { class: 'ec-title', text: m.title }),
+      h('div', { class: 'ec-where' }, [
+        h('span', { class: 'chip ' + replyClass(going && going.reply),
+          text: going
+            ? (going.reply === 'accepted' ? t('rsvpGoing')
+              : going.reply === 'declined' ? t('rsvpNotGoing') : t('rsvpAsk'))
+            : (m.place || '') }),
+        outrankedNote(m),
+      ].filter(Boolean)),
+    ]);
+  }
+
+  function meetingStrip(main, mineOnly) {
+    var coming = comingMeetings(mineOnly);
     if (!coming.length) return;
     var shown = coming.slice(0, 6);
 
@@ -2224,27 +2885,10 @@
           ? h('small', { text: '+' + (coming.length - shown.length) })
           : null,
       ]),
-      h('div', { class: 'strip-rail' }, shown.map(function (m) {
-        var going = (m.people || []).filter(function (x) {
-          return x.username === S.user.username;
-        })[0];
-        return h('button', {
-          class: 'event-card meeting',
-          onclick: function () { openMeeting(m); },
-        }, [
-          h('div', { class: 'ec-when', text: m.meetsOn + (m.meetsAt ? ' · ' + m.meetsAt : '') }),
-          h('div', { class: 'ec-title', text: m.title }),
-          h('div', { class: 'ec-where' }, [
-            h('span', { class: 'chip ' + replyClass(going && going.reply),
-              text: going
-                ? (going.reply === 'accepted' ? t('rsvpGoing')
-                  : going.reply === 'declined' ? t('rsvpNotGoing') : t('rsvpAsk'))
-                : (m.place || '') }),
-          ]),
-        ]);
-      })),
+      h('div', { class: 'strip-rail' }, shown.map(function (m) { return meetingCard(m); })),
     ]));
   }
+
 
   function taskRow(task) {
     var meta = [];
@@ -2267,6 +2911,17 @@
     if (prio !== 'medium') {
       meta.push(h('span', { class: 'chip prio prio-' + prio, text: prioLabel(prio) }));
     }
+    // Why it is in their list when they are not doing it.
+    if (task.watching) {
+      meta.unshift(h('span', { class: 'chip watching', title: t('watchingNote') }, [icon('eye'), t('watchingChip')]));
+    } else if ((task.viewers || []).length && task.mayEdit) {
+      // To whoever set it up: how many are following along.
+      meta.push(h('span', { class: 'chip viewers-n', title: t('viewers') }, [icon('eye'), String(task.viewers.length)]));
+    }
+    // Shown only to the person who is actually double-booked — see
+    // outrankedNote. To everybody else it is somebody else's scheduling.
+    var beaten = outrankedNote(task);
+    if (beaten) meta.push(beaten);
     if (task.dueDate) {
       var rel = relativeDay(task.dueDate);
       meta.push(h('span', { class: 'chip' + (isOverdue(task) ? ' overdue' : '') }, [
@@ -2297,7 +2952,9 @@
         title: statusLabel(task.status) + (task.maySetStatus ? '' : ' \u00b7 ' + t('statusLocked')),
         onclick: function (e) {
           e.stopPropagation();
-          if (task.maySetStatus) openStatusMenu(e.currentTarget, task);
+          if (!task.maySetStatus) return;
+          if (isPhone()) openStatusSheet(task);
+          else openStatusMenu(e.currentTarget, task);
         },
       }),
       h('div', { class: 't-title' }, [
@@ -2377,6 +3034,7 @@
       department: task ? (task.department || null) : (S.user.department || null),
       unit: task ? (task.unit || null) : null,
       assignees: task ? task.assignees.slice() : [S.user.username],
+      viewers: task ? (task.viewers || []).slice() : [],
       departments: task ? task.departments.map(function (d) { return { key: d.key, scope: d.scope }; }) : [],
       notify: task ? task.notify.slice() : ['created', '7d', '3d', '24h', 'due'],
     };
@@ -2487,16 +3145,38 @@
     drawReplies();
 
     var deptBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
+    /**
+     * Viewers: people who should see how it is going without doing it.
+     *
+     * A separate list from the people on it, because everything else keys off
+     * that one — reminders, "my tasks", who may move the status. Somebody put
+     * on the task drops off this list: doing it already includes seeing it.
+     */
+    var viewerBox = h('div', { class: 'picker viewers' + (mayEdit ? '' : ' readonly') });
     if (mayEdit) {
-      buildPeoplePicker(peopleBox, draft);
+      var redrawViewers = null;
+      buildPeoplePicker(peopleBox, draft, {
+        changed: function () {
+          draft.viewers = draft.viewers.filter(function (u) { return draft.assignees.indexOf(u) === -1; });
+          if (redrawViewers) redrawViewers();
+        },
+      });
+      redrawViewers = buildPeoplePicker(viewerBox, draft, {
+        field: 'viewers',
+        compact: true,
+        placeholder: t('viewersSearch'),
+        empty: t('noViewers'),
+        skip: function (u) { return draft.assignees.indexOf(u) !== -1; },
+      });
       buildDeptPicker(deptBox, draft);
     } else {
+      viewerBox.appendChild(draft.viewers.length
+        ? peopleList(draft.viewers)
+        : h('div', { class: 'selected' }, [h('span', { class: 'chip', text: t('noViewers') })]));
       // Read-only: who is on it still matters to the person doing the work.
-      peopleBox.appendChild(h('div', { class: 'selected' }, draft.assignees.length
-        ? draft.assignees.map(function (u) {
-            return h('span', { class: 'chip who' }, [avatarNode(u, 'sm'), nameOf(u)]);
-          })
-        : [h('span', { class: 'chip', text: t('noOne') })]));
+      peopleBox.appendChild(draft.assignees.length
+        ? peopleList(draft.assignees)
+        : h('div', { class: 'selected' }, [h('span', { class: 'chip', text: t('noOne') })]));
       deptBox.appendChild(h('div', { class: 'selected' }, draft.departments.length
         ? draft.departments.map(function (d) {
             return h('span', { class: 'chip dept', text: deptLabel(d.key) });
@@ -2690,11 +3370,13 @@
       ]);
 
       var rows = [
+        // Folds to a row of faces on a phone when it is a crowd — see peopleList.
         vRow(t('assignTo'), task.assignees.length
-          ? h('span', { class: 'selected' }, task.assignees.map(function (u) {
-              return h('span', { class: 'chip who' }, [avatarNode(u, 'sm'), nameOf(u)]);
-            }))
+          ? peopleList(task.assignees)
           : vMuted(t('noOne'))),
+        (task.viewers || []).length
+          ? vRow(t('viewers'), peopleList(task.viewers))
+          : null,
         vRow(t('viewDepartments'), task.departments.length
           ? h('span', { class: 'selected' }, task.departments.map(function (d) {
               return h('span', { class: 'chip dept', text: deptLabel(d.key) });
@@ -2750,7 +3432,10 @@
           : h('p', { class: 'view-desc empty', text: t('noDescription') }),
         h('div', { class: 'view-rows' }, rows),
         quick,
-        (!mayEdit && !maySetStatus) ? h('div', { class: 'notice', text: t('viewOnlyNote') }) : null,
+        (!mayEdit && !maySetStatus)
+          ? h('div', { class: 'notice' + (task.watching ? ' watching-note' : ''),
+              text: task.watching ? t('watchingNote') : t('viewOnlyNote') })
+          : null,
       ]);
     }
 
@@ -2785,6 +3470,11 @@
           h('div', { class: 'field' }, [h('label', { text: t('dueTime') }), timeInput]),
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('assignTo') }), peopleBox, replyBox]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('viewers') }),
+          h('small', { class: 'field-hint', text: t('viewersHint') }),
+          viewerBox,
+        ]),
         h('div', { class: 'field' }, [h('label', { text: t('departments') }), deptBox]),
         h('div', { class: 'two' }, [
           h('div', { class: 'field' }, [h('label', { text: t('teamspace') }), deptSelect,
@@ -2822,7 +3512,9 @@
         if (task.dueDate) {
           footer.appendChild(h('a', {
             class: 'btn', target: '_blank', rel: 'noopener',
-            href: googleCalUrl(task), text: '📅 ' + t('addToCalendar'),
+            // Shorter on a phone, where the footer gives each button half a
+            // line and the full wording was cut off mid-word.
+            href: googleCalUrl(task), text: '📅 ' + (isPhone() ? 'Google Calendar' : t('addToCalendar')),
           }));
         }
         return;
@@ -3043,6 +3735,7 @@
         department: draft.department,
         unit: draft.unit,
         assignees: draft.assignees,
+        viewers: draft.viewers.filter(function (u) { return draft.assignees.indexOf(u) === -1; }),
         departments: draft.departments,
         notify: draft.notify,
       };
@@ -3070,40 +3763,65 @@
         pending: true,
       });
 
-      var previous = S.tasks;
-      S.tasks = isNew
-        ? [optimistic].concat(S.tasks)
-        : S.tasks.map(function (x) { return x.id === task.id ? optimistic : x; });
-      close();
-      renderPage();
+      /**
+       * Checked BEFORE the optimistic update, not after.
+       *
+       * The usual pattern here is to show the change at once and confirm it
+       * afterwards, which is right when the only question is whether the
+       * server is quick. This question is whether the person wants to do it at
+       * all — closing the form and putting the task on the board first, then
+       * asking, would be asking after the fact.
+       */
+      askAboutClashes({ on: body.dueDate, at: body.dueTime },
+        body.assignees, isNew ? null : task.id).then(function (answer) {
+        if (!answer.go) return;
+        if (answer.prioritise) body.prioritise = true;
 
-      var call = isNew
-        ? api('/api/tasks', { method: 'POST', body: body })
-        : api('/api/tasks', { method: 'PATCH', body: Object.assign({ id: task.id }, body) });
+        var previous = S.tasks;
+        S.tasks = isNew
+          ? [optimistic].concat(S.tasks)
+          : S.tasks.map(function (x) { return x.id === task.id ? optimistic : x; });
+        close();
+        renderPage();
 
-      call.then(function (data) { S.tasks = data.tasks; renderPage(); refreshNotifications(); })
-        .catch(function (err) {
-          S.tasks = previous;   // put the list back exactly as it was
-          renderPage();
-          alert(errText(err.code));
-        });
+        var call = isNew
+          ? api('/api/tasks', { method: 'POST', body: body })
+          : api('/api/tasks', { method: 'PATCH', body: Object.assign({ id: task.id }, body) });
+
+        call.then(function (data) { S.tasks = data.tasks; renderPage(); refreshNotifications(); })
+          .catch(function (err) {
+            S.tasks = previous;   // put the list back exactly as it was
+            renderPage();
+            alert(errText(err.code));
+          });
+      });
     }
   }
 
-  function buildPeoplePicker(box, draft) {
+  /**
+   * `opts.field` is which list on the draft it edits — the people doing the
+   * task by default, or its viewers. `opts.skip` names people to leave out of
+   * the choices (the viewer picker skips whoever is already on the task), and
+   * `opts.changed` runs after each pick, so the other picker can follow.
+   */
+  function buildPeoplePicker(box, draft, opts) {
+    opts = opts || {};
+    var key = opts.field || 'assignees';
+    var skip = opts.skip || function () { return false; };
+    function changed() { redraw(); if (opts.changed) opts.changed(); }
     function redraw() {
       clear(box);
-      var selected = h('div', { class: 'selected' }, draft.assignees.length
-        ? draft.assignees.map(function (u) {
+      var selected = h('div', { class: 'selected' }, draft[key].length
+        ? draft[key].map(function (u) {
             return h('span', {
               class: 'chip who x',
               onclick: function () {
-                draft.assignees = draft.assignees.filter(function (x) { return x !== u; });
-                redraw();
+                draft[key] = draft[key].filter(function (x) { return x !== u; });
+                changed();
               },
             }, [avatarNode(u, 'sm'), nameOf(u), ' ✕']);
           })
-        : [h('span', { class: 'chip', text: t('noOne') })]);
+        : [h('span', { class: 'chip', text: opts.empty || t('noOne') })]);
 
       /**
        * The circles, above the search box.
@@ -3114,8 +3832,13 @@
        */
       var circleRow = h('div', { class: 'seg wrap circles' });
       circleChoices().forEach(function (c) {
+        // Whoever this picker leaves out (the people already doing the task,
+        // when picking viewers) is left out of the circle too.
+        var members = c.members.filter(function (u) { return !skip(u); });
+        if (!members.length) return;
+        c = { label: c.label, note: c.note, members: members };
         var allIn = c.members.every(function (u) {
-          return draft.assignees.indexOf(u) !== -1;
+          return draft[key].indexOf(u) !== -1;
         });
         circleRow.appendChild(h('button', {
           type: 'button', class: allIn ? 'on' : '',
@@ -3132,28 +3855,31 @@
                * the page would be showing something that was not going to
                * happen.
                */
-              draft.assignees = draft.assignees.filter(function (u) {
-                return c.members.indexOf(u) === -1 || u === S.user.username;
+              draft[key] = draft[key].filter(function (u) {
+                return c.members.indexOf(u) === -1 || (key === 'assignees' && u === S.user.username);
               });
             } else {
               c.members.forEach(function (u) {
-                if (draft.assignees.indexOf(u) === -1) draft.assignees.push(u);
+                if (draft[key].indexOf(u) === -1) draft[key].push(u);
               });
             }
-            redraw();
+            changed();
           },
         }));
       });
 
-      var search = h('input', { type: 'text', placeholder: t('assignTo') });
+      var search = h('input', { type: 'text', placeholder: opts.placeholder || t('assignTo') });
       var options = h('div', { class: 'options' });
 
       function fill() {
         clear(options);
         var q = search.value.trim().toLowerCase();
-        // A unit editor is only offered their own section — the server
-        // refuses the rest, so listing them would be an invitation to fail.
-        var matches = S.users.filter(function (u) { return u.active && assignableTo(u); })
+        // A compact picker (viewers, which most tasks leave empty) lists
+        // nobody until a name is typed, rather than doubling the form's length.
+        options.hidden = Boolean(opts.compact) && !q;
+        if (options.hidden) return;
+        // Everybody active, in every department: see assignableTo.
+        var matches = S.users.filter(function (u) { return u.active && assignableTo(u) && !skip(u.username); })
           .filter(function (u) {
           return !q || u.displayName.toLowerCase().indexOf(q) !== -1 ||
             u.username.toLowerCase().indexOf(q) !== -1 ||
@@ -3168,13 +3894,13 @@
         groups.forEach(function (g) {
           options.appendChild(h('div', { class: 'group-label', text: g.label }));
           g.people.forEach(function (u) {
-            var on = draft.assignees.indexOf(u.username) !== -1;
+            var on = draft[key].indexOf(u.username) !== -1;
             options.appendChild(h('div', {
               class: 'opt' + (on ? ' on' : ''),
               onclick: function () {
-                if (on) draft.assignees = draft.assignees.filter(function (x) { return x !== u.username; });
-                else draft.assignees.push(u.username);
-                redraw();
+                if (on) draft[key] = draft[key].filter(function (x) { return x !== u.username; });
+                else draft[key].push(u.username);
+                changed();
               },
             }, [avatarNode(u.username, 'sm'), (u.unit ? u.unit + ' \u00B7 ' : '') + u.displayName,
                 h('small', { text: u.position || u.username })]));
@@ -3190,6 +3916,7 @@
       box.appendChild(options);
     }
     redraw();
+    return redraw;
   }
 
   function buildDeptPicker(box, draft) {
@@ -3355,10 +4082,10 @@
               h('span', { class: 'chip dept', style: 'background:' + colourHex(r.colour) + ';color:#fff;border:none', text: ' ' }),
               ' ' + r.title,
             ]),
-            h('td', { text: (r.startsOn || '\u2014') + (r.startsAt ? ' ' + r.startsAt : '') +
+            h('td', { dataset: { label: t('startsOn') }, text: (r.startsOn || '\u2014') + (r.startsAt ? ' ' + r.startsAt : '') +
               (r.endsOn && r.endsOn !== r.startsOn ? ' \u2013 ' + r.endsOn : '') }),
-            h('td', { text: r.place || '\u2014' }),
-            h('td', {}, (r.departments || []).map(function (k) { return h('span', { class: 'chip dept', text: deptLabel(k) }); })),
+            h('td', { dataset: { label: t('place') }, text: r.place || '\u2014' }),
+            h('td', { dataset: { label: t('departments') } }, (r.departments || []).map(function (k) { return h('span', { class: 'chip dept', text: deptLabel(k) }); })),
             h('td', {}, flags),
           ]);
         }
@@ -3369,9 +4096,9 @@
             (r.parts || []).length ? h('div', { class: 'imp-sub', text: '\u2713 ' + r.parts.length + ' ' + t('tabParts') }) : null,
             (r.links || []).length ? h('div', { class: 'imp-sub', text: '\u2197 ' + r.links.length + ' ' + t('tabWork') }) : null,
           ]),
-          h('td', {}, [h('span', { class: 'stack' }, (r.assignees || []).map(function (u) { return avatarNode(u, 'sm'); }))]),
-          h('td', {}, (r.departments || []).map(function (d) { return h('span', { class: 'chip dept', text: deptLabel(d.key) }); })),
-          h('td', { text: (r.dueDate || '\u2014') + (r.dueTime ? ' ' + r.dueTime : '') }),
+          h('td', { dataset: { label: t('assignTo') } }, [h('span', { class: 'stack' }, (r.assignees || []).map(function (u) { return avatarNode(u, 'sm'); }))]),
+          h('td', { dataset: { label: t('departments') } }, (r.departments || []).map(function (d) { return h('span', { class: 'chip dept', text: deptLabel(d.key) }); })),
+          h('td', { dataset: { label: t('dueDate') }, text: (r.dueDate || '\u2014') + (r.dueTime ? ' ' + r.dueTime : '') }),
           h('td', {}, flags),
         ]);
       });
@@ -3625,11 +4352,14 @@
       }
 
       var audience = (event.people || []).length || (event.departments || []).length
-        ? h('span', { class: 'selected' }, (event.people || []).map(function (u) {
-            return h('span', { class: 'chip who' }, [avatarNode(u, 'sm'), nameOf(u)]);
-          }).concat((event.departments || []).map(function (k) {
-            return h('span', { class: 'chip dept', text: deptLabel(k) });
-          })))
+        ? h('div', { class: 'ppl-wrap' }, [
+            (event.people || []).length ? peopleList(event.people) : null,
+            (event.departments || []).length
+              ? h('span', { class: 'selected' }, event.departments.map(function (k) {
+                  return h('span', { class: 'chip dept', text: deptLabel(k) });
+                }))
+              : null,
+          ])
         : vMuted(t('everyoneInFair'));
 
       return h('div', { class: 'pane view-pane' }, [
@@ -3754,23 +4484,32 @@
         pending: true,
       });
 
-      var previous = S.events;
-      S.events = isNew
-        ? S.events.concat([optimistic])
-        : S.events.map(function (x) { return x.id === event.id ? optimistic : x; });
-      close();
-      renderPage();
+      // An all-day event cannot clash with an hour, so it is not worth asking.
+      askAboutClashes(
+        body.allDay ? null : { on: body.startsOn, at: body.startsAt, to: body.endsAt },
+        body.people, isNew ? null : event.id,
+      ).then(function (answer) {
+        if (!answer.go) return;
+        if (answer.prioritise) body.prioritise = true;
 
-      var call = isNew
-        ? api('/api/events', { method: 'POST', body: body })
-        : api('/api/events', { method: 'PATCH', body: Object.assign({ id: event.id }, body) });
+        var previous = S.events;
+        S.events = isNew
+          ? S.events.concat([optimistic])
+          : S.events.map(function (x) { return x.id === event.id ? optimistic : x; });
+        close();
+        renderPage();
 
-      call.then(function (d) { S.events = d.events; renderPage(); })
-        .catch(function (err) {
-          S.events = previous;
-          renderPage();
-          alert(errText(err.code));
-        });
+        var call = isNew
+          ? api('/api/events', { method: 'POST', body: body })
+          : api('/api/events', { method: 'PATCH', body: Object.assign({ id: event.id }, body) });
+
+        call.then(function (d) { S.events = d.events; renderPage(); })
+          .catch(function (err) {
+            S.events = previous;
+            renderPage();
+            alert(errText(err.code));
+          });
+      });
     }
   }
 
@@ -3785,6 +4524,7 @@
    * cell renderer so a chip means the same thing in all three.
    */
   function pageCalendar(main) {
+    if (isPhone()) return phoneCalendar(main);
     var view = S.calView || 'month';
     var anchor = S.calAnchor || todayIso();
 
@@ -3835,6 +4575,163 @@
     if (view === 'month') main.appendChild(monthGrid(anchor));
     else if (view === 'week') main.appendChild(weekStrip(startOfWeek(anchor), 7));
     else main.appendChild(weekStrip(anchor, 1));
+  }
+
+  /**
+   * The calendar, on a phone.
+   *
+   * Two views instead of three. The month is a grid of dots — a 52px-wide day
+   * cannot hold a readable title, so it does not try — with the chosen day's
+   * items listed underneath as full rows. The week is the same rows, a day at
+   * a time down the page. "Day" is not a view of its own any more: it is
+   * simply the month with that day chosen.
+   */
+  function phoneCalendar(main) {
+    var view = S.calView === 'week' ? 'week' : 'month';
+    var anchor = S.calAnchor || todayIso();
+
+    function shift(step) {
+      S.calAnchor = view === 'month' ? addMonths(anchor, step) : addDays(anchor, step * 7);
+      renderPage();
+    }
+
+    var title = view === 'month'
+      ? fmtDate(anchor, { month: 'long', year: 'numeric' })
+      : fmtDate(startOfWeek(anchor), { day: 'numeric', month: 'short' }) + ' – ' +
+        fmtDate(addDays(startOfWeek(anchor), 6), { day: 'numeric', month: 'short' });
+
+    main.appendChild(h('div', { class: 'cal-bar' }, [
+      h('h1', { class: 'cal-title', text: title }),
+      h('div', { class: 'cal-nav' }, [
+        h('button', { class: 'btn sm', text: '‹', 'aria-label': t('previous'), onclick: function () { shift(-1); } }),
+        h('button', { class: 'btn sm', text: t('today'), onclick: function () { S.calAnchor = todayIso(); renderPage(); } }),
+        h('button', { class: 'btn sm', text: '›', 'aria-label': t('next'), onclick: function () { shift(1); } }),
+      ]),
+    ]));
+
+    var mineCb = h('input', { type: 'checkbox', checked: S.calMineOnly });
+    mineCb.addEventListener('change', function () { S.calMineOnly = mineCb.checked; renderPage(); });
+    var eventsCb = h('input', { type: 'checkbox', checked: S.calShowEvents !== false });
+    eventsCb.addEventListener('change', function () { S.calShowEvents = eventsCb.checked; renderPage(); });
+
+    main.appendChild(h('div', { class: 'cal-legend' }, [
+      h('div', { class: 'seg' }, [['month', 'viewMonth'], ['week', 'viewWeek']].map(function (pair) {
+        return h('button', {
+          class: view === pair[0] ? 'on' : '', text: t(pair[1]),
+          onclick: function () { S.calView = pair[0]; renderPage(); },
+        });
+      })),
+      h('label', {}, [mineCb, t('mineOnly')]),
+      h('label', {}, [eventsCb, t('showEvents')]),
+      h('span', { class: 'key' }, [h('i', { class: 'dot task' }), t('navAll')]),
+      h('span', { class: 'key' }, [h('i', { class: 'dot event' }), t('navEvents')]),
+      h('span', { class: 'key' }, [h('i', { class: 'dot meeting' }), t('navMeetings')]),
+    ]));
+
+    if (view === 'week') {
+      var from = startOfWeek(anchor);
+      var days = [];
+      for (var i = 0; i < 7; i++) days.push(phoneDayBlock(addDays(from, i), true));
+      main.appendChild(h('div', { class: 'ph-agenda' }, days));
+      return;
+    }
+
+    main.appendChild(phoneMonthGrid(anchor));
+    main.appendChild(h('div', { class: 'ph-agenda' }, [phoneDayBlock(anchor, false)]));
+  }
+
+  function phoneMonthGrid(anchor) {
+    var first = anchor.slice(0, 8) + '01';
+    var gridStart = startOfWeek(first);
+    var today = todayIso();
+    var month = anchor.slice(0, 7);
+    // Day 0 of the following month is the last day of this one.
+    var daysInMonth = new Date(Number(first.slice(0, 4)), Number(first.slice(5, 7)), 0).getDate();
+    var lead = Math.round((new Date(first + 'T00:00:00') - new Date(gridStart + 'T00:00:00')) / 86400000);
+    // As many weeks as the month needs, not always six: on a phone the empty
+    // sixth row is a sixth of the screen spent on next month.
+    var weeks = Math.ceil((lead + daysInMonth) / 7);
+
+    var head = h('div', { class: 'ph-wk' }, weekdayNames().map(function (name) {
+      return h('div', { class: 'ph-wd', text: name });
+    }));
+    var cells = [];
+    for (var i = 0; i < weeks * 7; i++) {
+      (function () {
+        var day = addDays(gridStart, i);
+        var entries = entriesOn(day);
+        cells.push(h('button', {
+          type: 'button',
+          class: 'ph-day' + (day.slice(0, 7) !== month ? ' out' : '') +
+            (day === today ? ' today' : '') + (day === anchor ? ' sel' : ''),
+          'aria-label': fmtDate(day, { day: 'numeric', month: 'long' }) +
+            (entries.length ? ' · ' + entries.length : ''),
+          onclick: function () { S.calAnchor = day; renderPage(); },
+        }, [
+          h('span', { class: 'dn', text: String(Number(day.slice(8, 10))) }),
+          // One dot per thing, up to three, coloured by what kind of thing it is.
+          h('span', { class: 'ph-dots' }, entries.slice(0, 3).map(function (e) {
+            return h('i', { class: e.kind });
+          })),
+        ]));
+      })();
+    }
+    return h('div', { class: 'ph-month' }, [head, h('div', { class: 'ph-wk' }, cells)]);
+  }
+
+  /** One day's items as rows; `compact` leaves an empty day as a short line. */
+  function phoneDayBlock(day, compact) {
+    var entries = entriesOn(day);
+    var today = todayIso();
+    return h('section', {}, [
+      h('div', { class: 'ph-dayhead' + (day === today ? ' today' : '') }, [
+        fmtDate(day, { weekday: 'long', day: 'numeric', month: 'long' }),
+        day === today ? h('small', { text: t('today') }) : null,
+      ]),
+      entries.length
+        ? h('div', { class: 'ph-rows' }, entries.map(phoneRow))
+        : (compact ? h('div', { class: 'ph-none', style: 'padding:8px', text: '—' })
+                   : h('div', { class: 'ph-none', text: t('phNothingThisDay') })),
+    ]);
+  }
+
+  function phoneRow(entry) {
+    var at = entry.at || t('phAllDay');
+    if (entry.kind === 'meeting') {
+      var m = entry.meeting;
+      return h('button', { type: 'button', class: 'ph-row k-meeting', onclick: function () { openMeeting(m); } }, [
+        h('span', { class: 'at', text: at }), h('span', { class: 'bar' }),
+        h('span', { class: 'tx' }, [
+          h('b', { text: m.title }),
+          h('small', { text: [t('navMeetings'), m.code, m.place].filter(Boolean).join(' · ') }),
+        ]),
+      ]);
+    }
+    if (entry.kind === 'event') {
+      var ev = entry.event;
+      return h('button', {
+        type: 'button', class: 'ph-row k-event', style: '--c:' + colourHex(ev.colour),
+        onclick: function () { openEvent(ev); },
+      }, [
+        h('span', { class: 'at', text: at }), h('span', { class: 'bar' }),
+        h('span', { class: 'tx' }, [
+          h('b', { text: ev.title }),
+          h('small', { text: [t('navEvents'), ev.code, ev.place].filter(Boolean).join(' · ') }),
+        ]),
+      ]);
+    }
+    var task = entry.task;
+    return h('button', {
+      type: 'button', class: 'ph-row k-task' + (task.status === 'done' ? ' done' : ''),
+      style: '--c:var(--u-' + (urgencyOf(task) === 'none' ? 'ahead' : urgencyOf(task)) + ', var(--accent))',
+      onclick: function () { openTask(task); },
+    }, [
+      h('span', { class: 'at', text: at }), h('span', { class: 'bar' }),
+      h('span', { class: 'tx' }, [
+        h('b', { text: task.title }),
+        h('small', { text: [task.code, statusLabel(task.status)].filter(Boolean).join(' · ') }),
+      ]),
+    ]);
   }
 
   /** Everything happening on one day, tasks first, then events. */
@@ -4118,6 +5015,7 @@
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('sigTitle') }), signatureBox()]),
+        h('div', { class: 'field' }, [h('label', { text: t('freeTitle') }), availabilityBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
       ]),
       h('footer', {}, [
@@ -4142,6 +5040,138 @@
         }),
       ]),
     ]));
+  }
+
+  /**
+   * When I am free, and when I am away.
+   *
+   * Lives on the profile rather than in a page of its own because it is the
+   * same kind of thing as a phone number: a fact about you that other people's
+   * work depends on. Both halves are optional and the whole thing is skippable
+   * — somebody who fills in nothing is treated as always available, which with
+   * four hundred people is most of them, and a system that nagged all of them
+   * would be switched off in a week.
+   */
+  function availabilityBox() {
+    var box = h('div', { class: 'push-box' });
+    var state = { windows: [], blocks: [] };
+    var notice = h('div', { class: 'notice err', hidden: true });
+
+    function fail(code) {
+      notice.hidden = false;
+      notice.textContent = errText(code);
+    }
+
+    function saveWindows() {
+      notice.hidden = true;
+      return api('/api/users?do=free', { method: 'PUT', body: { windows: state.windows } })
+        .then(function (d) { state = d; draw(); })
+        .catch(function (err) { fail(err.code); });
+    }
+
+    function draw() {
+      clear(box);
+      box.appendChild(notice);
+      box.appendChild(h('p', { class: 'hint', text: t('freeHow') }));
+
+      /**
+       * The week, as rows somebody adds to rather than a grid of 7 × 24 boxes.
+       *
+       * A grid looks thorough and is miserable on a phone, which is where most
+       * of this committee will open it. Three rows saying "Monday 17:00–22:00"
+       * is the same fact in a form somebody will actually finish.
+       */
+      var list = h('div', { class: 'free-list' });
+      if (!state.windows.length) {
+        list.appendChild(h('p', { class: 'free-none', text: t('freeNone') }));
+      }
+      state.windows.forEach(function (w, i) {
+        list.appendChild(h('div', { class: 'free-row' }, [
+          h('span', { class: 'free-day', text: t('day_' + w.day) }),
+          h('span', { class: 'free-when', text: w.from + '–' + w.to }),
+          h('button', {
+            class: 'btn ghost sm', text: t('freeRemove'),
+            onclick: function () {
+              state.windows = state.windows.filter(function (_, j) { return j !== i; });
+              saveWindows();
+            },
+          }),
+        ]));
+      });
+      box.appendChild(list);
+
+      var daySel = h('select', {}, WEEK_KEYS.map(function (d) {
+        return h('option', { value: d, text: t('day_' + d) });
+      }));
+      var fromIn = h('input', { type: 'time', value: '17:00' });
+      var toIn = h('input', { type: 'time', value: '22:00' });
+      box.appendChild(h('div', { class: 'free-add' }, [
+        daySel, fromIn, h('span', { class: 'free-dash', text: '–' }), toIn,
+        h('button', {
+          class: 'btn sm', text: t('freeAdd'),
+          onclick: function () {
+            if (!fromIn.value || !toIn.value) { fail('BAD_TIME'); return; }
+            if (toIn.value <= fromIn.value) { fail('ENDS_BEFORE_IT_STARTS'); return; }
+            state.windows = state.windows.concat([
+              { day: daySel.value, from: fromIn.value, to: toIn.value }]);
+            saveWindows();
+          },
+        }),
+      ]));
+
+      // ---- days away ----
+      box.appendChild(h('h4', { class: 'free-head', text: t('awayTitle') }));
+      box.appendChild(h('p', { class: 'hint', text: t('awayHow') }));
+
+      var away = h('div', { class: 'free-list' });
+      if (!state.blocks.length) {
+        away.appendChild(h('p', { class: 'free-none', text: t('awayNone') }));
+      }
+      state.blocks.forEach(function (b) {
+        away.appendChild(h('div', { class: 'free-row' }, [
+          h('span', { class: 'free-when',
+            text: b.fromOn + (b.toOn !== b.fromOn ? ' – ' + b.toOn : '') +
+                  (b.fromAt ? ' · ' + b.fromAt + '–' + b.toAt : '') }),
+          h('span', { class: 'free-why', text: b.reason || '' }),
+          h('button', {
+            class: 'btn ghost sm', text: t('freeRemove'),
+            onclick: function () {
+              api('/api/users?do=block&id=' + encodeURIComponent(b.id), { method: 'DELETE' })
+                .then(function (d) { state = d; draw(); })
+                .catch(function (err) { fail(err.code); });
+            },
+          }),
+        ]));
+      });
+      box.appendChild(away);
+
+      var fromOn = h('input', { type: 'date' });
+      var toOn = h('input', { type: 'date' });
+      var why = h('input', { type: 'text', maxlength: '200', placeholder: t('awayWhy') });
+      box.appendChild(h('div', { class: 'free-add away' }, [
+        fromOn, h('span', { class: 'free-dash', text: '–' }), toOn, why,
+        h('button', {
+          class: 'btn sm', text: t('awayAdd'),
+          onclick: function () {
+            if (!fromOn.value) { fail('BAD_DATE'); return; }
+            notice.hidden = true;
+            api('/api/users?do=block', {
+              method: 'POST',
+              body: { fromOn: fromOn.value, toOn: toOn.value || fromOn.value,
+                      reason: why.value.trim() },
+            }).then(function (d) { state = d; draw(); })
+              .catch(function (err) { fail(err.code); });
+          },
+        }),
+      ]));
+      // Said out loud, because it is the thing people assume the other way
+      // round: the dates are visible to everybody, the reason is not.
+      box.appendChild(h('p', { class: 'hint', text: t('awayPrivacy') }));
+    }
+
+    api('/api/users?do=free').then(function (d) { state = d; draw(); })
+      .catch(function () { draw(); });
+    return box;
   }
 
   /**
@@ -5160,6 +6190,23 @@
           ' · ' + x.people + ' ' + t('healthPeople') +
           (x.remindsToday ? '  ✓' : '') });
       });
+      /**
+       * On a phone it folds to its heading and a one-line verdict.
+       *
+       * A dozen lines of diagnostics, often in red, were the whole first
+       * screen of this page on a phone — above the list of people, which is
+       * what an admin opens it for nine days out of ten. The verdict counts
+       * the lines that start with a warning, which is what decides whether
+       * the rest is worth opening.
+       */
+      if (isPhone()) {
+        var warnings = lines.filter(function (n) { return /^\u26a0/.test(n.textContent || ''); }).length + (dead ? 1 : 0);
+        lines.splice(1, 0, h('small', { class: 'fold-sum', text: warnings
+          ? t('phHealthWarn').replace('%n', String(warnings))
+          : t('phHealthOk') }));
+        health.classList.add('fold');
+        health.addEventListener('click', function () { health.classList.toggle('open'); });
+      }
       health.appendChild(h('div', {}, lines.concat(upcoming)));
     }).catch(function () { health.hidden = true; });
 
@@ -5183,11 +6230,15 @@
             h('small', { style: 'color:var(--ink-faint)', text: u.username }),
           ]),
         ])]),
-        h('td', {}, [accessLevelCell(u, blocked)]),
-        h('td', { text: u.position || '—' }),
-        h('td', {}, [deptCell]),
-        h('td', { style: 'text-align:center' }, [headCb]),
-        h('td', {}, [h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' }, status)]),
+        // The labels are for a phone, where each row becomes a card and the
+        // column headings are gone — see .tablewrap in phone.css.
+        h('td', { dataset: { label: t('accessLevel') } }, [accessLevelCell(u, blocked)]),
+        h('td', { dataset: { label: t('position') }, text: u.position || '—' }),
+        h('td', { dataset: { label: t('deptAccess') } }, [deptCell]),
+        h('td', { dataset: { label: t('isHead') }, style: 'text-align:center' }, [headCb]),
+        status.length
+          ? h('td', {}, [h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' }, status)])
+          : h('td', {}),
         h('td', {}, [h('div', { style: 'display:flex;gap:5px;flex-wrap:wrap' }, blocked
           ? [h('small', { style: 'color:var(--ink-faint)', text: errText(blocked) })]
           : [
@@ -5450,11 +6501,20 @@
     }).filter(function (c) { return c.members.length > 0; });
   }
 
-  function assignableTo(person) {
-    if (!S.user || S.user.access !== 'unitlead') return true;
-    if (person.username === S.user.username) return true;
-    return Boolean(S.user.unit) && person.unit === S.user.unit;
-  }
+  /**
+   * Anybody may be appointed, by anybody who may create work at all.
+   *
+   * This used to offer a unit head only their own section, mirroring a server
+   * rule that has since gone: the fair works across departments constantly, and
+   * needing somebody more senior to ask สถานที่ for one person for an afternoon
+   * was slower than the rule was worth. What keeps it honest now is that the
+   * person appointed gets an invitation to accept or decline, and whoever is
+   * appointing is warned first if they are not free.
+   *
+   * Kept as a function rather than deleted at its two call sites: it is where
+   * the next rule about who may be offered belongs.
+   */
+  function assignableTo() { return true; }
 
   function blockedReason(target) {
     if (S.user.access === 'admin') return null;
@@ -5466,6 +6526,132 @@
     return 'EDITORS_CANNOT_MANAGE_ACCOUNTS';
   }
 
+
+  /* ---------- is everybody actually free? -------------------------------- */
+
+  /**
+   * Asks the server who is not free for this, and lets the person decide.
+   *
+   * Never refuses to save anything. Jade asked for the person handing out the
+   * work to be TOLD — a hard block would only teach people to put the wrong
+   * time in to get past it, and then the calendar lies about something that
+   * matters instead of something that does not.
+   *
+   * Resolves to { go, prioritise }. `go: false` only when they pressed cancel.
+   * A check that fails for any other reason — offline, server down — resolves
+   * to go:true, because being unable to warn somebody is not a reason to stop
+   * them working.
+   */
+  function askAboutClashes(when, people, ignoreId) {
+    if (!when || !when.on || !(people || []).length) {
+      return Promise.resolve({ go: true, prioritise: false });
+    }
+    return api('/api/users?do=clashes', {
+      method: 'POST',
+      body: { on: when.on, at: when.at || null, to: when.to || null,
+              people: people, ignoreId: ignoreId || null },
+    }).then(function (d) {
+      var clashes = (d && d.clashes) || [];
+      if (!clashes.length) return { go: true, prioritise: false };
+      return showClashes(clashes);
+    }).catch(function () { return { go: true, prioritise: false }; });
+  }
+
+  /** How one clash reads, in a sentence rather than a field name. */
+  function clashLine(c) {
+    if (c.kind === 'away') {
+      return t('clashAway')
+        .replace('%f', c.from || '')
+        .replace('%t', c.to || '')
+        + (c.reason ? ' · ' + c.reason : '');
+    }
+    if (c.kind === 'offDay') return t('clashOffDay').replace('%d', t('day_' + c.day));
+    if (c.kind === 'outsideHours') {
+      return t('clashOutsideHours')
+        .replace('%d', t('day_' + c.day))
+        .replace('%w', (c.windows || []).join(', '));
+    }
+    var what = c.what === 'meeting' ? t('navMeetings')
+      : c.what === 'event' ? t('navEvents') : t('navAll');
+    return t('clashBooked')
+      .replace('%a', c.at || '')
+      .replace('%k', what)
+      .replace('%s', (c.code ? c.code + ' ' : '') + c.title);
+  }
+
+  function showClashes(clashes) {
+    return new Promise(function (resolve) {
+      var answered = false;
+      var done = function (answer) {
+        if (answered) return;
+        answered = true;
+        veil.remove();
+        resolve(answer);
+      };
+
+      var veil = h('div', { class: 'veil' });
+      var body = h('div', { class: 'body' }, [
+        h('p', { class: 'hint', text: t('clashIntro') }),
+        h('div', { class: 'clash-list' }, clashes.map(function (p) {
+          return h('div', { class: 'clash' }, [
+            h('div', { class: 'clash-who' }, [
+              avatarNode(p.username, 'sm'),
+              h('b', { text: p.displayName || p.username }),
+            ]),
+            h('ul', { class: 'clash-why' }, p.clashes.map(function (c) {
+              return h('li', { class: c.kind === 'booked' ? 'booked' : 'away',
+                               text: clashLine(c) });
+            })),
+          ]);
+        })),
+      ]);
+
+      /**
+       * The override is offered only when it would really apply to every clash.
+       *
+       * One button cannot half-mean something. If a person is both in an exam
+       * week and double-booked, no rank in the committee makes the exam go
+       * away — so the button is not shown, rather than shown and then quietly
+       * doing less than it says.
+       */
+      var mayAll = clashes.every(function (p) { return p.mayPrioritiseAll; });
+
+      var footer = h('footer', {}, [
+        h('button', { class: 'btn', text: t('clashBack'),
+          onclick: function () { done({ go: false }); } }),
+        h('button', { class: 'btn', text: t('clashAnyway'),
+          onclick: function () { done({ go: true, prioritise: false }); } }),
+        mayAll ? h('button', { class: 'btn primary', text: t('clashPrioritise'),
+          onclick: function () { done({ go: true, prioritise: true }); } }) : null,
+      ].filter(Boolean));
+
+      if (mayAll) body.appendChild(h('p', { class: 'hint', text: t('clashPrioritiseHow') }));
+
+      veil.appendChild(h('div', { class: 'modal' }, [
+        h('header', {}, [
+          h('h2', { text: t('clashTitle') }),
+          h('button', { class: 'btn ghost sm', text: '✕',
+            onclick: function () { done({ go: false }); } }),
+        ]),
+        body, footer,
+      ]));
+      // Clicking the veil is "I did not mean to", which is going back.
+      veil.addEventListener('click', function (e) { if (e.target === veil) done({ go: false }); });
+      $('modal-root').appendChild(veil);
+    });
+  }
+
+  /** The note on something that has been outranked, or nothing. */
+  function outrankedNote(item) {
+    var beaten = item && item.outrankedBy;
+    if (!beaten || !beaten.length) return null;
+    // Only ever about the person reading it: being told that somebody else was
+    // pulled off this is noise to everybody but them.
+    var mine = beaten.filter(function (b) { return b.username === S.user.username; });
+    if (!mine.length) return null;
+    return h('span', { class: 'chip outranked', title: t('outrankedWhy'),
+                       text: t('outranked') });
+  }
 
   /* ---------- meetings --------------------------------------------------- */
 
@@ -5925,10 +7111,12 @@
        * a photograph sat higher than one holding initials. Its own class, with
        * its own row layout.
        */
-      whoPane.appendChild(h('div', { class: 'mtg-people' }, meeting.people.map(function (p) {
-        return h('span', { class: 'chip who ' + replyClass(p.reply) },
-          [avatarNode(p.username, 'sm'), nameOf(p.username)]);
-      })));
+      var replyOf = {};
+      meeting.people.forEach(function (p) { replyOf[p.username] = p.reply; });
+      whoPane.appendChild(h('div', { class: 'mtg-people' }, [
+        peopleList(meeting.people.map(function (p) { return p.username; }),
+          function (u) { return replyClass(replyOf[u]); }),
+      ]));
       bodyBox.appendChild(whoPane);
 
       var agendaPane = h('div', { class: 'pane' });
@@ -6215,16 +7403,26 @@
           };
           if (isNew) { body.template = 'blank'; body.agenda = draft.agenda; }
           else { body.id = meeting.id; body.minutesUrl = draft.minutesUrl; }
-          api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
-            .then(function (d) {
-              // An address that could not be read is named rather than
-              // silently dropped — the meeting saves either way.
-              if (d && (d.guestsRejected || []).length) {
-                alert(t('mtgGuestsBad').replace('%s', d.guestsRejected.join(', ')));
-              }
-              veil.remove(); reloadMeetings();
-            })
-            .catch(function (err) { fail(errText(err.code)); });
+
+          // A meeting with no start time cannot clash with an hour.
+          askAboutClashes(
+            draft.meetsAt ? { on: draft.meetsOn, at: draft.meetsAt } : null,
+            draft.assignees, isNew ? null : meeting.id,
+          ).then(function (answer) {
+            if (!answer.go) return;
+            if (answer.prioritise) body.prioritise = true;
+
+            api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
+              .then(function (d) {
+                // An address that could not be read is named rather than
+                // silently dropped — the meeting saves either way.
+                if (d && (d.guestsRejected || []).length) {
+                  alert(t('mtgGuestsBad').replace('%s', d.guestsRejected.join(', ')));
+                }
+                veil.remove(); reloadMeetings();
+              })
+              .catch(function (err) { fail(errText(err.code)); });
+          });
       },
     });
 
@@ -6835,6 +8033,330 @@
     } catch (e) {}
   }
 
+  /* ---------- getting set up ---------------------------------------------- */
+
+  /**
+   * Three things every member should have done, and a guide that keeps asking
+   * until they have.
+   *
+   *   1. The app on the home screen. On an iPhone this is not a nicety: Apple
+   *      delivers no notifications at all to a website still in a Safari tab.
+   *   2. Notifications on, on this device.
+   *   3. Their tasks, events and meetings in Google Calendar, via the feed.
+   *
+   * It opens by itself whenever someone enters with any of these undone — on
+   * their first sign-in and every visit after, until they are — and "later"
+   * only puts it off until the next visit. Each step is checked, not assumed:
+   * running from the home screen, a push subscription on this browser, and
+   * Google actually having fetched the feed.
+   */
+  var GUIDE_LATER = 'fair-guide-later';
+
+  window.addEventListener('beforeinstallprompt', function (e) {
+    // Chrome's own install bar is replaced by the button in the guide, which
+    // says what installing is for.
+    e.preventDefault();
+    S.installPrompt = e;
+  });
+  window.addEventListener('appinstalled', function () {
+    try { localStorage.setItem('fair-guide-installed', '1'); } catch (e) {}
+    S.installPrompt = null;
+  });
+
+  var ua = navigator.userAgent || '';
+  var isAndroid = /Android/i.test(ua);
+  // LINE, Facebook and Instagram open links in a browser of their own, which
+  // can neither install an app nor receive notifications.
+  var inAppBrowser = /\bLine\/|FBAN|FBAV|Instagram/i.test(ua);
+
+  function localFlag(key) { try { return localStorage.getItem(key) === '1'; } catch (e) { return false; } }
+
+  /** Does this browser itself hold a push subscription? Not "does the account". */
+  function deviceSubscribed() {
+    if (!('serviceWorker' in navigator)) return Promise.resolve(false);
+    return navigator.serviceWorker.getRegistration().then(function (reg) {
+      return reg && reg.pushManager ? reg.pushManager.getSubscription() : null;
+    }).then(function (sub) { return Boolean(sub); }).catch(function () { return false; });
+  }
+
+  /**
+   * Which steps are still to do, in order, each with whether it is done.
+   *
+   * Installing is only a step on a phone or tablet — "home screen" means
+   * nothing on a laptop, and asking would be noise.
+   */
+  function guideStatus() {
+    pushState();
+    var touch = isPhone() || isIos || isAndroid;
+    var calendarClaimed = (function () {
+      try { return Number(localStorage.getItem('fair-guide-cal-claimed') || 0) > Date.now() - 3 * 864e5; }
+      catch (e) { return false; }
+    }());
+    return deviceSubscribed().then(function (subscribed) {
+      var steps = [];
+      if (touch) {
+        steps.push({ key: 'install', done: S.push.standalone || localFlag('fair-guide-installed') });
+      }
+      if (S.push.supported || S.push.needsInstall) {
+        steps.push({ key: 'notify', done: S.push.permission === 'granted' && subscribed });
+      }
+      steps.push({ key: 'calendar', done: Boolean(S.user && S.user.calendarSeenAt) || calendarClaimed });
+      return steps;
+    });
+  }
+
+  /**
+   * Opens by itself once the page has settled — never on top of an urgent
+   * announcement or a task somebody followed a link to, which are what they
+   * came for. It waits for those to be closed rather than giving up.
+   */
+  function maybeShowGuide() {
+    try { if (sessionStorage.getItem(GUIDE_LATER) === '1') return; } catch (e) {}
+    var tries = 0;
+    (function attempt() {
+      tries += 1;
+      if (!S.user || tries > 40) return;
+      if (document.querySelector('#modal-root .veil')) { setTimeout(attempt, 1500); return; }
+      guideStatus().then(function (steps) {
+        if (steps.some(function (x) { return !x.done; })) openGuide(steps, false);
+      });
+    }());
+  }
+
+  function guideIcon(name) {
+    var paths = {
+      install: '<rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M12 7v7M9 11l3 3 3-3M10 18.5h4"/>',
+      notify: '<path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/>',
+      calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4M8 13.5h3M8 17h6"/>',
+      share: '<path d="M12 3v11M8 7l4-4 4 4"/><path d="M6 11v8.5h12V11"/>',
+      plus: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>',
+      dots: '<circle cx="12" cy="5.5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="18.5" r="1.4"/>',
+      check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    };
+    var span = document.createElement('span');
+    span.className = 'gd-ic';
+    span.setAttribute('aria-hidden', 'true');
+    span.innerHTML = '<svg viewBox="0 0 24 24">' + (paths[name] || '') + '</svg>';
+    return span;
+  }
+
+  /** A numbered instruction, with the icon somebody is looking for on screen. */
+  function gStep(n, textKey, iconName) {
+    return h('li', { class: 'gd-li' }, [
+      h('span', { class: 'gd-n', text: String(n) }),
+      h('span', { class: 'gd-tx', text: t(textKey) }),
+      iconName ? guideIcon(iconName) : null,
+    ]);
+  }
+
+  /**
+   * The guide. `all` is true when opened from the menu, which shows every step
+   * — done ones too, ticked — so it can be used to check, not only to nag.
+   */
+  function openGuide(steps, all) {
+    var existing = document.querySelector('#modal-root .guide-modal');
+    if (existing) existing.closest('.veil').remove();
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) later(); } });
+    var body = h('div', { class: 'body' });
+    var footer = h('footer', {});
+    var current = null;
+
+    function later() {
+      // Put off until the next visit, not for ever — she asked for anybody who
+      // has not done these to be reminded each time they come in.
+      if (!all) { try { sessionStorage.setItem(GUIDE_LATER, '1'); } catch (e) {} }
+      veil.remove();
+    }
+
+    function refresh() {
+      return guideStatus().then(function (fresh) { steps = fresh; draw(); });
+    }
+
+    function draw() {
+      clear(body); clear(footer);
+      var todo = steps.filter(function (x) { return !x.done; });
+      current = todo[0] || null;
+
+      // The checklist: what is done and what is left, at a glance.
+      body.appendChild(h('ol', { class: 'gd-list' }, steps.map(function (x) {
+        return h('li', { class: 'gd-item' + (x.done ? ' done' : '') + (x === current ? ' now' : '') }, [
+          x.done ? guideIcon('check') : h('span', { class: 'gd-dot' }),
+          h('span', { text: t('guideStep_' + x.key) }),
+        ]);
+      })));
+
+      if (!current) {
+        body.appendChild(h('div', { class: 'gd-card done' }, [
+          guideIcon('check'),
+          h('b', { text: t('guideAllDone') }),
+          h('p', { text: t('guideAllDoneSub') }),
+        ]));
+        footer.appendChild(h('button', { class: 'btn primary', text: t('phDone'), onclick: function () { veil.remove(); } }));
+        return;
+      }
+
+      var card = h('div', { class: 'gd-card' }, [
+        guideIcon(current.key),
+        h('b', { text: t('guideTitle_' + current.key) }),
+        h('p', { text: t('guideWhy_' + current.key) }),
+      ]);
+      body.appendChild(card);
+      var say = h('div', { class: 'notice', hidden: true });
+      body.appendChild(say);
+      var tell = function (kind, key) { say.hidden = false; say.className = 'notice ' + kind; say.textContent = t(key); };
+
+      footer.appendChild(h('button', { class: 'btn', text: t('guideLater'), onclick: later }));
+
+      if (current.key === 'install') {
+        if (inAppBrowser) {
+          card.appendChild(h('ol', { class: 'gd-steps' }, [
+            gStep(1, 'guideInApp1', 'dots'), gStep(2, 'guideInApp2'), gStep(3, 'guideInApp3'),
+          ]));
+        } else if (isIos) {
+          card.appendChild(h('ol', { class: 'gd-steps' }, [
+            gStep(1, 'guideIos1', 'share'), gStep(2, 'guideIos2', 'plus'),
+            gStep(3, 'guideIos3'), gStep(4, 'guideIos4'),
+          ]));
+        } else if (S.installPrompt) {
+          card.appendChild(h('p', { class: 'hint', text: t('guideAndroidOneTap') }));
+          footer.appendChild(h('button', {
+            class: 'btn primary', text: t('guideInstallNow'),
+            onclick: function () {
+              var prompt = S.installPrompt;
+              prompt.prompt();
+              prompt.userChoice.then(function (choice) {
+                if (choice && choice.outcome === 'accepted') {
+                  try { localStorage.setItem('fair-guide-installed', '1'); } catch (e) {}
+                  S.installPrompt = null;
+                  refresh();
+                }
+              });
+            },
+          }));
+        } else {
+          card.appendChild(h('ol', { class: 'gd-steps' }, [
+            gStep(1, 'guideAndroid1', 'dots'), gStep(2, 'guideAndroid2'), gStep(3, 'guideAndroid3'),
+          ]));
+        }
+        if (!S.installPrompt) {
+          footer.appendChild(h('button', {
+            class: 'btn primary', text: t('guideInstalled'),
+            onclick: function () {
+              try { localStorage.setItem('fair-guide-installed', '1'); } catch (e) {}
+              refresh();
+            },
+          }));
+        }
+        return;
+      }
+
+      if (current.key === 'notify') {
+        pushState();
+        if (S.push.needsInstall) {
+          // An iPhone in a Safari tab: there is no permission to ask for.
+          card.appendChild(h('div', { class: 'notice warn', text: t('guideNotifyNeedsInstall') }));
+          return;
+        }
+        if (S.push.permission === 'denied') {
+          card.appendChild(h('div', { class: 'notice warn', text: t('guideNotifyBlocked') }));
+          card.appendChild(h('ol', { class: 'gd-steps' }, isIos
+            ? [gStep(1, 'guideUnblockIos1'), gStep(2, 'guideUnblockIos2'), gStep(3, 'guideUnblockIos3')]
+            : [gStep(1, 'guideUnblock1'), gStep(2, 'guideUnblock2'), gStep(3, 'guideUnblock3')]));
+          footer.appendChild(h('button', { class: 'btn primary', text: t('guideCheckAgain'), onclick: refresh }));
+          return;
+        }
+        card.appendChild(h('p', { class: 'hint', text: t('guideNotifyHow') }));
+        footer.appendChild(h('button', {
+          class: 'btn primary', text: t('turnOn'),
+          onclick: function (e) {
+            e.target.disabled = true;
+            enablePush().then(refresh).catch(function (err) {
+              e.target.disabled = false;
+              tell('err', err && err.message === 'DENIED' ? 'pushBlocked' : 'pushFailed');
+            });
+          },
+        }));
+        return;
+      }
+
+      // ---- Google Calendar ----
+      var start = function () {
+        if (S.user.calendarToken) return Promise.resolve();
+        return api('/api/users?do=calendar-token', { method: 'POST' })
+          .then(function (d) { S.user.calendarToken = d.calendarToken; });
+      };
+      var feed = function () { return location.origin + '/api/calendar?token=' + S.user.calendarToken + '&scope=mine'; };
+
+      card.appendChild(h('ol', { class: 'gd-steps' }, [
+        gStep(1, 'guideCal1'), gStep(2, 'guideCal2'), gStep(3, 'guideCal3'),
+      ]));
+      if (isPhone()) card.appendChild(h('p', { class: 'hint', text: t('guideCalPhone') }));
+
+      var actions = h('div', { class: 'gd-actions' });
+      card.appendChild(actions);
+      function paintActions() {
+        clear(actions);
+        if (!S.user.calendarToken) {
+          actions.appendChild(h('button', {
+            class: 'btn primary', text: t('guideCalMake'),
+            onclick: function (e) { e.target.disabled = true; start().then(paintActions); },
+          }));
+          return;
+        }
+        actions.appendChild(h('a', {
+          class: 'btn primary', target: '_blank', rel: 'noopener',
+          href: 'https://calendar.google.com/calendar/u/0/r/settings/addbyurl?cid=' + encodeURIComponent(feed()),
+          text: t('guideCalOpen'),
+        }));
+        actions.appendChild(h('button', {
+          class: 'btn', text: t('copyLink'),
+          onclick: function (e) {
+            var btn = e.target;
+            var done = function () { btn.textContent = t('copied'); setTimeout(function () { btn.textContent = t('copyLink'); }, 1600); };
+            if (navigator.clipboard) navigator.clipboard.writeText(feed()).then(done, done); else done();
+          },
+        }));
+        // On an iPhone its own Calendar app subscribes in one tap, which is
+        // the next best thing when Google sends a phone off to a computer.
+        if (isIos) {
+          actions.appendChild(h('a', {
+            class: 'btn ghost', href: feed().replace(/^https?:/, 'webcal:'), text: t('guideCalIphone'),
+          }));
+        }
+      }
+      paintActions();
+
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: t('guideCalDone'),
+        onclick: function (e) {
+          e.target.disabled = true;
+          // Google fetches a feed the moment it is added, so this usually
+          // already knows. If not yet, it takes their word for three days and
+          // asks again after that.
+          api('/api/auth').then(function (d) {
+            if (d.user) S.user.calendarSeenAt = d.user.calendarSeenAt;
+            if (!S.user.calendarSeenAt) {
+              try { localStorage.setItem('fair-guide-cal-claimed', String(Date.now())); } catch (x) {}
+              tell('warn', 'guideCalNotYet');
+            }
+            setTimeout(refresh, S.user.calendarSeenAt ? 0 : 1800);
+          }).catch(function () { e.target.disabled = false; });
+        },
+      }));
+    }
+
+    draw();
+    veil.appendChild(h('div', { class: 'modal guide-modal' }, [
+      h('header', {}, [
+        h('h2', { text: t('guideHeading') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: later }),
+      ]),
+      body, footer,
+    ]));
+    $('modal-root').appendChild(veil);
+  }
+
   function boot() {
     return Promise.all([
       api('/api/meta'),
@@ -6868,6 +8390,8 @@
       flushPendingTask();
       refreshSubscription();
       showPending();
+      // After whatever they came for has had its turn — see maybeShowGuide.
+      setTimeout(maybeShowGuide, 1200);
     }).catch(function (err) {
       if (err.code === 'NOT_SIGNED_IN') { S.user = null; renderAuth(); return; }
       alert(err.code === 'NO_DATABASE' ? t('noDatabase') : t('errOffline'));

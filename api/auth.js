@@ -34,6 +34,8 @@ const publicUser = (u) => ({
   theme: u.theme || 'system',
   // Only ever built for the signed-in person, so this is their own token.
   calendarToken: u.calendar_token || null,
+  // When a calendar last fetched their feed — the guide's "linked" signal.
+  calendarSeenAt: u.calendar_seen_at || null,
 });
 
 async function handler(request) {

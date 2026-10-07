@@ -19,7 +19,11 @@ import {
 } from '../lib/lineflow.js';
 import { canSeeDocument, canAct, pendingStep, progressOf } from '../lib/approval.js';
 import { approveDocument, rejectDocument } from './documents.js';
-import { flex, listBubble, documentBubble } from '../lib/lineflex.js';
+import { flex, listBubble, documentBubble, TASK_STEPS } from '../lib/lineflex.js';
+import { taskCard, eventCard, meetingCard, fitCarousel } from '../lib/linecards.js';
+import { assembleMeetings } from '../lib/meetingstore.js';
+import { canSeeMeeting, canReply as meetingOpenForReplies } from '../lib/meeting.js';
+import { isSecretary } from '../lib/approval.js';
 
 /**
  * The LINE Official Account.
@@ -231,7 +235,16 @@ async function handleEvent(sql, event) {
  * somebody has not written yet, so the button asks for it instead of doing it.
  */
 function fromPostback(data) {
-  const [kind, verb, id] = String(data || '').split(':');
+  const [kind, verb, id, extra] = String(data || '').split(':');
+  /**
+   * Buttons on task, event and meeting cards. They become '#…' commands — a
+   * form nobody types by accident — and go through the same permission checks
+   * as everything else; the button is a convenience, never an authorisation.
+   */
+  if (kind === 'task' && verb === 'status' && id && extra) return `#task-status ${id} ${extra}`;
+  if (kind === 'task' && verb === 'pick' && id) return `#task-pick ${id}`;
+  if (kind === 'meeting' && verb === 'reply' && id && extra) return `#meeting-reply ${id} ${extra}`;
+  if (kind === 'open' && verb && id) return `#open ${verb} ${id}`;
   if (kind !== 'doc' || !id) return '';
   if (verb === 'approve') return `อนุมัติ ${id}`;
   if (verb === 'reject') return `ขอเหตุผล ${id}`;
@@ -335,13 +348,10 @@ async function run(sql, me, lineUserId, body) {
    * message, and a code is distinctive enough that it cannot be mistaken for
    * anything else somebody might say.
    */
-  if (/^[TE]\d{3,6}$/i.test(typed)) {
-    return listTasks(sql, me, lineUserId, today, {
-      title: `รหัส ${typed.toUpperCase()}`,
-      where: (t) => (t.code || '').toLowerCase() === typed.toLowerCase(),
-      alsoEvents: (e) => (e.code || '').toLowerCase() === typed.toLowerCase(),
-    });
-  }
+  if (/^[TEM]\d{3,6}$/i.test(typed)) return showOne(sql, me, lineUserId, typed, today);
+
+  // Card buttons — see fromPostback.
+  if (typed.startsWith('#')) return cardAction(sql, me, lineUserId, typed, today);
 
   if (['จบ', 'จบการทำงาน', 'ปิดเมนู', 'done', 'exit'].includes(typed.toLowerCase())) {
     await sql`DELETE FROM line_flows WHERE line_user_id = ${lineUserId}`;
@@ -388,6 +398,15 @@ async function run(sql, me, lineUserId, body) {
 
     case 'events':
       return listEvents(sql, me, lineUserId, today);
+
+    case 'meetings':
+      return listMeetings(sql, me, lineUserId, today);
+
+    case 'progress':
+      return myProgress(sql, me, lineUserId, today);
+
+    case 'detail':
+      return showOne(sql, me, lineUserId, command.rest, today);
 
     case 'docs':       return listDocs(sql, me, lineUserId, { mine: true });
     case 'docsAll':    return listDocs(sql, me, lineUserId, { mine: false });
@@ -492,6 +511,7 @@ async function listTasks(sql, me, lineUserId, today, opts) {
    */
   const rows = shown.map((t, i) => ({
     number: i + 1,
+    data: `open:task:${t.id}`,
     title: `${MARK[t.status] || '○'} ${t.title}`,
     state: !t.dueDate ? null
       : t.dueDate < today ? 'overdue'
@@ -503,6 +523,7 @@ async function listTasks(sql, me, lineUserId, today, opts) {
     ].filter(Boolean).join(' · '),
   })).concat(shownEvents.map((e, i) => ({
     number: shown.length + i + 1,
+    data: `open:event:${e.id}`,
     title: `◆ ${e.title}`,
     meta: [
       sayDate(e.startsOn, today) + (!e.allDay && e.startsAt ? ` ${e.startsAt} น.` : ''),
@@ -514,7 +535,7 @@ async function listTasks(sql, me, lineUserId, today, opts) {
 
   return flex(`${opts.title} (${found.length})`, listBubble({
     title: opts.title,
-    subtitle: `${more}พิมพ์ "เสร็จ <เลข>" เพื่อปิดงาน`,
+    subtitle: `${more}แตะรายการเพื่อดูความคืบหน้า · พิมพ์ "เสร็จ <เลข>" เพื่อปิดงาน`,
     rows,
     link: pageLink('work'),
     linkLabel: 'ดูทั้งหมดบนเว็บ',
@@ -743,10 +764,182 @@ async function listEvents(sql, me, lineUserId, today) {
 
   if (!found.length) return text('กิจกรรมที่กำลังจะถึง\n\nยังไม่มีค่ะ', MENU);
 
-  const lines = ['กิจกรรมที่กำลังจะถึง', ''];
-  found.forEach((e, i) => lines.push(sayEvent(e, i + 1, today)));
+  // One card per event, swiped through — not a block of text with the dates
+  // buried in it.
+  const names = await nameMap(sql);
   await remember(sql, lineUserId, found.map((e) => ({ kind: 'event', id: e.id })));
-  return text(lines.join('\n'), MENU);
+  const { bubbles } = fitCarousel(found.map((e) =>
+    eventCard(e, { today, names, link: pageLink('calendar') })));
+  return flex(`กิจกรรมที่กำลังจะถึง (${found.length})`, bubbles, MENU);
+}
+
+// ---------------------------------------------------------------------------
+// Cards: one task, event or meeting in full
+// ---------------------------------------------------------------------------
+
+/**
+ * One thing, as its full card — by list number ("ดู 3"), by code ("T0042",
+ * "E0007", "M0003") or by id (a tapped row).
+ */
+async function showOne(sql, me, lineUserId, ref, today) {
+  const raw = String(ref || '').trim();
+  let kind = null;
+  let id = null;
+  let code = null;
+
+  if (/^\d{1,2}$/.test(raw)) {
+    const found = await recall(sql, lineUserId, Number(raw));
+    if (!found) return text(`ไม่พบรายการที่ ${raw} ค่ะ\nพิมพ์ "งาน" หรือ "กิจกรรม" เพื่อดูรายการก่อน`, MENU);
+    kind = found.kind; id = found.ref_id;
+  } else if (/^[TEM]\d{3,6}$/i.test(raw)) {
+    code = raw.toUpperCase();
+    kind = { T: 'task', E: 'event', M: 'meeting' }[code[0]];
+  } else {
+    const m = raw.match(/^(task|event|meeting)\s+(\S+)$/);
+    if (m) { kind = m[1]; id = m[2]; }
+  }
+  if (!kind) return text('ไม่เข้าใจว่าต้องการดูอะไรค่ะ\nลองพิมพ์ "ดู 3" หรือรหัส เช่น T0042', MENU);
+
+  const names = await nameMap(sql);
+  if (kind === 'task') {
+    const task = (await assembled(sql)).find((t) => (id ? t.id === id : (t.code || '').toUpperCase() === code));
+    if (!task || !canSeeTask(me, task)) return text(`ไม่พบงาน ${code || ''} ค่ะ`.trim(), MENU);
+    return flex(`${task.code || ''} ${task.title} — ${STATUS_TH[task.status] || ''}`.trim(),
+      taskCard(task, { today, names, canMove: canSetStatus(me, task), link: taskLink(task.id), me: me.username }), MENU);
+  }
+  if (kind === 'event') {
+    const e = (await assembledEvents(sql)).find((x) => (id ? x.id === id : (x.code || '').toUpperCase() === code));
+    if (!e || !canSeeEvent(me, e)) return text(`ไม่พบกิจกรรม ${code || ''} ค่ะ`.trim(), MENU);
+    return flex(e.title, eventCard(e, { today, names, link: pageLink('calendar') }), MENU);
+  }
+  const { meeting, invited } = await findMeeting(sql, me, (m) => (id ? m.id === id : (m.code || '').toUpperCase() === code));
+  if (!meeting) return text(`ไม่พบการประชุม ${code || ''} ค่ะ`.trim(), MENU);
+  return flex(meeting.title, meetingCard(meeting, {
+    today, me: me.username, canReply: invited && meetingOpenForReplies(rowOf(meeting)), link: pageLink('work'),
+  }), MENU);
+}
+
+/** A meeting the person may see, with whether they are on its guest list. */
+async function findMeeting(sql, me, match) {
+  const roster = await sql`SELECT * FROM users`;
+  const all = await assembleMeetings(sql, roster);
+  const meeting = all.find(match);
+  if (!meeting) return { meeting: null, invited: false };
+  const secretary = isSecretary(me);
+  if (!canSeeMeeting(me, meeting, meeting.people, { isSecretary: secretary })) return { meeting: null, invited: false };
+  return { meeting, invited: meeting.people.some((p) => p.username === me.username) };
+}
+
+/** canReply reads the database's field names; the assembled meeting uses the page's. */
+const rowOf = (m) => ({ status: m.status, meets_on: m.meetsOn, meets_at: m.meetsAt });
+
+/**
+ * "ความคืบหน้า" — every open task of mine as a card with its tracker, most
+ * urgent first. The question this answers is the one people message each
+ * other in the group to ask, and a swipe through cards answers it in seconds.
+ */
+async function myProgress(sql, me, lineUserId, today) {
+  const mine = (await assembled(sql))
+    .filter((t) => canSeeTask(me, t))
+    // The tasks I am doing, and after them the ones I was asked to follow —
+    // "how is it going" is exactly what a viewer is there to ask.
+    .filter((t) => ((t.assignees || []).includes(me.username) || (t.viewers || []).includes(me.username)) &&
+      t.status !== 'done')
+    .sort((a, b) => {
+      const aw = (a.assignees || []).includes(me.username) ? 0 : 1;
+      const bw = (b.assignees || []).includes(me.username) ? 0 : 1;
+      return aw - bw || byUrgency(today)(a, b);
+    });
+  if (!mine.length) return text('ไม่มีงานค้างของคุณค่ะ 🎉', MENU);
+
+  const names = await nameMap(sql);
+  await remember(sql, lineUserId, mine.slice(0, 10).map((t) => ({ kind: 'task', id: t.id })));
+  const { bubbles, dropped } = fitCarousel(mine.map((t) =>
+    taskCard(t, { today, names, canMove: canSetStatus(me, t), link: taskLink(t.id), me: me.username })));
+  const left = mine.length - bubbles.length;
+  const out = [flex(`ความคืบหน้างานของฉัน (${mine.length})`, bubbles, left ? null : MENU)];
+  if (left) out.push(text(`แสดง ${bubbles.length} จาก ${mine.length} งาน · ดูทั้งหมดบนเว็บ ${pageLink('work') || ''}`.trim(), MENU));
+  void dropped;
+  return out;
+}
+
+/** "ประชุม" — the meetings ahead that I am invited to, as cards. */
+async function listMeetings(sql, me, lineUserId, today) {
+  const roster = await sql`SELECT * FROM users`;
+  const secretary = isSecretary(me);
+  const all = (await assembleMeetings(sql, roster))
+    .filter((m) => m.status === 'planned' && m.meetsOn >= today)
+    .filter((m) => canSeeMeeting(me, m, m.people, { isSecretary: secretary }))
+    // Mine first: an invitation is something to answer; a meeting I can see
+    // because I run the committee is only something to know about.
+    .sort((a, b) => {
+      const ai = a.people.some((p) => p.username === me.username) ? 0 : 1;
+      const bi = b.people.some((p) => p.username === me.username) ? 0 : 1;
+      if (ai !== bi) return ai - bi;
+      return (a.meetsOn + (a.meetsAt || '')) < (b.meetsOn + (b.meetsAt || '')) ? -1 : 1;
+    })
+    .slice(0, 10);
+  if (!all.length) return text('ไม่มีการประชุมที่กำลังจะถึงค่ะ', MENU);
+  await remember(sql, lineUserId, all.map((m) => ({ kind: 'meeting', id: m.id })));
+  const { bubbles } = fitCarousel(all.map((m) => meetingCard(m, {
+    today, me: me.username,
+    canReply: m.people.some((p) => p.username === me.username) && meetingOpenForReplies(rowOf(m)),
+    link: pageLink('work'),
+  })));
+  return flex(`การประชุมที่กำลังจะถึง (${all.length})`, bubbles, MENU);
+}
+
+/** What a button on a card asked for — see fromPostback. */
+async function cardAction(sql, me, lineUserId, typed, today) {
+  const [verb, a, b] = typed.slice(1).split(/\s+/);
+
+  if (verb === 'open') return showOne(sql, me, lineUserId, `${a} ${b}`, today);
+
+  if (verb === 'task-status') {
+    const task = (await assembled(sql)).find((t) => t.id === a);
+    if (!task || !canSeeTask(me, task)) return text('ไม่พบงานนี้แล้วค่ะ', MENU);
+    if (!canSetStatus(me, task)) {
+      return text(`ไม่มีสิทธิ์เปลี่ยนสถานะงาน "${task.title}" ค่ะ\nเปลี่ยนได้เฉพาะผู้ที่ถูกแท็ก ผู้สร้างงาน และแอดมิน`, MENU);
+    }
+    if (!TASK_STEPS.some((s) => s.key === b)) return text('ไม่รู้จักสถานะนี้ค่ะ', MENU);
+    await sql`UPDATE tasks SET status = ${b}, updated_at = now() WHERE id = ${task.id}`;
+    // The card comes back with the tracker moved on — the reply IS the proof
+    // that it worked, rather than a line of text saying so.
+    const fresh = (await assembled(sql)).find((t) => t.id === task.id);
+    const names = await nameMap(sql);
+    return flex(`${task.title} → ${STATUS_TH[b]}`,
+      taskCard(fresh, { today, names, canMove: true, link: taskLink(fresh.id), me: me.username }), MENU);
+  }
+
+  if (verb === 'task-pick') {
+    const task = (await assembled(sql)).find((t) => t.id === a);
+    if (!task || !canSeeTask(me, task) || !canSetStatus(me, task)) return text('เปลี่ยนสถานะงานนี้ไม่ได้ค่ะ', MENU);
+    return flex(`เปลี่ยนสถานะ: ${task.title}`, listBubble({
+      title: 'เปลี่ยนสถานะเป็น…',
+      subtitle: task.title,
+      rows: TASK_STEPS.map((s, i) => ({
+        number: i + 1,
+        title: (s.key === task.status ? '● ' : '○ ') + s.label + (s.key === task.status ? ' (ตอนนี้)' : ''),
+        data: s.key === task.status ? null : `task:status:${task.id}:${s.key}`,
+        say: s.key === task.status ? null : `${task.title} → ${s.label}`,
+      })),
+    }), MENU);
+  }
+
+  if (verb === 'meeting-reply') {
+    if (!['accepted', 'declined'].includes(b)) return text('ไม่เข้าใจคำตอบค่ะ', MENU);
+    const { meeting, invited } = await findMeeting(sql, me, (m) => m.id === a);
+    if (!meeting || !invited) return text('ไม่พบคำเชิญนี้ค่ะ', MENU);
+    if (!meetingOpenForReplies(rowOf(meeting))) return text('การประชุมนี้เริ่มไปแล้ว ตอบไม่ได้แล้วค่ะ', MENU);
+    await sql`UPDATE meeting_people SET reply = ${b}, replied_at = now()
+              WHERE meeting_id = ${meeting.id} AND username = ${me.username}`;
+    const again = (await findMeeting(sql, me, (m) => m.id === a)).meeting;
+    return flex(b === 'accepted' ? 'ตอบรับแล้ว' : 'ตอบว่าไม่เข้าร่วมแล้ว', meetingCard(again, {
+      today, me: me.username, canReply: true, link: pageLink('work'),
+    }), MENU);
+  }
+
+  return text('ไม่เข้าใจคำสั่งค่ะ', MENU);
 }
 
 /** Most urgent first, the same order the website shows. */
@@ -1093,13 +1286,24 @@ async function startManage(sql, me, lineUserId, today) {
     return text('ไม่มีงานที่ต้องจัดการค่ะ 🎉', ['เพิ่มงาน', 'ตรวจสอบงาน', 'จบ']);
   }
 
-  const lines = ['จัดการงาน — เลือกงานที่ต้องการแก้'];
-  lines.push('');
-  mine.forEach((t, i) => lines.push(sayTask(t, i + 1, today)));
-
   await remember(sql, lineUserId, mine.map((t) => ({ kind: 'task', id: t.id })));
   await saveFlow(sql, lineUserId, 'manage', 'pick', {});
-  return text(lines.join('\n'), [...mine.map((_, i) => String(i + 1)), 'จบ']);
+  /**
+   * A list card whose rows send their own number — the conversation is
+   * waiting for "3", and tapping the third row says exactly that.
+   */
+  return flex('จัดการงาน — เลือกงานที่ต้องการแก้', listBubble({
+    title: 'จัดการงาน',
+    subtitle: 'เลือกงานที่ต้องการแก้ — แตะรายการ หรือพิมพ์เลข',
+    rows: mine.map((t, i) => ({
+      number: i + 1,
+      say: String(i + 1),
+      title: `${MARK[t.status] || '○'} ${t.title}`,
+      state: t.dueDate && t.dueDate < today ? 'overdue' : t.dueDate === today ? 'today' : null,
+      meta: [sayDate(t.dueDate, today) + (t.dueTime ? ` ${t.dueTime} น.` : ''),
+        STATUS_TH[t.status], PRIORITY_TH[t.priority] || null].filter(Boolean).join(' · '),
+    })),
+  }), [...mine.map((_, i) => String(i + 1)), 'จบ']);
 }
 
 async function manageStep(sql, me, lineUserId, state, body) {
