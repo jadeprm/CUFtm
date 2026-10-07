@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>งานจุฬาฯแฟร์ · Chula Fair Tasks</title>
+<meta name="description" content="Task tracker for the Chulalongkorn University Fair committee.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="./styles.css">
+<!--
+  The phone interface. A stylesheet of its own rather than more media queries
+  scattered through styles.css: on a phone this app is laid out differently,
+  not just narrower, and keeping that in one place is what stops a desktop fix
+  quietly breaking it. The media attribute means a computer never applies it.
+-->
+<link rel="stylesheet" href="./phone.css" media="(max-width: 720px)">
+
+<!-- Installable app: the manifest is what lets iOS put this on a Home Screen,
+     which Apple requires before it will deliver a single push notification. -->
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#b51e64">
+<link rel="icon" href="./favicon.png" sizes="64x64">
+<link rel="icon" href="./icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="จุฬาฯแฟร์">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- The card people see when the link is shared in LINE, Messenger or Slack. -->
+<meta property="og:title" content="งานจุฬาฯแฟร์ · ระบบติดตามงาน">
+<meta property="og:description" content="ระบบติดตามงานของคณะกรรมการงานจุฬาฯแฟร์">
+<meta property="og:type" content="website">
+<meta property="og:image" content="./icon-512.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="./icon-512.png">
+
+<!--
+  The splash, styled inline on purpose.
+
+  Everything below this point waits on styles.css and app.js, and both of those
+  wait on the network. Until app.js decides whether to show the sign-in or the
+  app, BOTH of those are hidden — so on a slow phone the first thing somebody
+  saw was a blank white screen, which reads as a broken site rather than a
+  loading one. These rules are inline so they apply on the very first paint,
+  before any stylesheet has arrived.
+-->
+<style>
+  #boot-view{position:fixed;inset:0;z-index:999;display:grid;place-items:center;
+    background:#fff;color:#2a1b23;
+    font-family:"IBM Plex Sans Thai",system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:24px;text-align:center}
+  @media (prefers-color-scheme:dark){#boot-view{background:#170f14;color:#f3e9ee}}
+  #boot-view .bw{display:flex;flex-direction:column;align-items:center;gap:14px;max-width:22rem}
+  #boot-view img{width:72px;height:72px;border-radius:18px}
+  #boot-view b{font-size:1.05rem;font-weight:600}
+  #boot-view .bar{width:140px;height:4px;border-radius:999px;background:rgba(181,30,100,.18);overflow:hidden}
+  #boot-view .bar i{display:block;width:40%;height:100%;border-radius:999px;background:#b51e64;
+    animation:bootslide 1.1s ease-in-out infinite}
+  @keyframes bootslide{0%{transform:translateX(-110%)}100%{transform:translateX(360%)}}
+  @media (prefers-reduced-motion:reduce){
+    #boot-view .bar i{animation:none;width:100%;opacity:.5}
+  }
+  #boot-view .slow{font-size:.9rem;line-height:1.6;color:#7a6670;margin:0}
+  @media (prefers-color-scheme:dark){#boot-view .slow{color:#b9a4ae}}
+  #boot-view .retry{font:inherit;font-size:.92rem;padding:9px 18px;border-radius:999px;
+    border:1px solid #b51e64;background:#b51e64;color:#fff;cursor:pointer}
+</style>
+</head>
+<body>
+
+<!-- Shown from the first paint, removed by app.js once it knows what to show. -->
+<div id="boot-view">
+  <div class="bw">
+    <img src="./icon-192.png" alt="" width="72" height="72">
+    <b>งานจุฬาฯแฟร์</b>
+    <div class="bar" role="progressbar" aria-label="กำลังโหลด"><i></i></div>
+    <p class="slow" id="boot-slow" hidden>
+      ใช้เวลานานกว่าปกติ — ระบบกำลังตื่นจากพัก สักครู่หนึ่ง
+    </p>
+    <p class="slow" id="boot-stuck" hidden>
+      ยังเปิดไม่ได้ ลองตรวจอินเทอร์เน็ตแล้วโหลดใหม่อีกครั้ง
+    </p>
+    <button type="button" class="retry" id="boot-retry" hidden
+      onclick="location.reload()">โหลดใหม่</button>
+  </div>
+</div>
+
+<script>
+  /**
+   * Says something while the wait is long, rather than nothing.
+   *
+   * The database sleeps when nobody has used it for a few minutes and takes a
+   * second or two to wake, so a slow first load is normal rather than broken —
+   * and saying so is the difference between somebody waiting and somebody
+   * deciding the site is down and giving up.
+   */
+  (function () {
+    var slow = setTimeout(function () {
+      var el = document.getElementById('boot-slow');
+      if (el) el.hidden = false;
+    }, 4000);
+    var stuck = setTimeout(function () {
+      var el = document.getElementById('boot-stuck');
+      var btn = document.getElementById('boot-retry');
+      if (el) el.hidden = false;
+      if (btn) btn.hidden = false;
+    }, 15000);
+    window.__bootDone = function () {
+      clearTimeout(slow); clearTimeout(stuck);
+      var el = document.getElementById('boot-view');
+      if (el) el.remove();
+    };
+  }());
+</script>
+
+<!-- Not open yet ---------------------------------------------------------->
+<!--
+  The holding page, shown at the public address before the committee opens the
+  system. Driven by COMING_SOON in the environment so it can be turned off
+  without a code change, and it never stands in the way of somebody who already
+  has a session — the people building the thing have to be able to use it.
+-->
+<div id="soon-view" class="soon-wrap" hidden>
+  <div class="soon">
+    <img src="./icon-192.png" alt="" width="80" height="80" class="soon-mark">
+    <h1 data-t="soonTitle">งานจุฬาฯแฟร์ · ระบบติดตามงาน</h1>
+    <p class="soon-lead" data-t="soonLead">
+      ระบบติดตามงาน การประชุม และเอกสารของคณะกรรมการงานจุฬาฯแฟร์
+    </p>
+    <p class="soon-when" id="soon-when" hidden></p>
+    <ul class="soon-list">
+      <li data-t="soonPoint1">งานที่ได้รับมอบหมาย รู้ว่าใครทำอะไร ภายในเมื่อไร</li>
+      <li data-t="soonPoint2">กิจกรรมและการประชุม อยู่บนปฏิทินเดียวกัน</li>
+      <li data-t="soonPoint3">เอกสารที่ต้องลงนาม ส่งต่อตามลำดับโดยอัตโนมัติ</li>
+    </ul>
+    <p class="soon-who" data-t="soonWho">
+      สำหรับคณะกรรมการและทีมงานจุฬาฯแฟร์เท่านั้น
+    </p>
+    <button type="button" class="link" id="soon-signin" data-t="soonSignIn">
+      เป็นทีมงานอยู่แล้ว เข้าสู่ระบบ
+    </button>
+  </div>
+</div>
+
+<!-- Signed out ------------------------------------------------------------->
+<div id="auth-view" class="auth-wrap" hidden>
+  <form class="auth" id="auth-form" autocomplete="off">
+    <h1 id="auth-title">เข้าสู่ระบบ</h1>
+    <div id="auth-notice" class="notice err" hidden></div>
+
+    <!-- step 1: who are you -->
+    <div class="field" id="step-username">
+      <label for="in-username" data-t="username">ชื่อผู้ใช้</label>
+      <input type="text" id="in-username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    </div>
+
+    <!-- step 2: recognised -->
+    <div id="step-known" hidden>
+      <div class="who">
+        <span class="avatar" id="auth-avatar"></span>
+        <div><b id="auth-name"></b><br><small id="auth-sub" style="color:var(--ink-faint)"></small></div>
+      </div>
+      <p class="hint" id="auth-help" style="margin-top:12px"></p>
+
+      <div class="field" id="field-password" style="margin-top:10px">
+        <label for="in-password" data-t="password">รหัสผ่าน</label>
+        <input type="password" id="in-password" autocomplete="current-password">
+      </div>
+      <div class="field" id="field-confirm" style="margin-top:10px" hidden>
+        <label for="in-confirm" data-t="confirmPassword">ยืนยันรหัสผ่าน</label>
+        <input type="password" id="in-confirm" autocomplete="new-password">
+      </div>
+      <p class="hint" id="pw-rules" style="margin-top:8px"></p>
+    </div>
+
+    <button type="submit" class="btn primary" id="auth-submit">ถัดไป</button>
+    <button type="button" class="link" id="auth-forgot" hidden></button>
+    <button type="button" class="link" id="auth-back" hidden data-t="back">ย้อนกลับ</button>
+
+    <div style="display:flex;gap:8px;align-self:center;margin-top:4px">
+      <div class="lang-toggle">
+        <button type="button" data-lang="th">ไทย</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+      <div class="lang-toggle theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-theme="system" title="System">◐</button>
+        <button type="button" data-theme="light" title="Light">☀</button>
+        <button type="button" data-theme="dark" title="Dark">☾</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<!-- Signed in -------------------------------------------------------------->
+<div id="app-view" hidden>
+  <header class="topbar">
+    <div class="topbar-in">
+      <div class="brand">
+        <img src="./icon-192.png" alt="" class="brand-mark">
+        <div><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span><b id="bar-title" class="bar-title"></b></div>
+      </div>
+
+      <!--
+        Two labels per tab, one glyph.
+
+        On a computer these read as words across the top. On a phone the same
+        nav becomes the bar along the bottom, where a thumb reaches, and the
+        long Thai labels will not fit five across — so each tab carries a
+        short form as well and the stylesheet picks. Both are translated; the
+        short one is never an abbreviation of a word nobody chose.
+      -->
+      <nav class="tabs" id="tabs">
+        <a href="#/work" data-page="work">
+          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11.5l2.2 2.2L15.5 9"/><rect x="3.5" y="3.5" width="17" height="17" rx="4"/></svg>
+          <span class="tl" data-t="navWork">งานและกิจกรรม</span>
+          <span class="ts" data-t="navWorkShort">งาน</span></a>
+        <a href="#/calendar" data-page="calendar">
+          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>
+          <span class="tl" data-t="navCalendar">ปฏิทิน</span>
+          <span class="ts" data-t="navCalendarShort">ปฏิทิน</span></a>
+        <a href="#/docs" data-page="docs">
+          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4M9 12.5h6M9 16h6"/></svg>
+          <span class="tl" data-t="navDocs">เอกสาร</span>
+          <span class="ts" data-t="navDocsShort">เอกสาร</span></a>
+        <a href="#/announce" data-page="announce" id="tab-announce" hidden>
+          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6L7 10z"/><path d="M16.5 9.5a3.5 3.5 0 010 5"/></svg>
+          <span class="tl" data-t="navAnnounce">ส่งประกาศ</span>
+          <span class="ts" data-t="navAnnounceShort">ประกาศ</span></a>
+        <a href="#/admin" data-page="admin" id="tab-admin" hidden>
+          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="16.8" cy="9.5" r="2.4"/><path d="M15.5 14.6c2.5-.2 4.4 1.4 5 4.4"/></svg>
+          <span class="tl" data-t="navAdmin">จัดการผู้ใช้</span>
+          <span class="ts" data-t="navAdminShort">ผู้ใช้</span></a>
+      </nav>
+
+      <div class="topbar-right">
+        <div class="lang-toggle theme-toggle" role="group" aria-label="Theme">
+          <button type="button" data-theme="system" title="System">◐</button>
+          <button type="button" data-theme="light" title="Light">☀</button>
+          <button type="button" data-theme="dark" title="Dark">☾</button>
+        </div>
+        <div class="lang-toggle">
+          <button type="button" data-lang="th">ไทย</button>
+          <button type="button" data-lang="en">EN</button>
+        </div>
+
+        <div class="bell" style="position:relative">
+          <button class="btn ghost" id="bell-btn" aria-label="Notifications">🔔<span class="count" id="bell-count" hidden>0</span></button>
+          <div class="pop" id="bell-pop" hidden>
+            <header>
+              <b data-t="notifications">การแจ้งเตือน</b>
+              <button class="btn ghost sm" id="mark-read" data-t="markAllRead">อ่านทั้งหมดแล้ว</button>
+            </header>
+            <div class="items" id="bell-items"></div>
+          </div>
+        </div>
+
+        <!--
+          The profile picture IS the profile menu.
+
+          It used to be one more tab in a row of six, which on a phone left no
+          room for the ones people use every day. Everything about "me" now
+          hangs off the face in the corner, which is where people look for it.
+        -->
+        <div class="me" style="position:relative">
+          <button class="avatar" id="me-avatar" aria-haspopup="menu" aria-expanded="false"
+                  title="Profile"></button>
+          <div class="pop menu" id="me-pop" hidden>
+            <header>
+              <b id="me-name">—</b>
+            </header>
+            <div class="items">
+              <a href="#/profile" class="item" data-t="navProfile">โปรไฟล์</a>
+              <a href="#/links" class="item" data-t="navLinks">ลิงก์สั้น</a>
+              <button class="item" id="me-guide" data-t="guideMenu">คู่มือเริ่มต้นใช้งาน</button>
+              <button class="item" id="me-theme">ธีม</button>
+              <button class="item" id="me-lang">ภาษา</button>
+              <button class="item danger" id="sign-out" data-t="signOut">ออกจากระบบ</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="main"></main>
+  <!--
+    Make something new. On a phone this replaces the row of four buttons that
+    used to open the work page — it sits where a thumb is, above the bar, and
+    opens a short list of what can be made from the page you are on.
+  -->
+  <button type="button" id="fab" class="fab" hidden aria-label="+">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+</div>
+
+<div id="modal-root"></div>
+
+<!-- QR codes for posters. Shipped with the app rather than loaded from a CDN,
+     for the same reason pdf.js is: a university network that blocks the CDN
+     would otherwise leave the one feature that exists to be printed unable to
+     draw anything. MIT, © 2009 Kazuhiko Arase. -->
+<script src="./vendor/qrcode.js"></script>
+<script src="./i18n.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
