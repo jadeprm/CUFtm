@@ -1,6 +1,5 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser, canEditTasks, cannotAssign } from '../lib/auth.js';
-import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
 import { isDepartment, matchUnit } from '../lib/departments.js';
 import {
   isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet,
@@ -10,6 +9,14 @@ import {
 } from '../lib/scope.js';
 import { sendToMany } from '../lib/push.js';
 import { withNode } from '../lib/http.js';
+
+// TEMPORARY: lib/availstore.js is missing, so these do nothing for now.
+// When the real file is restored, delete these 3 lines and put this back
+// at the top with the other imports:
+//   import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
+const precedenceOver = async () => ({});
+const clearPrecedence = async () => {};
+const applyPrecedence = async () => {};
 
 /**
  * Tasks.
