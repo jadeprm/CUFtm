@@ -1,0 +1,664 @@
+/* ==========================================================================
+   The phone.
+
+   Loaded only below 720px (see the <link media> in index.html), after
+   styles.css, so everything here is a deliberate departure from the computer
+   layout rather than a patch on top of it.
+
+   What it is answering, from Jade's screenshots of the real thing:
+
+     · "everything is too large" — the work page spent ~470px on buttons and
+       filters before the first task, and the task view listed ten people one
+       per line. The fix is density: one control row, filters in a sheet,
+       people collapsed to a row of faces.
+
+     · "the menu and other pop-up buttons sink to the bottom" — every dialog
+       was sized to the window, not to the part of it a person can see, so its
+       buttons sat under the iPhone's home indicator, or behind the keyboard.
+       Here every dialog is a sheet sized to the visible area (--vvh, kept by
+       app.js from the visual viewport) with its buttons pinned above the
+       home indicator.
+
+   Safe areas are read through --sa-top / --sa-bottom rather than env()
+   directly, for one reason: a test can set them. Chromium has no notch, so
+   without this nothing could ever check that a button is clear of one.
+   ========================================================================== */
+
+:root {
+  --sa-top: env(safe-area-inset-top, 0px);
+  --sa-bottom: env(safe-area-inset-bottom, 0px);
+  /* Never flush with the bottom edge, even on a phone that reports no inset
+     — the gap between a finger and the glass's rounded corner still needs it. */
+  --sa-floor: max(var(--sa-bottom), 6px);
+  --appbar-h: 52px;
+  --tabbar-h: 56px;
+  --gutter: 14px;
+  --radius: 12px;
+}
+
+html { -webkit-text-size-adjust: 100%; }
+/* Nothing on a phone should ever scroll sideways. A date field that was a few
+   pixels too wide made the whole page wobble left and right under a thumb. */
+html, body { overflow-x: clip; }
+body {
+  padding: 0;
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---- controls ------------------------------------------------------------ */
+
+/**
+ * Sixteen pixels in every field, exactly.
+ *
+ * Below that, iOS zooms the whole page in when a field is tapped and leaves
+ * it zoomed after — the single most common reason a web app "feels too big"
+ * on an iPhone. The fields are also shorter than before: 42px is a
+ * comfortable target without each one costing a fifth of the screen.
+ */
+input[type=text], input[type=password], input[type=date], input[type=time],
+input[type=url], input[type=email], input[type=search], input[type=number],
+select, textarea {
+  font-size: 16px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+textarea { min-height: 78px; line-height: 1.45; }
+
+/**
+ * iOS draws date and time fields with a width of their own and ignores
+ * width:100%, which is what pushed them past the right edge of the meeting
+ * form. Without the native appearance they behave like any other field.
+ */
+input[type=date], input[type=time] {
+  -webkit-appearance: none; appearance: none;
+  display: block; min-width: 0; max-width: 100%;
+  text-align: left; line-height: 24px;
+}
+input::-webkit-date-and-time-value { text-align: left; }
+
+.btn {
+  min-height: 40px; padding: 0 14px; border-radius: 10px; font-size: 14.5px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  line-height: 1.2; touch-action: manipulation;
+}
+.btn.sm { min-height: 34px; padding: 0 11px; font-size: 13.5px; border-radius: 9px; }
+.btn:active { transform: scale(.98); }
+
+.seg { border-radius: 10px; }
+.seg button { padding: 6px 12px; font-size: 14px; min-height: 32px; }
+/* A segmented control that does not fit scrolls along one line instead of
+   wrapping into a block that looks like a second form. */
+.seg.wrap { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+.seg.wrap::-webkit-scrollbar { display: none; }
+.seg.wrap button { flex: none; white-space: nowrap; }
+
+.chip { font-size: 12px; }
+.field { gap: 4px; }
+.field > label { font-size: 12.5px; }
+.two { grid-template-columns: 1fr 1fr; gap: 10px; }
+.notice { font-size: 13.5px; padding: 10px 12px; border-radius: 10px; }
+
+/* ---- the top bar ---------------------------------------------------------- */
+
+/**
+ * No backdrop-filter or transform here, however tempting the frosted look.
+ * The bottom tab bar lives inside this element, and either property makes the
+ * top bar the frame that position:fixed measures against — the tab bar would
+ * stop sitting on the bottom of the screen and sit on the bottom of the top
+ * bar instead.
+ */
+.topbar {
+  position: sticky; top: 0;
+  padding-top: var(--sa-top);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-in {
+  height: var(--appbar-h); max-width: none;
+  padding: 0 6px 0 var(--gutter); gap: 4px; flex-wrap: nowrap;
+}
+.brand { flex: 1 1 auto; min-width: 0; margin: 0; gap: 10px; }
+.brand > div { min-width: 0; }
+.brand-mark { width: 28px; height: 28px; border-radius: 8px; }
+#brand-name, #brand-sub { display: none; }
+.bar-title {
+  display: block; font-size: 17px; font-weight: 700; letter-spacing: -.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.topbar-right { gap: 2px; flex: none; }
+.topbar-right > .lang-toggle { display: none; }
+#bell-btn {
+  width: 42px; height: 42px; min-height: 0; padding: 0; border-radius: 50%;
+  font-size: 19px; display: grid; place-items: center;
+}
+.bell .count { top: 4px; right: 3px; }
+#me-avatar {
+  width: 34px; height: 34px; margin: 0 4px 0 2px; padding: 0;
+  border: none; font-size: 12.5px; cursor: pointer;
+}
+
+/**
+ * The notification list and the profile menu drop from under the bar, the
+ * width of the screen, and stop short of the tab bar — instead of a 22rem
+ * box hanging off the bell that ran off the left edge.
+ */
+.pop {
+  position: fixed;
+  top: calc(var(--sa-top) + var(--appbar-h) + 6px);
+  left: 8px; right: 8px; width: auto;
+  max-height: calc(var(--vvh, 100dvh) - var(--sa-top) - var(--appbar-h)
+                   - var(--tabbar-h) - var(--sa-floor) - 20px);
+  display: flex; flex-direction: column; border-radius: 16px;
+}
+.pop[hidden] { display: none; }
+.pop .items { max-height: none; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
+.pop .item { padding: 11px 14px; }
+.pop.menu { left: auto; width: min(17rem, calc(100vw - 16px)); }
+.pop.menu .item { padding: 13px 16px; font-size: 15px; }
+
+/* ---- the tab bar ---------------------------------------------------------- */
+
+/**
+ * Along the bottom, where a thumb reaches, and clear of the home indicator.
+ *
+ * The labels used to be the bottom 12px of the bar, which on Jade's phone was
+ * exactly the strip the home indicator covers — every label was cut in half.
+ * The bar is now a fixed height above whatever the phone reserves, never
+ * less than 6px of it.
+ */
+#tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+  display: flex; flex: none; gap: 0;
+  height: calc(var(--tabbar-h) + var(--sa-floor));
+  padding: 0 4px var(--sa-floor);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -4px 16px rgba(20, 12, 16, .05);
+}
+#tabs a {
+  flex: 1 1 0; min-width: 0; height: var(--tabbar-h);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 0 2px; border-radius: 0; background: none;
+  color: var(--ink-faint); font-size: 11px; font-weight: 500; line-height: 1.2;
+  text-decoration: none;
+}
+#tabs a:hover { background: none; color: var(--ink-faint); }
+#tabs a.on, #tabs a.on:hover { color: var(--accent); background: none; }
+#tabs .tl { display: none; }
+#tabs .ts {
+  display: block; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#tabs .ti {
+  display: block; width: 52px; height: 28px; padding: 3px 14px; border-radius: 999px;
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+  transition: background-color .15s ease;
+}
+#tabs a.on .ti { background: var(--accent-soft); stroke-width: 2.1; }
+
+/* ---- the page ------------------------------------------------------------- */
+
+main {
+  max-width: none;
+  padding: 12px var(--gutter) calc(var(--tabbar-h) + var(--sa-floor) + 88px);
+}
+/* The page's name is in the top bar; saying it again under the bar is a line
+   of the screen spent on nothing. The calendar keeps its heading, which is
+   the month, not the page. */
+.page-head { gap: 8px; margin-bottom: 10px; }
+.page-head > h1:not(.cal-title) { display: none; }
+.page-head:not(:has(> :not(h1):not(.grow))) { display: none; }
+
+/* ---- the + button --------------------------------------------------------- */
+
+/**
+ * Below the top bar in the stacking order (39 against its 40) on purpose: the
+ * notification list hangs off the top bar, and a + floating over the middle
+ * of somebody's notifications is the kind of thing that gets tapped by
+ * mistake.
+ */
+.fab:not([hidden]) {
+  position: fixed; z-index: 39; right: 16px;
+  bottom: calc(var(--tabbar-h) + var(--sa-floor) + 14px);
+  width: 56px; height: 56px; border-radius: 18px; border: none; padding: 0;
+  display: grid; place-items: center; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink);
+  box-shadow: 0 8px 20px -6px rgba(181, 30, 100, .6), 0 2px 6px rgba(0, 0, 0, .12);
+  touch-action: manipulation;
+}
+.fab svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.fab:active { transform: scale(.94); }
+
+.ic { display: inline-grid; place-items: center; flex: none; }
+.ic svg {
+  width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* ---- every dialog is a sheet ---------------------------------------------- */
+
+/**
+ * The veil covers exactly the part of the screen a person can see — the
+ * visual viewport, which shrinks when the keyboard comes up and moves when
+ * Safari's toolbar collapses — and the dialog rises from its bottom edge.
+ */
+.veil {
+  inset: auto 0 auto 0;
+  top: var(--vvt, 0px);
+  height: var(--vvh, 100%);
+  padding: 0; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch;
+  place-items: initial;
+  backdrop-filter: none;
+  background: rgba(20, 12, 16, .5);
+}
+.veil > .modal {
+  width: 100%; max-width: none; margin: 0;
+  max-height: calc(var(--vvh, 100dvh) - var(--sa-top) - 10px);
+  border: none; border-top: 1px solid var(--line);
+  border-radius: 18px 18px 0 0;
+  display: flex; flex-direction: column;
+  box-shadow: 0 -10px 40px -12px rgba(0, 0, 0, .35);
+  transition: transform .2s ease;
+  animation: ph-sheet-up .24s cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes ph-sheet-up { from { transform: translateY(48px); opacity: .5; } }
+@media (prefers-reduced-motion: reduce) { .veil > .modal { animation: none; } }
+
+.veil > .modal > .grab {
+  display: block; flex: none; width: 40px; height: 5px; margin: 7px auto 1px;
+  border-radius: 999px; background: var(--line); touch-action: none;
+}
+.veil > .modal > header {
+  flex: none; gap: 6px; touch-action: none;
+  padding: 4px 8px 8px var(--gutter);
+  border-bottom: 1px solid var(--line-soft);
+}
+.veil > .modal > header h2 {
+  font-size: 16.5px; line-height: 1.3; font-weight: 650;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* The ✕ is the one way out every sheet has, so it is a real target. */
+.veil > .modal > header .btn.ghost.sm {
+  flex: none; width: 38px; height: 38px; min-height: 0; padding: 0; border-radius: 50%;
+  background: var(--surface-2); color: var(--ink-soft); font-size: 15px;
+}
+.veil > .modal > .body {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 12px var(--gutter) 18px; gap: 12px;
+}
+/**
+ * Nothing inside a sheet shrinks — the sheet scrolls instead.
+ *
+ * The body is a scrolling flex column, and a child that scrolls sideways
+ * (the task dialog's รายละเอียด / งานย่อย / ไฟล์งาน bar, the circle chips in
+ * the people picker) has no minimum height of its own, so the browser shrank
+ * it to an 8px sliver to make the column fit rather than letting it scroll.
+ */
+.veil > .modal > .body > * { flex-shrink: 0; }
+
+/* A sheet with nothing pinned under it still keeps its last line clear of the
+   home indicator. */
+.veil > .modal > .body:last-child,
+.veil > .modal > .body:has(+ footer.ph-empty) {
+  padding-bottom: calc(18px + var(--sa-bottom));
+}
+
+/**
+ * The buttons, pinned above the home indicator — or above the keyboard, when
+ * it is up, where the indicator is hidden anyway.
+ *
+ * Every button gets an equal share of one line and never wraps: the old
+ * footer let "เพิ่มลง Google Calendar" fold onto two lines and push its
+ * neighbours into odd sizes. The main action goes on the right, where the
+ * thumb is, and a destructive one on the far left, away from it.
+ */
+.veil > .modal > footer {
+  flex: none; display: flex; flex-wrap: nowrap; gap: 8px;
+  padding: 10px var(--gutter) calc(10px + var(--sa-bottom));
+  background: var(--surface); border-top: 1px solid var(--line-soft);
+}
+.kb-open .veil > .modal > footer { padding-bottom: 10px; }
+.veil > .modal > footer > .btn {
+  flex: 1 1 0; min-width: 0; min-height: 44px; padding: 0 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.veil > .modal > footer > .btn.primary { order: 9; }
+.veil > .modal > footer > .btn.danger { order: -1; flex: 0 1 auto; }
+.veil > .modal > footer > .grow,
+.veil > .modal > footer > .ph-dup,
+.veil > .modal > footer.ph-empty { display: none; }
+
+/* ---- the action sheet ----------------------------------------------------- */
+
+.act-sheet > .body { padding: 6px 8px calc(12px + var(--sa-bottom)); gap: 2px; }
+.act-list { display: flex; flex-direction: column; }
+.act {
+  display: flex; align-items: center; gap: 14px; width: 100%;
+  padding: 12px 10px; border: none; background: none; border-radius: 12px;
+  text-align: left; font: inherit; color: var(--ink); cursor: pointer;
+}
+.act:active { background: var(--surface-2); }
+.act-ic {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.act-ic svg { width: 22px; height: 22px; }
+.act-tx { display: flex; flex-direction: column; min-width: 0; }
+.act-tx b { font-size: 15.5px; font-weight: 600; }
+.act-tx small { font-size: 12.5px; color: var(--ink-faint); line-height: 1.4; }
+.act.danger { color: var(--danger); }
+
+/* ---- the work page -------------------------------------------------------- */
+
+/**
+ * One line of controls instead of four.
+ *
+ * Mine / everyone on the left, and two round buttons on the right: search
+ * opens a box under the line, filters open a sheet. The four dropdowns and
+ * the five create buttons that used to sit here are in that sheet and under
+ * the + button.
+ */
+.ph-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.ph-toolbar .seg { flex: none; }
+.ph-toolbar .grow { flex: 1; }
+.ph-ibtn {
+  position: relative; flex: none;
+  width: 40px; height: 40px; border-radius: 12px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft); cursor: pointer;
+}
+.ph-ibtn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.ph-ibtn .badge-n {
+  position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px; background: var(--accent); color: var(--accent-ink);
+  font-size: 11px; font-weight: 700; display: grid; place-items: center;
+  border: 2px solid var(--bg);
+}
+.ph-search { margin: -2px 0 10px; }
+.ph-search input { min-height: 40px; border-radius: 12px; background: var(--surface); }
+
+/* Status as one scrolling line of chips. */
+.ph-chips {
+  display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+  margin: 0 calc(-1 * var(--gutter)) 12px; padding: 1px var(--gutter);
+  scroll-padding: 0 var(--gutter);
+}
+.ph-chips::-webkit-scrollbar { display: none; }
+.ph-chips button {
+  flex: none; height: 34px; padding: 0 13px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft);
+  font: inherit; font-size: 13.5px; font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+.ph-chips button.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.ph-chips .n { margin-left: 6px; font-size: 12px; opacity: .65; font-variant-numeric: tabular-nums; }
+
+/* What is filtering the list, said in a line that clears it in one tap. */
+.ph-active {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: -4px 0 10px; font-size: 12.5px; color: var(--ink-soft);
+}
+.ph-active .chip { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.ph-active button {
+  border: none; background: none; padding: 4px 2px; font: inherit; font-size: 12.5px;
+  color: var(--accent); text-decoration: underline; cursor: pointer;
+}
+
+/* The two rails — meetings and what is coming — narrower and edge to edge. */
+.event-strip { margin-bottom: 12px; }
+.strip-head { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+.strip-rail {
+  margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter) 2px;
+  scroll-snap-type: x mandatory; scroll-padding: 0 var(--gutter);
+  scrollbar-width: none; gap: 8px;
+}
+.strip-rail::-webkit-scrollbar { display: none; }
+.event-card {
+  scroll-snap-align: start; width: 68vw; min-width: 0; max-width: 16rem;
+  padding: 8px 11px; border-radius: 12px;
+}
+.ec-title { font-size: 14px; }
+
+/* The tasks themselves: same card, less air. */
+ul.tasks { gap: 8px; }
+li.task {
+  padding: 11px 12px 11px 11px; gap: 2px 10px; border-radius: 12px;
+  grid-template-columns: auto 1fr auto;
+}
+.status-btn { width: 24px; height: 24px; margin-top: 0; border-radius: 7px; }
+.t-title { font-size: 14.5px; line-height: 1.4; }
+.t-meta { gap: 5px; margin-top: 4px; }
+.t-meta .chip { font-size: 11.5px; padding: 1px 8px; }
+.t-code { font-size: 10.5px; margin-right: 5px; }
+.stack .avatar { width: 22px; height: 22px; font-size: 8.5px; margin-left: -6px; }
+.t-side .chip { font-size: 10.5px; padding: 0 6px; }
+.empty { padding: 2rem 1rem; }
+
+/* ---- reading a task, an event, a meeting ---------------------------------- */
+
+.view-pane { gap: 12px; }
+.view-band { padding: 9px 11px; gap: 6px; }
+.vb-due, .vb-when { font-size: 13px; flex-basis: 100%; }
+.view-band .grow { display: none; }
+.view-desc { font-size: 14.5px; }
+.vrow { flex-direction: column; gap: 5px; padding: 10px 0; }
+.vk { width: auto; font-size: 12px; font-weight: 500; }
+
+/* A crowd of people folded to one line of faces. */
+.ppl-fold { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.ppl-sum {
+  display: inline-flex; align-items: center; gap: 10px; padding: 4px 12px 4px 4px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  font: inherit; color: var(--ink); cursor: pointer;
+}
+.ppl-sum .stack .avatar { width: 26px; height: 26px; font-size: 9.5px; margin-left: -8px; border-width: 2px; }
+.ppl-sum .stack .avatar:first-child { margin-left: 0; }
+.ppl-n { font-size: 13.5px; font-weight: 600; }
+.ppl-more { font-size: 12.5px; color: var(--accent); }
+.ppl-less {
+  border: none; background: none; padding: 2px 0; font: inherit; font-size: 12.5px;
+  color: var(--accent); cursor: pointer;
+}
+.vv .selected, .mtg-people { gap: 5px; }
+
+/* Tabs inside a dialog (รายละเอียด / งานย่อย / ผลงาน) scroll on one line. */
+.modal .tabbar, .modal .dtabs, .modal .seg.tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+
+/* Pickers: the list of people is a list to scroll, not a page to scroll past. */
+.picker .options { max-height: 15rem; }
+.picker .opt { padding: 10px 12px; }
+.picker .search input { min-height: 38px; }
+
+/* ---- the calendar --------------------------------------------------------- */
+
+.cal-bar { gap: 8px; margin-bottom: 8px; flex-wrap: nowrap; }
+.cal-title { font-size: 18px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-nav .btn.sm { min-width: 38px; padding: 0 9px; }
+.cal-bar .grow { display: none; }
+
+/**
+ * Two toggles and a key, as chips on one line.
+ */
+.cal-legend {
+  display: flex; gap: 6px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none;
+  margin: 0 calc(-1 * var(--gutter)) 10px; padding: 0 var(--gutter);
+  font-size: 12.5px;
+}
+.cal-legend::-webkit-scrollbar { display: none; }
+/* Every item keeps its own width and the row scrolls. Without flex:none the
+   month/week switch was the one thing the row could shrink, and shrank it to
+   a sliver nobody could find. */
+.cal-legend > * { flex: none; white-space: nowrap; }
+.cal-legend .seg button { padding: 4px 12px; min-height: 30px; }
+.cal-legend .grow { display: none; }
+
+/**
+ * The month as a grid of dots.
+ *
+ * Text chips in a 52px-wide day were three letters of a title each, which is
+ * not information. A dot says "something is on this day, and what kind",
+ * which is exactly what a month view is for; the day's actual items are
+ * listed underneath when it is tapped.
+ */
+.ph-month { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 6px 4px 8px; }
+.ph-month .ph-wk { display: grid; grid-template-columns: repeat(7, 1fr); }
+.ph-month .ph-wd { text-align: center; font-size: 11px; color: var(--ink-faint); padding: 2px 0 6px; font-weight: 500; }
+.ph-day {
+  border: none; background: none; font: inherit; color: var(--ink); cursor: pointer;
+  height: 46px; padding: 3px 0 0; border-radius: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.ph-day .dn {
+  width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 14px; font-variant-numeric: tabular-nums;
+}
+.ph-day.out .dn { color: var(--ink-faint); opacity: .5; }
+.ph-day.today .dn { color: var(--accent); font-weight: 700; }
+.ph-day.sel .dn { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.ph-dots { display: flex; gap: 3px; height: 6px; }
+.ph-dots i { width: 6px; height: 6px; border-radius: 50%; display: block; }
+.ph-dots i.task { background: var(--accent); }
+.ph-dots i.event { background: var(--doing); }
+.ph-dots i.meeting { background: var(--meet); }
+
+/* The chosen day, and the week, as a plain list of rows. */
+.ph-agenda { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+.ph-dayhead {
+  font-size: 13px; font-weight: 600; color: var(--ink-soft);
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;
+}
+.ph-dayhead.today { color: var(--accent); }
+.ph-dayhead small { font-weight: 500; color: var(--ink-faint); }
+.ph-rows { display: flex; flex-direction: column; gap: 6px; }
+.ph-row {
+  display: grid; grid-template-columns: 3.4rem 4px 1fr; gap: 10px; align-items: center;
+  width: 100%; padding: 10px 12px 10px 10px; text-align: left;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+  font: inherit; color: var(--ink); cursor: pointer;
+}
+.ph-row .at { font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; text-align: right; }
+.ph-row .bar { width: 4px; align-self: stretch; border-radius: 4px; background: var(--c, var(--accent)); }
+.ph-row .tx { min-width: 0; display: flex; flex-direction: column; }
+.ph-row .tx b { font-size: 14.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-row .tx small { font-size: 12px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-row.k-meeting { --c: var(--meet); }
+.ph-row.k-event { --c: var(--doing); }
+.ph-row.done .tx b { text-decoration: line-through; color: var(--ink-faint); }
+.ph-none { font-size: 13px; color: var(--ink-faint); padding: 14px; text-align: center;
+  border: 1px dashed var(--line); border-radius: 12px; }
+
+/* ---- documents ------------------------------------------------------------ */
+
+.doc-list { gap: 8px; }
+.doc-card { padding: 11px 12px; gap: 6px; border-radius: 12px; }
+.dc-title { font-size: 14.5px; }
+.dc-meta { font-size: 12px; }
+.chain-n { margin-top: 22px; }
+
+/* ---- tables become cards --------------------------------------------------- */
+
+/**
+ * A table of seven columns cannot be read at 390px, and scrolling it sideways
+ * hides the name column the moment you reach the buttons that act on it. On a
+ * phone each row is a card: the first cell as its heading, the rest as
+ * labelled lines underneath, each label taken from the column it came from.
+ */
+.tablewrap { border: none; background: none; overflow: visible; }
+.tablewrap table { min-width: 0; width: 100%; display: block; }
+.tablewrap thead { display: none; }
+.tablewrap tbody { display: flex; flex-direction: column; gap: 8px; }
+.tablewrap tr {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+}
+.tablewrap tr.off { opacity: .7; }
+.tablewrap td { display: flex; gap: 10px; align-items: flex-start; padding: 0; border: none; text-align: left !important; }
+.tablewrap td:empty { display: none; }
+.tablewrap td[data-label]::before {
+  content: attr(data-label); flex: none; width: 6.5rem;
+  font-size: 12px; color: var(--ink-faint); padding-top: 3px;
+}
+.tablewrap td:first-child { font-weight: 600; }
+.tablewrap td > * { min-width: 0; }
+
+/* ---- admin ---------------------------------------------------------------- */
+
+/**
+ * The health report folds to its first line.
+ *
+ * It is a dozen lines of diagnostics that an admin reads when something is
+ * wrong and skips every other day — at full length on a phone it was the
+ * whole first screen of the page, in red.
+ */
+.notice.fold { cursor: pointer; }
+.notice.fold > div > strong::after { content: '  ▾'; font-weight: 400; opacity: .6; }
+.notice.fold.open > div > strong::after { content: '  ▴'; }
+.notice.fold:not(.open) > div > :not(:first-child):not(.fold-sum) { display: none; }
+.notice.fold .fold-sum { display: block; font-size: 12.5px; opacity: .85; margin-top: 2px; }
+.notice.fold.open .fold-sum { display: none; }
+
+.access-cell { gap: 5px; }
+td .who-cell { gap: 10px; }
+
+/* ---- profile, links, announce --------------------------------------------- */
+
+/* The profile is a page, not a dialog floating in one: no frame around it. */
+main > .modal {
+  width: 100% !important; max-width: none; margin: 0 !important;
+  border-radius: 14px; box-shadow: none; max-height: none; overflow: visible;
+}
+main > .modal > .body { padding: 14px var(--gutter); gap: 16px; overflow: visible; }
+main > .modal > footer {
+  position: sticky; bottom: calc(var(--tabbar-h) + var(--sa-floor));
+  padding: 10px var(--gutter); border-radius: 0 0 14px 14px; z-index: 2;
+}
+main > .modal > footer .btn { flex: 1; min-height: 44px; }
+.avatar.lg { width: 64px; height: 64px; font-size: 22px; }
+
+.link-row { padding: 11px 12px; }
+.qr-url { font-size: 12px; }
+
+/* ---- signing in ----------------------------------------------------------- */
+
+.auth-wrap {
+  min-height: 100dvh; padding: calc(var(--sa-top) + 20px) var(--gutter) calc(var(--sa-bottom) + 20px);
+  place-items: center;
+}
+.auth { width: 100%; max-width: 24rem; padding: 22px 18px; border-radius: 16px; }
+.auth .btn.primary { min-height: 46px; font-size: 15.5px; }
+
+/* ---- things a phone does not need ----------------------------------------- */
+
+/* Hover lifts and shadows read as a flicker under a finger. */
+li.task:hover, .doc-card:hover, .event-card:hover { box-shadow: var(--shadow-1); border-color: var(--line); }
+
+/* ---- the board, on a phone ------------------------------------------------ */
+
+/**
+ * Columns side by side, swiped one at a time.
+ *
+ * Five columns cannot fit across 390px, and squeezing them to 70px each
+ * would be a board nobody can read. So each column is most of the screen
+ * wide, the next one's edge shows so it is obvious there is more, and the
+ * swipe snaps to a column rather than stopping halfway between two.
+ */
+.kanban.kb-phone {
+  display: flex; gap: 10px; overflow-x: auto; overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory; scroll-padding: 0 var(--gutter);
+  margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter) 8px;
+  scrollbar-width: none;
+}
+.kanban.kb-phone::-webkit-scrollbar { display: none; }
+.kb-phone .kb-col {
+  flex: 0 0 min(84vw, 22rem); scroll-snap-align: start;
+  min-height: 9rem; padding: 8px; border-radius: 14px;
+}
+.kb-phone .kb-head { padding: 4px 4px 2px; font-size: 14px; }
+.kb-phone .kb-empty { padding: 26px 10px; }
