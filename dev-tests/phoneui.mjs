@@ -97,7 +97,13 @@ console.log('\nThe work page');
  * 470px down a 852px screen, below five buttons and four dropdowns.
  */
 const firstTask = await pg.locator('li.task').first().boundingBox();
-ok('the first task is in the top half of the screen', firstTask && firstTask.y < H * 0.5,
+/**
+ * Since the coming-up agenda (three slim rows) and the role tabs were added,
+ * the first card on the BOARD sits a little past half way — the column heading
+ * takes a line of its own there. Still well above the 470px this was before
+ * the redesign; the limit is set to say so rather than pretend.
+ */
+ok('the first task is no lower than just past half the screen', firstTask && firstTask.y < H * 0.55,
   firstTask ? `${Math.round(firstTask.y)}px down` : 'none');
 ok('one line of controls, not four rows',
   (await pg.locator('.ph-toolbar').count()) === 1 && (await pg.locator('#main .filters').count()) === 0);

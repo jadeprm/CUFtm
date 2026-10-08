@@ -1,6 +1,6 @@
 /** The Google Calendar link, where a person would look for it. */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
 const pg = await (await b.newContext({viewport:{width:1700,height:1000},deviceScaleFactor:1.3})).newPage();
 const errs=[]; pg.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
@@ -11,7 +11,8 @@ await pg.fill('#in-password','fairAdmin1');
 if (await pg.locator('#field-confirm:not([hidden])').count()) await pg.fill('#in-confirm','fairAdmin1');
 await pg.click('#auth-submit'); await pg.waitForTimeout(2600);
 
-await pg.locator('.event-card.meeting').first().click(); await pg.waitForTimeout(1500);
+await expandUpcoming(pg);
+await pg.locator('.up-row.meeting').first().click(); await pg.waitForTimeout(1500);
 const link = pg.locator('.veil a', { hasText: /Google Calendar/ }).first();
 ok('the meeting shows an "add to Google Calendar" link', await link.count() === 1);
 const href = await link.getAttribute('href');

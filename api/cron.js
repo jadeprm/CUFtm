@@ -1,3 +1,4 @@
+import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, json, noDatabase, hasDatabase, requestUrl, toBuffer } from '../lib/db.js';
 import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
@@ -147,12 +148,27 @@ async function handler(request) {
     }
 
     const people = await sql`SELECT username FROM task_people WHERE task_id = ${task.id}`;
+    // Each person's own setting for reminders, or for this one task.
+    const heard = await sortRecipients(sql, people.map((p) => p.username),
+      { category: 'task_reminder', scope: 'task', id: task.id });
 
     for (const { username } of people) {
       const [already] = await sql`
         SELECT 1 FROM reminders_sent
         WHERE task_id = ${task.id} AND username = ${username} AND kind = ${kind}`;
       if (already) continue;
+
+      /**
+       * Switched off means nothing — except that a missed deadline still
+       * lands in the bell, quietly. Somebody who silenced the countdown has
+       * not asked to be kept from finding out they are late.
+       */
+      const silenced = heard.off.includes(username);
+      if (silenced && kind !== 'overdue') {
+        await sql`INSERT INTO reminders_sent (task_id, username, kind)
+                  VALUES (${task.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
+        continue;
+      }
 
       const when = task.due_time ? `${due} ${task.due_time}` : due;
       const id = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -166,7 +182,7 @@ async function handler(request) {
         VALUES (${task.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
 
       created.push({ task: task.id, username, kind });
-      toPush.push({
+      if (heard.loud.includes(username)) toPush.push({
         username,
         id,
         taskId: task.id,
@@ -236,11 +252,18 @@ async function handler(request) {
       ? event.startsOn
       : `${event.startsOn} ${event.startsAt || ''}`.trim();
 
-    for (const username of await audienceOf(sql, event)) {
+    const audience = await audienceOf(sql, event);
+    const heard = await sortRecipients(sql, audience, { category: 'event', scope: 'event', id: event.id });
+    for (const username of audience) {
       const [already] = await sql`
         SELECT 1 FROM reminders_sent
         WHERE task_id = ${event.id} AND username = ${username} AND kind = ${kind}`;
       if (already) continue;
+      if (heard.off.includes(username)) {
+        await sql`INSERT INTO reminders_sent (task_id, username, kind)
+                  VALUES (${event.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
+        continue;
+      }
 
       const [person] = await sql`SELECT lang FROM users WHERE username = ${username}`;
       const lang = person?.lang === 'en' ? 'en' : 'th';
@@ -256,6 +279,7 @@ async function handler(request) {
         VALUES (${event.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
 
       eventNotices++;
+      if (!heard.loud.includes(username)) continue;   // the bell only
       const result = await sendToUser(sql, username, {
         id,
         title: event.title,
@@ -453,13 +477,23 @@ async function sendDigests(sql, today) {
       AND e.starts_on >= ${today}::date AND e.starts_on <= ${soon}::date
     ORDER BY e.starts_on, e.starts_at NULLS FIRST`;
 
-  const mine = (rows, username) => rows.filter((r) => r.username === username);
+  /**
+   * Anything a person switched off for that one task or event stays out of
+   * their morning summary too — a muted task that still turned up on LINE
+   * every morning would not be muted.
+   */
+  const muted = await sql`
+    SELECT username, scope, item_id FROM notify_prefs
+    WHERE username = ANY(${names}) AND level = 'off' AND scope IN ('task', 'event')`;
+  const isMuted = (username, scope, id) =>
+    muted.some((m) => m.username === username && m.scope === scope && m.item_id === id);
+  const mine = (rows, username, scope) => rows.filter((r) => r.username === username && !isMuted(username, scope, r.id));
 
   let sent = 0;
   const errors = [];
   for (const link of links) {
-    const theirTasks = mine(tasks, link.username);
-    const theirEvents = mine(events, link.username);
+    const theirTasks = mine(tasks, link.username, 'task');
+    const theirEvents = mine(events, link.username, 'event');
     if (!theirTasks.length && !theirEvents.length) continue;   // say nothing
 
     const card = digestCard(theirTasks, theirEvents, today);

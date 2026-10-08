@@ -8,7 +8,7 @@
  * stylesheet and nothing says so.
  */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4700';
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
@@ -169,7 +169,8 @@ await pg.locator('#tabs a[href="#/work"]').first().click(); await pg.waitForTime
 await pg.reload({ waitUntil: 'networkidle' }); await pg.waitForTimeout(2600);
 
 /** The meeting card itself must be drawn in the meeting colour, not the task one. */
-const card = pg.locator('.event-card.meeting', { hasText: 'ทดสอบเอกสารประกอบ' }).first();
+await expandUpcoming(pg);
+const card = pg.locator('.up-row.meeting', { hasText: 'ทดสอบเอกสารประกอบ' }).first();
 const cardBorder = await card.evaluate((el) => getComputedStyle(el).borderLeftColor);
 ok('a meeting card on the work page carries the meeting colour',
   cardBorder === dots.meeting, `${cardBorder} vs dot ${dots.meeting}`);

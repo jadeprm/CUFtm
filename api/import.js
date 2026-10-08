@@ -1,3 +1,4 @@
+import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
@@ -562,6 +563,7 @@ async function handler(request) {
 
         // Resolve department tags to people, exactly as the task form does.
         const set = new Set((row.assignees || []).map((a) => clean(a, 64)).filter(Boolean));
+        const namedHere = new Set(set);
         for (const d of row.departments || []) {
           if (!isDepartment(d.key)) continue;
           const found =
@@ -577,10 +579,19 @@ async function handler(request) {
           await sql`INSERT INTO task_departments (task_id, department, scope)
                     VALUES (${id}, ${d.key}, ${d.scope}) ON CONFLICT DO NOTHING`;
         }
+        // Their notification settings decide whether the bell gets a row.
+        const tellNamed = notify.includes('created')
+          ? await sortRecipients(sql, [...set].filter((u) => namedHere.has(u)), { category: 'task_named', scope: 'task', id })
+          : { off: [] };
+        const tellDept = notify.includes('created')
+          ? await sortRecipients(sql, [...set].filter((u) => !namedHere.has(u)), { category: 'task_dept', scope: 'task', id })
+          : { off: [] };
+        const silenced = new Set([...tellNamed.off, ...tellDept.off]);
         for (const username of set) {
-          await sql`INSERT INTO task_people (task_id, username) VALUES (${id}, ${username})
+          await sql`INSERT INTO task_people (task_id, username, via)
+                    VALUES (${id}, ${username}, ${namedHere.has(username) ? 'named' : 'dept'})
                     ON CONFLICT DO NOTHING`;
-          if (username !== me.username && notify.includes('created')) {
+          if (username !== me.username && notify.includes('created') && !silenced.has(username)) {
             await sql`
               INSERT INTO notifications (id, username, task_id, kind, title, body)
               VALUES (${`n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`},
@@ -600,7 +611,7 @@ async function handler(request) {
             VALUES (${`p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`},
                     ${id}, ${partTitle}, ${who}, ${position++}, ${me.username})`;
           if (who) {
-            await sql`INSERT INTO task_people (task_id, username) VALUES (${id}, ${who})
+            await sql`INSERT INTO task_people (task_id, username, via) VALUES (${id}, ${who}, 'part')
                       ON CONFLICT DO NOTHING`;
           }
         }

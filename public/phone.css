@@ -662,3 +662,80 @@ li.task:hover, .doc-card:hover, .event-card:hover { box-shadow: var(--shadow-1);
 }
 .kb-phone .kb-head { padding: 4px 4px 2px; font-size: 14px; }
 .kb-phone .kb-empty { padding: 26px 10px; }
+
+/* Mine to do / my department's / following — a slim row of tabs, lighter than
+   the status chips under it so the two rows never read as one. */
+.ph-roles {
+  display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none;
+  margin: -2px calc(-1 * var(--gutter)) 8px; padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--line-soft);
+}
+.ph-roles::-webkit-scrollbar { display: none; }
+.ph-roles button {
+  flex: none; border: none; background: none; font: inherit; font-size: 13px; color: var(--ink-soft);
+  padding: 7px 10px 8px; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
+}
+.ph-roles button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.ph-roles .n { margin-left: 4px; font-size: 11.5px; opacity: .7; }
+.role-badge { font-size: 10.5px; padding: 3px 7px 3px 5px; }
+.up-head { padding: 5px 10px 3px; }
+.up-head b { font-size: 12.5px; }
+.up-group { padding: 3px 10px 2px; font-size: 10.5px; }
+.up-row { min-height: 34px; padding-top: 4px; padding-bottom: 4px; }
+.upcoming { margin-bottom: 8px; }
+.ph-roles button { padding: 5px 10px 6px; }
+
+/* ---- compact task cards (she found the boxes too big) ----------------------
+   One title line with the badge and code in it, one line of chips under it:
+   about 56px a card instead of 90. */
+ul.tasks { gap: 6px; }
+li.task { padding: 7px 10px 7px 9px; gap: 0 9px; border-radius: 10px; box-shadow: none; }
+li.task .status-btn { width: 22px; height: 22px; border-radius: 6px; margin-top: 1px; }
+li.task .t-title { font-size: 13.5px; line-height: 1.45; font-weight: 500; }
+li.task .t-meta { gap: 4px; margin-top: 3px; }
+li.task .t-meta .chip { font-size: 10.5px; padding: 0 6px; line-height: 17px; border-radius: 999px; }
+li.task .t-code { font-size: 10px; margin-right: 4px; }
+li.task .stack .avatar { width: 20px; height: 20px; font-size: 8px; }
+li.task .my-part { font-size: 11.5px; margin-top: 1px; }
+li.task:has(.role-watch) { border-style: solid; }
+.role-badge { font-size: 10px; padding: 2px 6px 2px 4px; gap: 3px; margin-right: 5px; vertical-align: 1px; }
+.role-badge .ic svg { width: 10px; height: 10px; }
+.role-badge .rb-long { display: none; }
+.role-badge .rb-short { display: inline; }
+.kanban.kb-phone li.task { padding: 7px 9px; }
+
+/* ---- notification settings: one line per category, icons for the levels ---- */
+.notify-box .notify-help { display: none; }
+.notify-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 8px; font-size: 11.5px; color: var(--ink-soft);
+}
+.notify-legend > span { display: inline-flex; align-items: center; gap: 3px; }
+.notify-legend .ic svg { width: 13px; height: 13px; }
+.notify-legend b { font-weight: 600; color: var(--ink); }
+.notify-legend small { font-size: 11px; color: var(--ink-faint); }
+.notify-cat { flex-direction: row; align-items: center; gap: 8px; padding: 7px 8px 7px 10px; }
+.nc-text { gap: 1px; }
+.nc-text b { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.nc-text small {
+  font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nc-now {
+  display: inline; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.nc-now.lv-quiet { background: var(--surface-3); color: var(--ink-soft); }
+.nc-now.lv-off { background: var(--danger-soft); color: var(--danger); }
+.notify-cat .notify-seg { display: flex; flex: none; padding: 2px; gap: 2px; }
+.notify-cat .notify-seg button { width: 34px; height: 30px; padding: 0; justify-content: center; }
+.notify-cat .notify-seg button > span:not(.ic) { display: none; }
+.notify-cat .notify-seg button[data-level="all"].on { background: var(--accent); color: var(--accent-ink); }
+.notify-items li { padding: 5px 8px; font-size: 12.5px; }
+
+/* The switch inside one task: four short buttons on one line. */
+.notify-ctl .notify-seg { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; width: 100%; }
+.notify-ctl .notify-seg button { justify-content: center; font-size: 11.5px; padding: 6px 4px; gap: 3px; min-width: 0; }
+.notify-ctl .notify-seg button > span:not(.ic) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notify-ctl .notify-seg .ic svg { width: 13px; height: 13px; }
+.notify-cat .notify-seg .ic svg { width: 16px; height: 16px; }
+.notify-cat .notify-seg button.on[data-level="quiet"] { background: var(--ink-soft); color: var(--surface); }
+.notify-cat .notify-seg button.on[data-level="off"] { background: var(--danger); color: #fff; }

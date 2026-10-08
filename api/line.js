@@ -7,7 +7,7 @@ import {
   lineConfigured, verifySignature, reply, text, newLinkCode,
   installRichMenu, removeRichMenu, taskLink, pageLink,
 } from '../lib/line.js';
-import { RICH_MENU_PNG_BASE64 } from '../lib/richmenu-image.js';
+import { RICH_MENU_PNG_BASE64, RICH_MENU_VERSION } from '../lib/richmenu-image.js';
 import {
   readCommand, parseTaskLine, todayIso, addDays,
   sayTask, sayEvent, sayDate, HELP, MENU, MARK, PRIORITY_TH, STATUS_TH,
@@ -62,6 +62,7 @@ async function handler(request) {
       SELECT line_user_id, display_name, digest, linked_at
       FROM line_links WHERE username = ${me.username}`;
     const [menu] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu'`;
+    const [menuVersion] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu_version'`;
     return json({
       configured: lineConfigured(),
       linked: rows.length > 0,
@@ -70,6 +71,7 @@ async function handler(request) {
       linkedAt: rows[0]?.linked_at || null,
       canManageMenu: me.access === 'admin' || me.access === 'coadmin',
       menuInstalled: Boolean(menu?.value),
+      menuOutdated: Boolean(menu?.value) && menuVersion?.value !== RICH_MENU_VERSION,
     });
   }
 
@@ -98,7 +100,7 @@ async function handler(request) {
     if (request.method === 'DELETE') {
       const [row] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu'`;
       await removeRichMenu(row?.value || null);
-      await sql`DELETE FROM meta WHERE key = 'line_richmenu'`;
+      await sql`DELETE FROM meta WHERE key IN ('line_richmenu', 'line_richmenu_version')`;
       return json({ ok: true, installed: false });
     }
 
@@ -111,6 +113,8 @@ async function handler(request) {
         if (old?.value) await removeRichMenu(old.value).catch(() => {});
         const id = await installRichMenu(png);
         await sql`INSERT INTO meta (key, value) VALUES ('line_richmenu', ${id})
+                  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
+        await sql`INSERT INTO meta (key, value) VALUES ('line_richmenu_version', ${RICH_MENU_VERSION})
                   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
         return json({ ok: true, installed: true, richMenuId: id });
       } catch (error) {
@@ -163,9 +167,59 @@ async function webhook(request, sql) {
       // One person's broken message must not stop everyone else's being
       // answered, and LINE retries a non-200 — which would replay the lot.
       console.error('[line] event failed:', String(error?.message || error).slice(0, 300));
+      /**
+       * And never silence. Whatever went wrong, the person gets an answer
+       * that says so and offers the way forward, rather than a chat that
+       * looks as though the bot is off.
+       */
+      if (event.replyToken) {
+        await reply(event.replyToken, text(
+          'ขออภัยค่ะ ตอนนี้ตอบคำสั่งนี้ไม่ได้ ลองอีกครั้ง หรือเปิดบนเว็บ' +
+          (pageLink('work') ? `\n${pageLink('work')}` : ''), MENU)).catch(() => {});
+      }
     }
   }
+  await refreshMenu(sql);
   return json({ ok: true });
+}
+
+/**
+ * Brings the menu everybody sees up to date by itself.
+ *
+ * Once an admin has installed the menu, a new version of the app with a new
+ * picture (the meetings and events buttons, say) should not wait for somebody
+ * to remember to press "reinstall". The first message after a deploy swaps it,
+ * after that message has been answered. The version is written first, so two
+ * messages arriving together cannot both start a swap.
+ */
+async function refreshMenu(sql) {
+  try {
+    const [menu] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu'`;
+    if (!menu?.value) return;   // never installed: leave the account as it is
+    // A swap LINE refused is tried again, but not on every message.
+    const [state] = await sql`SELECT value FROM meta WHERE key = 'line_richmenu_version'`;
+    const failedAt = /^failed:(\d+)$/.exec(state?.value || '');
+    if (failedAt && Date.now() - Number(failedAt[1]) < 3600e3) return;
+    const claimed = await sql`
+      INSERT INTO meta (key, value) VALUES ('line_richmenu_version', ${RICH_MENU_VERSION})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+      WHERE meta.value IS DISTINCT FROM EXCLUDED.value
+      RETURNING key`;
+    // A row back means the stored version was missing or different — exactly
+    // when to swap. installRichMenu also makes the new one everybody's default.
+    if (!claimed.length) return;
+    const id = await installRichMenu(Buffer.from(RICH_MENU_PNG_BASE64, 'base64'));
+    await sql`UPDATE meta SET value = ${id} WHERE key = 'line_richmenu'`;
+    // The old menu itself, now unused.
+    if (menu.value !== id) {
+      await fetch(`https://api.line.me/v2/bot/richmenu/${menu.value}`, {
+        method: 'DELETE', headers: { authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` },
+      }).catch(() => {});
+    }
+  } catch (error) {
+    console.error('[line] menu refresh failed:', String(error?.message || error).slice(0, 300));
+    await sql`UPDATE meta SET value = ${`failed:${Date.now()}`} WHERE key = 'line_richmenu_version'`.catch(() => {});
+  }
 }
 
 async function handleEvent(sql, event) {
@@ -337,8 +391,8 @@ async function run(sql, me, lineUserId, body) {
   // The three rich-menu buttons, and the sub-menus they open.
   if (MENU_ADD.includes(typed)) return startAdd(sql, me, lineUserId);
   if (MENU_VIEW.includes(typed)) {
-    return text('ตรวจสอบงาน — ต้องการดูอะไรคะ',
-      ['งานของฉัน', 'วันนี้', 'สัปดาห์นี้', 'เลยกำหนด', 'กิจกรรม', 'จบ']);
+    return text('ตรวจสอบงาน — ต้องการดูอะไรคะ\nแตะปุ่มด้านล่าง หรือพิมพ์รหัส เช่น T0042 / M0005',
+      ['งานของฉัน', 'ความคืบหน้า', 'วันนี้', 'สัปดาห์นี้', 'เลยกำหนด', 'ประชุม', 'กิจกรรม', 'เอกสาร', 'จบ']);
   }
   if (MENU_MANAGE.includes(typed)) return startManage(sql, me, lineUserId, today);
   /**
@@ -349,6 +403,12 @@ async function run(sql, me, lineUserId, body) {
    * anything else somebody might say.
    */
   if (/^[TEM]\d{3,6}$/i.test(typed)) return showOne(sql, me, lineUserId, typed, today);
+  /**
+   * A number on its own — "2" — means the second line of the list just shown.
+   * People answer a numbered list with a number; saying "ไม่เข้าใจ" to that,
+   * as it used to, was the bot being obtuse.
+   */
+  if (/^\d{1,2}$/.test(typed)) return showOne(sql, me, lineUserId, typed, today);
 
   // Card buttons — see fromPostback.
   if (typed.startsWith('#')) return cardAction(sql, me, lineUserId, typed, today);
@@ -789,7 +849,8 @@ async function showOne(sql, me, lineUserId, ref, today) {
 
   if (/^\d{1,2}$/.test(raw)) {
     const found = await recall(sql, lineUserId, Number(raw));
-    if (!found) return text(`ไม่พบรายการที่ ${raw} ค่ะ\nพิมพ์ "งาน" หรือ "กิจกรรม" เพื่อดูรายการก่อน`, MENU);
+    if (!found) return text(`ไม่พบรายการที่ ${raw} ค่ะ\nพิมพ์ "งาน" "ประชุม" หรือ "กิจกรรม" เพื่อดูรายการก่อน`, MENU);
+    if (found.kind === 'doc') return openDoc(sql, me, lineUserId, raw);
     kind = found.kind; id = found.ref_id;
   } else if (/^[TEM]\d{3,6}$/i.test(raw)) {
     code = raw.toUpperCase();

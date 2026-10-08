@@ -10,6 +10,7 @@ import {
   addAttachment, removeAttachment, downloadAttachment,
 } from '../lib/meetingstore.js';
 import { circleSummary } from '../lib/circles.js';
+import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
 
 /**
  * Events: dates people need to know about.
@@ -45,6 +46,9 @@ function toIsoDate(value) {
 export async function assembledEvents(sql) {
   const rows = await sql`
     SELECT * FROM events ORDER BY starts_on, starts_at NULLS FIRST, created_at`;
+  // What somebody decided takes precedence over each of these. One small query
+  // on a table that only ever holds contested bookings.
+  const beaten = await precedenceOver(sql, 'event');
   const people = await sql`SELECT * FROM event_people`;
   const depts = await sql`SELECT * FROM event_departments`;
 
@@ -61,6 +65,7 @@ export async function assembledEvents(sql) {
 
   return rows.map((e) => ({
     id: e.id,
+    outrankedBy: beaten[e.id] || [],
     code: e.code || null,
     title: e.title,
     description: e.description,
@@ -262,6 +267,20 @@ async function handler(request) {
       const { people, departments } = readTags(body);
       await writeTags(sql, id, people, departments);
 
+      // "I know it clashes, and mine is the one that counts." Whose booking
+      // this person may outrank is settled on this side, never by the page.
+      if (body.prioritise && !allDay) {
+        const roster = (await sql`
+          SELECT username, access, display_name FROM users WHERE active = true`)
+          .map((p) => ({ ...p, displayName: p.display_name }));
+        const on = await sql`SELECT username FROM event_people WHERE event_id = ${id}`;
+        await applyPrecedence(sql, me, {
+          kind: 'event', itemId: id, roster,
+          when: { on: startsOn, at: cleanTime(body.startsAt), to: cleanTime(body.endsAt) },
+          people: on.map((r) => r.username),
+        });
+      }
+
       const all = await assembledEvents(sql);
       return json({
         event: all.find((e) => e.id === id),
@@ -314,6 +333,28 @@ async function handler(request) {
         await writeTags(sql, id, people, departments);
       }
 
+      /**
+       * A decision about a Tuesday afternoon means nothing once the event has
+       * moved to Thursday, so moving it drops what it used to outrank rather
+       * than leaving a note telling somebody to skip the wrong thing.
+       */
+      const moved = startsOn !== existing.startsOn ||
+        (body.startsAt !== undefined && cleanTime(body.startsAt) !== existing.startsAt);
+      if (moved || body.prioritise) await clearPrecedence(sql, 'event', id);
+
+      if (body.prioritise && !allDay) {
+        const roster = (await sql`
+          SELECT username, access, display_name FROM users WHERE active = true`)
+          .map((p) => ({ ...p, displayName: p.display_name }));
+        const on = await sql`SELECT username FROM event_people WHERE event_id = ${id}`;
+        await applyPrecedence(sql, me, {
+          kind: 'event', itemId: id, roster,
+          when: { on: startsOn, at: cleanTime(body.startsAt ?? existing.startsAt),
+                  to: cleanTime(body.endsAt ?? existing.endsAt) },
+          people: on.map((r) => r.username),
+        });
+      }
+
       const all = await assembledEvents(sql);
       return json({
         event: all.find((e) => e.id === id),
@@ -331,6 +372,7 @@ async function handler(request) {
 
       await sql`DELETE FROM events WHERE id = ${id}`;
       await sql`DELETE FROM reminders_sent WHERE task_id = ${id}`;
+      await clearPrecedence(sql, 'event', id);
 
       const all = await assembledEvents(sql);
       return json({

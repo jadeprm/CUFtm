@@ -31,6 +31,8 @@ const SHEET_CSV = `ลำดับ,ชื่อเล่น,Username,Display Nam
 let sheetCsv = SHEET_CSV;
 const realFetch = globalThis.fetch;
 const lineSent = [];
+// Set to make LINE refuse the next reply that carries a card, as it does a card it dislikes.
+let lineRefuseFlex = false;
 let lineFails = null;         // set to a status code to make LINE refuse
 
 /**
@@ -252,6 +254,11 @@ globalThis.fetch = async (url, init) => {
       auth: (init.headers || {}).authorization,
     });
     if (lineFails) return new Response('{"message":"refused"}', { status: lineFails });
+    if (lineRefuseFlex && (body.messages || []).some((m) => m.type === 'flex')) {
+      lineRefuseFlex = false;
+      lineSent[lineSent.length - 1].refused = true;
+      return new Response('{"message":"A message (messages[0]) in the request body is invalid"}', { status: 400 });
+    }
     return new Response('{}', { status: 200 });
   }
   return realFetch(url, init);
@@ -2235,7 +2242,7 @@ ok('the whole wizard used only free replies, never a paid push',
   lineSent.filter((m) => m.kind === 'push').length === 0,
   String(lineSent.filter((m) => m.kind === 'push').length));
 
-head('38. LINE: the three-button rich menu');
+head('38. LINE: the six-button rich menu');
 
 lineSent.length = 0;
 r = await call(lineApi, '/api/line?do=richmenu', { method: 'POST', as: 'content' });
@@ -2245,20 +2252,22 @@ r = await call(lineApi, '/api/line?do=richmenu', { method: 'POST', as: 'admin' }
 ok('an admin can install it', r.status === 200 && r.data.installed === true, JSON.stringify(r.data));
 
 const menuMade = lineSent.find((m) => m.kind === 'richmenu');
-ok('...at a size LINE accepts', menuMade.size.width === 2500 && menuMade.size.height === 843,
+ok('...at a size LINE accepts', menuMade.size.width === 2500 && menuMade.size.height === 1686,
   JSON.stringify(menuMade.size));
-ok('...with exactly three buttons', menuMade.areas.length === 3, String(menuMade.areas.length));
-ok('...labelled as asked',
-  menuMade.areas.map((a) => a.action.text).join(' / ') === 'เพิ่มงาน / ตรวจสอบงาน / จัดการงาน',
+ok('...with six buttons, two rows of three', menuMade.areas.length === 6, String(menuMade.areas.length));
+ok('...labelled as asked, meetings and events included',
+  menuMade.areas.map((a) => a.action.text).join(' / ') === 'เพิ่มงาน / ตรวจสอบงาน / จัดการงาน / ประชุม / กิจกรรม / เอกสาร',
   menuMade.areas.map((a) => a.action.text).join(' / '));
 
-// The regions must tile the whole width with no gap and no overlap.
+// The regions must tile the whole picture with no gap and no overlap.
 const xs = menuMade.areas.map((a) => a.bounds);
-ok('...the buttons tile the full width, no gaps',
-  xs[0].x === 0 && xs[0].x + xs[0].width === xs[1].x &&
-  xs[1].x + xs[1].width === xs[2].x && xs[2].x + xs[2].width === 2500,
+const tiles = (row) => row[0].x === 0 && row[0].x + row[0].width === row[1].x &&
+  row[1].x + row[1].width === row[2].x && row[2].x + row[2].width === 2500;
+ok('...each row tiles the full width, no gaps', tiles(xs.slice(0, 3)) && tiles(xs.slice(3)),
   xs.map((b) => `${b.x}+${b.width}`).join(' '));
-ok('...and the full height', xs.every((b) => b.y === 0 && b.height === 843));
+ok('...and the two rows the full height',
+  xs.slice(0, 3).every((b) => b.y === 0 && b.height === 843) &&
+  xs.slice(3).every((b) => b.y === 843 && b.height === 843));
 
 const menuPicture = lineSent.find((m) => m.kind === 'image');
 ok('the picture was uploaded, as a PNG', menuPicture && menuPicture.type === 'image/png', JSON.stringify(menuPicture?.type));
@@ -5532,6 +5541,203 @@ ok('handing a viewer a piece of the work puts them on the task instead',
 await sql`DELETE FROM tasks WHERE id IN (${watched.id}, ${pieceTask.id})`;
 const viewersGone = await sql`SELECT count(*)::int AS n FROM task_viewers WHERE task_id IN (${watched.id}, ${pieceTask.id})`;
 ok("deleting a task takes its viewers with it", viewersGone[0].n === 0);
+
+// ===========================================================================
+head('73. LINE never goes quiet');
+/**
+ * What she saw: "ประชุม" and "M0005" got no answer at all. The meeting's
+ * Google Calendar link carried its whole agenda, in Thai, URL-encoded — far
+ * past the 1,000 characters LINE allows in a link — so LINE refused the
+ * whole reply and the chat just sat there.
+ */
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Uquiet', 'Jade_Pres', 'Jade') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+await sql`DELETE FROM line_flows WHERE line_user_id = 'Uquiet'`;
+const longNote = 'รายละเอียดการประชุมที่ยาวมาก '.repeat(40);
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin',
+  body: { title: 'เงียบ: ประชุมใหญ่วาระยาว', meetsOn: '2026-12-11', meetsAt: '13:00', place: 'ห้องประชุมใหญ่',
+          joinUrl: 'meet.google.com/abc-defg-hij', note: longNote,
+          people: ['Jade_Pres', 'Kungking_HeadCon'], template: 'standard' } });
+const [lm] = await sql`SELECT id, code FROM meetings WHERE title = 'เงียบ: ประชุมใหญ่วาระยาว'`;
+const allUris = (node, out = []) => {
+  if (!node || typeof node !== 'object') return out;
+  if (node.action && node.action.uri) out.push(node.action.uri);
+  for (const v of Object.values(node)) if (v && typeof v === 'object') allUris(v, out);
+  return out;
+};
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Uquiet', lm.code)));
+let quietCard = lastFlex();
+let uris = allUris(quietCard);
+ok('a meeting with a long agenda still answers with its card', Boolean(quietCard), lastReply().slice(0, 60));
+ok('...and every link on it is one LINE accepts (under 1,000 characters, a real address)',
+  uris.length > 0 && uris.every((u) => u.length <= 1000 && /^(https?:\/\/|line:|tel:)/.test(u)),
+  uris.map((u) => u.length).join(','));
+ok('...still with its "add to Google Calendar" button, just without the agenda in the link',
+  uris.some((u) => u.includes('calendar.google.com')));
+lineSent.length = 0;
+await lineApi(lineHook(sayToBot('Uquiet', 'ประชุม')));
+quietCard = lastFlex();
+ok('"ประชุม" answers too, with that meeting among the cards', Boolean(quietCard) && lastReply().includes('เงียบ: ประชุมใหญ่วาระยาว'),
+  lastReply().slice(0, 60));
+ok('...every link on every card acceptable', allUris(quietCard).every((u) => u.length <= 1000));
+await lineApi(lineHook(sayToBot('Uquiet', 'การประชุม')));
+ok('"การประชุม" is understood the same way', lastReply().includes('เงียบ: ประชุมใหญ่วาระยาว'));
+
+// If LINE refuses a card anyway, the same answer arrives as text.
+lineSent.length = 0;
+lineRefuseFlex = true;
+await lineApi(lineHook(sayToBot('Uquiet', lm.code)));
+const tries = lineSent.filter((m) => m.kind === 'reply');
+ok('a card LINE refuses is sent again as plain text, so the chat never goes quiet',
+  tries.length === 2 && tries[0].refused && !tries[1].flex.length && tries[1].text.includes('เงียบ: ประชุมใหญ่วาระยาว'),
+  tries.map((x) => (x.refused ? 'refused' : x.flex.length ? 'card' : 'text')).join(' → '));
+
+// A number on its own picks from the list just shown.
+await lineApi(lineHook(sayToBot('Uquiet', 'ประชุม')));
+await lineApi(lineHook(sayToBot('Uquiet', '1')));
+ok('typing "1" after a list opens the first item, rather than "ไม่เข้าใจ"',
+  Boolean(lastFlex()) && !lastReply().includes('ไม่เข้าใจ'), lastReply().slice(0, 60));
+await lineApi(lineHook(sayToBot('Uquiet', 'ตรวจสอบงาน')));
+ok('ตรวจสอบงาน offers meetings, events and progress',
+  ['ประชุม', 'กิจกรรม', 'ความคืบหน้า'].every((w) => lastButtons().includes(w)), lastButtons().join(' '));
+await lineApi(lineHook(sayToBot('Uquiet', 'จบ')));
+await lineApi(lineHook(sayToBot('Uquiet', 'ช่วยเหลือ')));
+ok('...and the buttons under every answer include meetings and events',
+  ['ประชุม', 'กิจกรรม'].every((w) => lastButtons().includes(w)), lastButtons().join(' '));
+await sql`DELETE FROM meetings WHERE id = ${lm.id}`;
+
+// ===========================================================================
+head('74. What a task is to me: responsible, via department, following');
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: {
+  title: 'บทบาท: งานทดสอบ', assignees: ['Jade_Pres'], viewers: ['Yam_HeadSpon'],
+  departments: [{ key: 'content', scope: 'heads' }], notify: [] } });
+const roleTask = r.data.task;
+ok('a task can name people, tag a department and have viewers at once', r.status === 201, String(r.status));
+ok('the person named is marked as named', roleTask.roles.Jade_Pres === 'named', JSON.stringify(roleTask.roles));
+ok('a head of the tagged department is on it via the department',
+  roleTask.roles.Kungking_HeadCon === 'dept', JSON.stringify(roleTask.roles));
+ok('...and the form gets only the named people back, so saving it keeps them apart',
+  roleTask.named.join() === 'Jade_Pres', JSON.stringify(roleTask.named));
+r = await call(tasksApi, '/api/tasks', { as: 'content' });
+const headSees = r.data.tasks.find((x) => x.id === roleTask.id);
+ok('to the department head it reads "via department"', headSees && headSees.myRole === 'dept', headSees && headSees.myRole);
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('to the person named it reads "responsible"', r.data.tasks.find((x) => x.id === roleTask.id).myRole === 'named');
+r = await call(tasksApi, '/api/tasks', { as: 'seesall' });
+ok('to the viewer it reads "following"', r.data.tasks.find((x) => x.id === roleTask.id).myRole === 'watch');
+
+// Saving the form (names + the same tags) must not turn the department into names.
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: {
+  id: roleTask.id, title: 'บทบาท: งานทดสอบ (แก้)', assignees: ['Jade_Pres'],
+  departments: [{ key: 'content', scope: 'heads' }] } });
+ok('saving the task keeps the department people as "via department"',
+  r.data.task.roles.Kungking_HeadCon === 'dept' && r.data.task.named.join() === 'Jade_Pres', JSON.stringify(r.data.task.roles));
+// Naming somebody who came through the department makes them named.
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: {
+  id: roleTask.id, assignees: ['Jade_Pres', 'Kungking_HeadCon'], departments: [{ key: 'content', scope: 'heads' }] } });
+ok('naming a department person makes them responsible', r.data.task.roles.Kungking_HeadCon === 'named');
+// A piece of the task puts its holder on it, and the form cannot take them off.
+r = await call(tasksApi, '/api/tasks?do=part', { method: 'POST', as: 'admin', body: { taskId: roleTask.id, title: 'ชิ้นเดียว', assignee: 'Kluayhom_HeadMerchant' } });
+ok('somebody handed a piece is on it "by part"', r.data.task.roles.Kluayhom_HeadMerchant === 'part', JSON.stringify(r.data.task.roles));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: {
+  id: roleTask.id, assignees: ['Jade_Pres'], departments: [] } });
+ok('...and saving the form without them leaves them on, because of the piece',
+  r.data.task.assignees.includes('Kluayhom_HeadMerchant') && !r.data.task.assignees.includes('Kungking_HeadCon'),
+  JSON.stringify(r.data.task.roles));
+
+// LINE says it too.
+await sql`INSERT INTO line_links (line_user_id, username, display_name)
+          VALUES ('Urole', 'Kluayhom_HeadMerchant', 'K') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+await lineApi(lineHook(sayToBot('Urole', roleTask.code)));
+ok('the LINE card says what the task is to the reader', lastReply().includes('คุณรับผิดชอบงานย่อย'), lastReply().slice(0, 80));
+
+// ===========================================================================
+head('75. Notification settings: แจ้งเตือน / เงียบ / ปิด');
+await sql`DELETE FROM notify_prefs`;
+r = await call(usersApi, '/api/users?do=notify', { as: 'content' });
+ok('everyone starts with every category on, except following, which starts quiet',
+  r.data.categories.task_named === 'all' && r.data.categories.task_watch === 'quiet' && r.data.categories.announce === 'all',
+  JSON.stringify(r.data.categories));
+r = await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'task_named', level: 'loud' } });
+ok('a level that is not one of the three is refused', r.status === 400);
+r = await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'nonsense', level: 'off' } });
+ok('so is a category that does not exist', r.status === 400);
+
+// Phones for the two people this section watches, so a push has somewhere to go.
+await sql`INSERT INTO push_subscriptions (endpoint, username, p256dh, auth)
+          VALUES ('https://push.test/kk-prefs', 'Kungking_HeadCon', ${browserKeys.p256dh}, ${browserKeys.auth}),
+                 ('https://push.test/yam-prefs', 'Yam_HeadSpon', ${browserKeys.p256dh}, ${browserKeys.auth})
+          ON CONFLICT (endpoint) DO UPDATE SET username = EXCLUDED.username`;
+const pushedTo = () => pushCalls.map((c) => ({ username: c.url.includes('kk-prefs') ? 'Kungking_HeadCon'
+  : c.url.includes('yam-prefs') ? 'Yam_HeadSpon' : c.url }));
+// Silent: the bell gets it, the phone does not.
+await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'task_named', level: 'quiet' } });
+pushCalls.length = 0;
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: { title: 'แจ้ง: เงียบ', assignees: ['Kungking_HeadCon'], notify: ['created'] } });
+const quietTask = r.data.task;
+let bell = await sql`SELECT 1 FROM notifications WHERE task_id = ${quietTask.id} AND username = 'Kungking_HeadCon'`;
+ok('"เงียบ": the bell still gets it', bell.length === 1);
+const { sortRecipients } = await import('../lib/notifyprefs.js');
+let heardBy = await sortRecipients(sql, ['Kungking_HeadCon', 'Jade_Pres'], { category: 'task_named', scope: 'task', id: quietTask.id });
+ok('...but it goes in the quiet list, which is never pushed to a phone',
+  heardBy.quiet.includes('Kungking_HeadCon') && heardBy.loud.includes('Jade_Pres') && !heardBy.loud.includes('Kungking_HeadCon'),
+  JSON.stringify(heardBy));
+// Off: nothing at all.
+await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'task_named', level: 'off' } });
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: { title: 'แจ้ง: ปิด', assignees: ['Kungking_HeadCon'], notify: ['created'] } });
+const offTask = r.data.task;
+bell = await sql`SELECT 1 FROM notifications WHERE task_id = ${offTask.id} AND username = 'Kungking_HeadCon'`;
+ok('"ปิด": not even the bell', bell.length === 0);
+// One task set differently wins over the category.
+await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'task', id: offTask.id, level: 'all' } });
+await call(tasksApi, '/api/tasks?do=part', { method: 'POST', as: 'admin', body: { taskId: offTask.id, title: 'ชิ้น', assignee: 'Kungking_HeadCon' } });
+bell = await sql`SELECT 1 FROM notifications WHERE task_id = ${offTask.id} AND username = 'Kungking_HeadCon'`;
+ok('a single task set to แจ้งเตือน is heard even with the category off', bell.length === 1);
+r = await call(usersApi, '/api/users?do=notify', { as: 'content' });
+ok('...and the settings list it by name', r.data.items.some((i) => i.id === offTask.id && i.title === 'แจ้ง: ปิด' && i.level === 'all'),
+  JSON.stringify(r.data.items));
+await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'task', id: offTask.id, level: null } });
+r = await call(usersApi, '/api/users?do=notify', { as: 'content' });
+ok('...and removing it goes back to the category', !r.data.items.some((i) => i.id === offTask.id));
+
+// Reminders: switched off means no countdown, but a missed deadline still lands quietly.
+await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'task_reminder', level: 'off' } });
+const yIso = (() => { const d = new Date(Date.now() - 864e5 + 7 * 3600e3); return d.toISOString().slice(0, 10); })();
+const in3 = (() => { const d = new Date(Date.now() + 3 * 864e5 + 7 * 3600e3); return d.toISOString().slice(0, 10); })();
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: { title: 'แจ้ง: ใกล้ส่ง', assignees: ['Kungking_HeadCon'], dueDate: in3, notify: ['3d'] } });
+const soonTask = r.data.task;
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: { title: 'แจ้ง: เลยแล้ว', assignees: ['Kungking_HeadCon'], dueDate: yIso, notify: [] } });
+const lateTask = r.data.task;
+await call(cronApi, '/api/cron', {});
+bell = await sql`SELECT kind FROM notifications WHERE task_id = ${soonTask.id} AND username = 'Kungking_HeadCon'`;
+ok('reminders off: no 3-day reminder', bell.length === 0, JSON.stringify(bell));
+bell = await sql`SELECT kind FROM notifications WHERE task_id = ${lateTask.id} AND username = 'Kungking_HeadCon' AND kind = 'overdue'`;
+ok('...but an overdue task still reaches the bell', bell.length === 1);
+
+// Viewers default to quiet.
+pushCalls.length = 0;
+await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: { id: quietTask.id, viewers: ['Yam_HeadSpon'] } });
+await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: { id: quietTask.id, status: 'doing' } });
+bell = await sql`SELECT kind FROM notifications WHERE task_id = ${quietTask.id} AND username = 'Yam_HeadSpon' ORDER BY created_at`;
+ok('a viewer hears about progress in the bell by default', bell.some((b) => b.kind === 'progress'), JSON.stringify(bell));
+heardBy = await sortRecipients(sql, ['Yam_HeadSpon'], { category: 'task_watch', scope: 'task', id: quietTask.id });
+ok('...without their phone buzzing (quiet unless they choose otherwise)', heardBy.quiet.includes('Yam_HeadSpon') && !heardBy.loud.length);
+
+// Urgent announcements cannot be silenced; ordinary ones can.
+await call(usersApi, '/api/users?do=notify', { method: 'POST', as: 'content', body: { scope: 'announce', level: 'off' } });
+r = await call(pushApi, '/api/push?do=announce', { method: 'POST', as: 'admin', body: { title: 'แจ้ง: ประกาศธรรมดา', body: 'x', audience: { kind: 'everyone' } } });
+bell = await sql`SELECT 1 FROM notifications WHERE username = 'Kungking_HeadCon' AND title = 'แจ้ง: ประกาศธรรมดา'`;
+ok('an ordinary announcement respects "ปิด"', bell.length === 0);
+r = await call(pushApi, '/api/push?do=announce', { method: 'POST', as: 'admin', body: { title: 'แจ้ง: ประกาศด่วน', body: 'x', level: 'urgent', audience: { kind: 'everyone' } } });
+bell = await sql`SELECT 1 FROM notifications WHERE username = 'Kungking_HeadCon' AND title = 'แจ้ง: ประกาศด่วน'`;
+ok('an urgent one reaches everybody regardless', bell.length === 1);
+
+await sql`DELETE FROM tasks WHERE title LIKE 'แจ้ง:%' OR title LIKE 'บทบาท:%'`;
+// The urgent one would greet every browser test with a pop-up.
+await sql`DELETE FROM notifications WHERE title LIKE 'แจ้ง:%'`;
+await sql`DELETE FROM announcements WHERE title LIKE 'แจ้ง:%'`;
+await sql`DELETE FROM notify_prefs`;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

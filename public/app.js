@@ -680,6 +680,11 @@
 
   /** Small line icons, drawn here so they look the same on every phone. */
   var ICON = {
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    people: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><path d="M15.5 5.8a3 3 0 010 5.4M17.5 14.3c1.7.6 2.7 2.2 3 4.7"/>',
+    bell: '<path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/>',
+    bellQuiet: '<path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/><path d="M9 12h6"/>',
+    bellOff: '<path d="M6 16V11a6 6 0 019.5-4.9M18 10.5V16l1.5 2H8"/><path d="M10 20.5a2 2 0 004 0M3.5 3.5l17 17"/>',
     eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
     task: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M9 11.5l2.2 2.2L15.5 9"/>',
     event: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/><circle cx="12" cy="14.5" r="1.6"/>',
@@ -1926,6 +1931,7 @@
           class: 'chip dept', target: '_blank', rel: 'noopener',
           href: doc.driveUrl, text: t('docInDrive'),
         })] : []))),
+        vRow(t('notifyThis'), notifyControl('doc', doc.id, 'document')),
       ]));
 
       bodyBox.appendChild(pane);
@@ -2204,6 +2210,37 @@
    * point of being made a viewer is to have it in front of you. The card says
    * which is which (see taskRow).
    */
+  /**
+   * What a task is to me, in three kinds plus none:
+   *   named — I am on it by name, or hold a piece of it: it is my job
+   *   dept  — my department was tagged, which put me on it
+   *   watch — I was tagged to follow it, view only
+   */
+  function roleOf(task) {
+    var r = task.myRole;
+    if (r === undefined) {
+      // A task drawn before the server answered (just created here).
+      r = task.assignees.indexOf(S.user.username) !== -1 ? 'named'
+        : (task.viewers || []).indexOf(S.user.username) !== -1 ? 'watch' : null;
+    }
+    return r === 'part' ? 'named' : (r || null);
+  }
+
+  var ROLE_KEYS = { named: 'roleNamed', dept: 'roleDept', watch: 'roleWatch' };
+
+  /** The label on the card. `part` reads as responsible, with its own wording. */
+  function roleBadge(task) {
+    var role = roleOf(task);
+    if (!role) return null;
+    var key = task.myRole === 'part' ? 'rolePart' : ROLE_KEYS[role];
+    return h('span', { class: 'role-badge role-' + role, title: t(key + 'Hint') }, [
+      icon(role === 'watch' ? 'eye' : role === 'dept' ? 'people' : 'check'),
+      // The phone gets a shorter word, so the badge never pushes the title down a line.
+      h('span', { class: 'rb-long', text: t(key) }),
+      h('span', { class: 'rb-short', text: t(key + 'Short') }),
+    ]);
+  }
+
   function isMine(task) {
     return task.assignees.indexOf(S.user.username) !== -1 ||
       (task.viewers || []).indexOf(S.user.username) !== -1;
@@ -2229,6 +2266,7 @@
       if (!anyStatus && STATUS_LIST.indexOf(S.filter) !== -1 && task.status !== S.filter) return false;
       if (!matchesQuery(task)) return false;
       if (S.who && task.assignees.indexOf(S.who) === -1) return false;
+      if (S.role && (roleOf(task) || 'none') !== S.role) return false;
       if (S.prio && task.priority !== S.prio) return false;
       if (S.unit && task.unit !== S.unit) return false;
       if (S.dept) {
@@ -2529,6 +2567,24 @@
    * the events sit above the work because that is the order they matter in:
    * a rehearsal on Friday changes what you do about Friday's deadlines.
    */
+  /**
+   * Narrow "my tasks" to one kind: the ones that are my job, the ones my
+   * department was tagged on, the ones I follow. Each with how many.
+   */
+  function roleSeg(mineOnly) {
+    var base = S.tasks.filter(function (x) { return !mineOnly || isMine(x); });
+    var n = function (role) { return base.filter(function (x) { return (roleOf(x) || 'none') === role; }).length; };
+    var choices = [['', t('roleAll'), base.length], ['named', t('roleNamed'), n('named')],
+      ['dept', t('roleDept'), n('dept')], ['watch', t('roleWatch'), n('watch')]];
+    if (!mineOnly) choices.push(['none', t('roleNone'), n('none')]);
+    return h('div', { class: 'seg role-seg' }, choices.map(function (c) {
+      return h('button', {
+        class: (S.role || '') === c[0] ? 'on' : '', 'data-role': c[0] || 'all',
+        onclick: function () { S.role = c[0]; renderPage(); },
+      }, [c[1], h('span', { class: 'n', text: String(c[2]) })]);
+    }));
+  }
+
   function pageTasks(main) {
     var mineOnly = S.scope !== 'all';
     var phone = isPhone();
@@ -2547,7 +2603,7 @@
         h('div', { class: 'seg scope-seg' }, [['mine', 'scopeMine'], ['all', 'scopeAll']].map(function (pair) {
           return h('button', {
             class: S.scope === pair[0] ? 'on' : '', text: t(pair[1]),
-            onclick: function () { S.scope = pair[0]; renderPage(); },
+            onclick: function () { S.scope = pair[0]; if (S.role === 'none') S.role = ''; renderPage(); },
           });
         })),
         h('span', { class: 'grow' }),
@@ -2580,7 +2636,7 @@
         return h('button', {
           class: S.scope === pair[0] ? 'on' : '',
           text: t(pair[1]),
-          onclick: function () { S.scope = pair[0]; renderPage(); },
+          onclick: function () { S.scope = pair[0]; if (S.role === 'none') S.role = ''; renderPage(); },
         });
       })),
       h('div', { class: 'seg view-seg' }, [['board', 'viewBoard', 'board'], ['list', 'viewList', 'list']].map(function (x) {
@@ -2601,10 +2657,16 @@
       mayCreate() ? h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }) : null,
     ]));
 
-    if (phone) phoneStrip(main, mineOnly);
-    else { meetingStrip(main, mineOnly); eventStrip(main, mineOnly); }
+    upcomingList(main, mineOnly);
+    // Mine to do / my department's / following — the tabs over the list.
+    if (!phone) {
+      var roleTabs = roleSeg(mineOnly);
+      roleTabs.className = 'ph-roles role-tabs';
+      main.appendChild(roleTabs);
+    }
 
     var pool = S.tasks.filter(function (x) {
+      if (S.role && (roleOf(x) || 'none') !== S.role) return false;
       return !mineOnly || isMine(x);
     });
     var counts = {
@@ -2667,6 +2729,9 @@
       if (S.phSearch || S.q) {
         main.appendChild(h('div', { class: 'ph-search' }, [searchBox]));
       }
+      var roles = roleSeg(mineOnly);
+      roles.className = 'ph-roles';
+      main.appendChild(roles);
       if (board) {
         /**
          * On the board the chips are a map of the columns: tapping one swipes
@@ -2716,7 +2781,9 @@
       ]));
     }
 
-    if (!S.seesEverything) {
+    // On a phone this line cost two lines above the first task; the role tabs
+    // say the same thing more usefully.
+    if (!S.seesEverything && !phone) {
       main.appendChild(h('p', {
         style: 'margin:-6px 0 12px;font-size:12.5px;color:var(--ink-faint)',
         text: t('deptOnlyNote'),
@@ -2890,6 +2957,97 @@
   }
 
 
+  /**
+   * What is coming up, as an agenda: one slim row per meeting or event,
+   * grouped under วันนี้ / พรุ่งนี้ / สัปดาห์นี้ / ถัดไป.
+   *
+   * This replaced two rails of cards that took a quarter of the screen before
+   * the first task, and that she found too big to take in. A row says the
+   * date, the name, the time and what kind of thing it is; anything else is
+   * one tap away. Four rows show; the rest fold behind ดูทั้งหมด.
+   */
+  var UP_SHOWN = 4;
+  function upcomingList(main, mineOnly) {
+    var today = todayIso();
+    var weekEnd = addDays(today, 7);
+    var items = comingMeetings(mineOnly).map(function (m) {
+      var me = (m.people || []).filter(function (x) { return x.username === S.user.username; })[0];
+      return {
+        kind: 'meeting', on: m.meetsOn, at: m.meetsAt || '', title: m.title, place: m.place || '',
+        colour: null, open: function () { openMeeting(m); },
+        // An invitation still waiting for an answer is the one thing worth flagging.
+        flag: me && me.reply !== 'accepted' && me.reply !== 'declined' ? t('upNeedsReply') : '',
+        extra: outrankedNote(m),
+      };
+    }).concat(comingEvents(mineOnly).map(function (e) {
+      var ongoing = e.startsOn < today;
+      return {
+        kind: 'event', on: ongoing ? today : e.startsOn, at: e.allDay ? '' : (e.startsAt || ''),
+        title: e.title, place: e.place || '', colour: colourHex(e.colour),
+        until: e.endsOn && e.endsOn !== e.startsOn ? e.endsOn : null,
+        allDay: e.allDay || !e.startsAt, pending: e.pending,
+        open: function () { openEvent(e); },
+      };
+    })).sort(function (a, b) {
+      if (a.on !== b.on) return a.on < b.on ? -1 : 1;
+      return (a.at || '') < (b.at || '') ? -1 : (a.at || '') > (b.at || '') ? 1 : 0;
+    });
+    if (!items.length) return;
+
+    var open = Boolean(S.upOpen);
+    /**
+     * A phone has room for three rows before the work starts, and no room for
+     * day headings: the date column says วันนี้ / พรุ่งนี้ itself instead.
+     */
+    var phone = isPhone();
+    var limit = phone ? 3 : UP_SHOWN;
+    var shown = open ? items : items.slice(0, limit);
+    var groupOf = function (iso) {
+      if (iso <= today) return t('today');
+      if (iso === addDays(today, 1)) return t('tomorrow');
+      if (iso <= weekEnd) return t('upThisWeek');
+      return t('upLater');
+    };
+
+    var list = h('div', { class: 'up-list' });
+    var last = null;
+    shown.forEach(function (x) {
+      var g = groupOf(x.on);
+      if (!phone && g !== last) { list.appendChild(h('div', { class: 'up-group', text: g })); last = g; }
+      var time = x.kind === 'event' && x.allDay ? t('allDay') : (x.at || '');
+      if (x.until) time = t('upUntil').replace('%d', fmtDate(x.until, { day: 'numeric', month: 'short' }));
+      list.appendChild(h('button', {
+        type: 'button',
+        class: 'up-row ' + x.kind + (x.pending ? ' pending' : ''),
+        style: x.colour ? '--c:' + x.colour : '',
+        onclick: x.open,
+      }, [
+        h('span', { class: 'up-date', text: (phone && relativeDay(x.on)) || fmtDate(x.on, { day: 'numeric', month: 'short' }) }),
+        h('span', { class: 'up-main' }, [
+          h('span', { class: 'up-title', text: x.title }),
+          x.place ? h('span', { class: 'up-place', text: x.place }) : null,
+        ]),
+        x.flag ? h('span', { class: 'up-flag', text: x.flag }) : null,
+        x.extra || null,
+        h('span', { class: 'up-time', text: time }),
+        h('span', { class: 'up-kind', text: x.kind === 'meeting' ? t('upMeeting') : t('upEvent') }),
+      ]));
+    });
+
+    main.appendChild(h('section', { class: 'upcoming' }, [
+      h('div', { class: 'up-head' }, [
+        h('b', { text: t('upcoming') }),
+        h('span', { class: 'grow' }),
+        items.length > limit ? h('button', {
+          type: 'button', class: 'up-more',
+          text: open ? t('phShowLess') : t('upSeeAll').replace('%n', String(items.length)),
+          onclick: function () { S.upOpen = !open; renderPage(); },
+        }) : null,
+      ]),
+      list,
+    ]));
+  }
+
   function taskRow(task) {
     var meta = [];
     var prio = task.priority || 'medium';
@@ -2911,10 +3069,7 @@
     if (prio !== 'medium') {
       meta.push(h('span', { class: 'chip prio prio-' + prio, text: prioLabel(prio) }));
     }
-    // Why it is in their list when they are not doing it.
-    if (task.watching) {
-      meta.unshift(h('span', { class: 'chip watching', title: t('watchingNote') }, [icon('eye'), t('watchingChip')]));
-    } else if ((task.viewers || []).length && task.mayEdit) {
+    if ((task.viewers || []).length && task.mayEdit) {
       // To whoever set it up: how many are following along.
       meta.push(h('span', { class: 'chip viewers-n', title: t('viewers') }, [icon('eye'), String(task.viewers.length)]));
     }
@@ -2958,6 +3113,12 @@
         },
       }),
       h('div', { class: 't-title' }, [
+        /**
+         * What this is to me, before anything else on the card: mine to do,
+         * my department's, or one I only follow. Asked for in so many words —
+         * a list mixing all three read as though it were all one kind.
+         */
+        roleBadge(task),
         // The code first, small and grey: something to quote, not to read.
         task.code ? h('span', { class: 't-code', text: task.code }) : null,
         task.title,
@@ -3033,7 +3194,9 @@
       priority: task ? (task.priority || 'medium') : 'medium',
       department: task ? (task.department || null) : (S.user.department || null),
       unit: task ? (task.unit || null) : null,
-      assignees: task ? task.assignees.slice() : [S.user.username],
+      // The names only: the people the department tags or the pieces put on it
+      // come back on their own when it is saved — see writeTags on the server.
+      assignees: task ? (task.named || task.assignees).slice() : [S.user.username],
       viewers: task ? (task.viewers || []).slice() : [],
       departments: task ? task.departments.map(function (d) { return { key: d.key, scope: d.scope }; }) : [],
       notify: task ? task.notify.slice() : ['created', '7d', '3d', '24h', 'due'],
@@ -3369,13 +3532,20 @@
         }),
       ]);
 
+      var roles = task.roles || {};
+      var byDept = task.assignees.filter(function (u) { return roles[u] === 'dept'; });
+      var doing = task.assignees.filter(function (u) { return roles[u] !== 'dept'; });
       var rows = [
+        // What it is to me, first — see roleBadge.
+        roleBadge(task) ? vRow(t('roleYours'), h('span', {}, [roleBadge(task),
+          h('small', { class: 'role-why', text: t((task.myRole === 'part' ? 'rolePart' : ROLE_KEYS[roleOf(task)]) + 'Hint') })])) : null,
         // Folds to a row of faces on a phone when it is a crowd — see peopleList.
-        vRow(t('assignTo'), task.assignees.length
-          ? peopleList(task.assignees)
+        vRow(t('roleNamedPeople'), doing.length
+          ? peopleList(doing)
           : vMuted(t('noOne'))),
+        byDept.length ? vRow(t('roleDeptPeople'), peopleList(byDept)) : null,
         (task.viewers || []).length
-          ? vRow(t('viewers'), peopleList(task.viewers))
+          ? vRow(t('roleWatchPeople'), peopleList(task.viewers))
           : null,
         vRow(t('viewDepartments'), task.departments.length
           ? h('span', { class: 'selected' }, task.departments.map(function (d) {
@@ -3407,6 +3577,8 @@
       }
       rows.push(vRow(t('createdBy'), h('span', { class: 'selected' },
         [h('span', { class: 'chip who' }, [avatarNode(task.createdBy, 'sm'), nameOf(task.createdBy)])])));
+      // What this person hears about this one task.
+      rows.push(vRow(t('notifyThis'), notifyControl('task', task.id, taskCategory(task))));
 
       /**
        * Moving the status is the one change almost everyone is allowed to
@@ -4377,6 +4549,7 @@
           vRow(t('whoIsItFor'), audience),
           vRow(t('createdBy'), h('span', { class: 'selected' },
             [h('span', { class: 'chip who' }, [avatarNode(event.createdBy, 'sm'), nameOf(event.createdBy)])])),
+          event.id && !event.pending ? vRow(t('notifyThis'), notifyControl('event', event.id, 'event')) : null,
         ]),
         !mayEdit ? h('div', { class: 'notice', text: t('eventViewOnly') }) : null,
       ]);
@@ -5013,6 +5186,7 @@
         ]),
 
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
+        h('div', { class: 'field', id: 'notify-settings' }, [h('label', { text: t('notifySettings') }), notifyBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('sigTitle') }), signatureBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('freeTitle') }), availabilityBox()]),
@@ -5233,14 +5407,16 @@
         // member sees, so it is deliberately not offered to everyone.
         if (state.canManageMenu) {
           box.appendChild(h('p', { class: 'hint', text: t('lineMenuHelp') }));
+          if (state.menuOutdated) box.appendChild(h('div', { class: 'notice warn', text: t('lineMenuOutdated') }));
           box.appendChild(h('button', {
-            class: 'btn sm', text: state.menuInstalled ? t('lineMenuReinstall') : t('lineMenuInstall'),
+            class: 'btn sm' + (state.menuOutdated || !state.menuInstalled ? ' primary' : ''),
+            text: state.menuOutdated ? t('lineMenuUpdate') : state.menuInstalled ? t('lineMenuReinstall') : t('lineMenuInstall'),
             onclick: function (e) {
               var btn = e.target;
               btn.disabled = true;
               btn.textContent = t('lineMenuWorking');
               api('/api/line?do=richmenu', { method: 'POST' })
-                .then(function () { state.menuInstalled = true; draw(state); })
+                .then(function () { state.menuInstalled = true; state.menuOutdated = false; draw(state); })
                 .catch(function (err) {
                   btn.disabled = false;
                   alert(err.data && err.data.message ? err.data.message : errText(err.code));
@@ -8050,6 +8226,125 @@
    * running from the home screen, a push subscription on this browser, and
    * Google actually having fetched the feed.
    */
+  /* ---------- what to be told about ------------------------------------ */
+  /**
+   * Three levels, the same everywhere: แจ้งเตือน (phone alert + bell), เงียบ
+   * (the bell only) and ปิด (nothing). A category is set on the profile page;
+   * one task, event or document can be set differently from inside it. The
+   * server applies these — see lib/notifyprefs.js — so this is only the switch.
+   */
+  var NOTIFY_LEVELS = [['all', 'notifyAll', 'bell'], ['quiet', 'notifyQuiet', 'bellQuiet'], ['off', 'notifyOff', 'bellOff']];
+  var NOTIFY_CATEGORIES = ['task_named', 'task_dept', 'task_reminder', 'task_work', 'task_watch', 'event', 'document', 'announce'];
+
+  function loadNotify() {
+    return api('/api/users?do=notify').then(function (d) { S.notify = d; return d; })
+      .catch(function () { return null; });
+  }
+
+  function setNotify(scope, id, level) {
+    return api('/api/users?do=notify', { method: 'POST', body: { scope: scope, id: id || '', level: level || null } })
+      .then(function (d) { S.notify = d; return d; });
+  }
+
+  function itemLevel(scope, id) {
+    var hit = ((S.notify && S.notify.items) || []).filter(function (x) { return x.scope === scope && x.id === id; })[0];
+    return hit ? hit.level : '';
+  }
+
+  function categoryLevel(cat) {
+    return (S.notify && S.notify.categories && S.notify.categories[cat]) || (cat === 'task_watch' ? 'quiet' : 'all');
+  }
+
+  /** Which category a task's messages fall under, for this person. */
+  function taskCategory(task) {
+    var r = task.myRole;
+    if (r === 'dept') return 'task_dept';
+    if (r === 'watch') return 'task_watch';
+    if (!r && task.createdBy === S.user.username) return 'task_work';
+    return 'task_named';
+  }
+
+  /**
+   * The switch inside a task, event or document: "as my settings say" first,
+   * naming what that currently means, then the three levels.
+   */
+  function notifyControl(scope, id, category) {
+    var box = h('div', { class: 'notify-ctl' });
+    function draw() {
+      clear(box);
+      var current = itemLevel(scope, id);
+      var choices = [['', t('notifyDefault') + ' · ' + t(NOTIFY_LEVELS.filter(function (l) {
+        return l[0] === categoryLevel(category);
+      })[0][1]), null]].concat(NOTIFY_LEVELS);
+      box.appendChild(h('div', { class: 'seg wrap notify-seg' }, choices.map(function (c) {
+        return h('button', {
+          type: 'button', class: current === c[0] ? 'on' : '', 'data-level': c[0] || 'default',
+          onclick: function () {
+            if (current === c[0]) return;
+            setNotify(scope, id, c[0]).then(draw).catch(function (err) { alert(errText(err.code)); });
+          },
+        }, [c[2] ? icon(c[2]) : null, h('span', { text: c[0] ? t(c[1]) : c[1] })]);
+      })));
+    }
+    if (S.notify) draw(); else loadNotify().then(draw);
+    return box;
+  }
+
+  /** The notifications section of the profile page. */
+  function notifyBox() {
+    var box = h('div', { class: 'notify-box' });
+    function draw() {
+      clear(box);
+      if (!S.notify) { box.appendChild(h('p', { class: 'hint', text: t('loading') })); return; }
+      box.appendChild(h('p', { class: 'hint notify-help', text: t('notifyHelp') }));
+      // On a phone the buttons are icons only, so the key comes first.
+      box.appendChild(h('div', { class: 'notify-legend' }, NOTIFY_LEVELS.map(function (l) {
+        return h('span', { class: 'lv-' + l[0] }, [icon(l[2]), h('b', { text: t(l[1]) }), h('small', { text: t(l[1] + 'Means') })]);
+      })));
+      box.appendChild(h('div', { class: 'notify-cats' }, NOTIFY_CATEGORIES.map(function (cat) {
+        var level = categoryLevel(cat);
+        var now = NOTIFY_LEVELS.filter(function (l) { return l[0] === level; })[0];
+        return h('div', { class: 'notify-cat', 'data-cat': cat }, [
+          h('div', { class: 'nc-text' }, [
+            h('b', {}, [t('notifyCat_' + cat), h('span', { class: 'nc-now lv-' + level, text: t(now[1]) })]),
+            h('small', { text: t('notifyCatSub_' + cat) }),
+          ]),
+          h('div', { class: 'seg notify-seg' }, NOTIFY_LEVELS.map(function (l) {
+            return h('button', {
+              type: 'button', class: level === l[0] ? 'on' : '', 'data-level': l[0], title: t(l[1]),
+              onclick: function () {
+                if (level === l[0]) return;
+                setNotify(cat, '', l[0]).then(draw).catch(function (err) { alert(errText(err.code)); });
+              },
+            }, [icon(l[2]), h('span', { text: t(l[1]) })]);
+          })),
+        ]);
+      })));
+
+
+      // One-off settings on single tasks, events and documents.
+      var items = S.notify.items || [];
+      box.appendChild(h('div', { class: 'notify-items' }, [
+        h('b', { text: t('notifyItemsTitle') }),
+        items.length ? h('ul', {}, items.map(function (it) {
+          var lv = NOTIFY_LEVELS.filter(function (l) { return l[0] === it.level; })[0];
+          return h('li', {}, [
+            h('span', { class: 'ni-kind', text: t('notifyScope_' + it.scope) }),
+            h('span', { class: 'ni-title' }, [it.code ? h('span', { class: 't-code', text: it.code }) : null, it.title]),
+            h('span', { class: 'ni-level lv-' + it.level }, [icon(lv[2]), t(lv[1])]),
+            h('button', {
+              type: 'button', class: 'btn ghost sm', title: t('notifyReset'), text: '✕',
+              onclick: function () { setNotify(it.scope, it.id, null).then(draw); },
+            }),
+          ]);
+        })) : h('p', { class: 'hint', text: t('notifyItemsEmpty') }),
+      ]));
+    }
+    draw();
+    loadNotify().then(draw);
+    return box;
+  }
+
   var GUIDE_LATER = 'fair-guide-later';
 
   window.addEventListener('beforeinstallprompt', function (e) {
@@ -8392,6 +8687,8 @@
       showPending();
       // After whatever they came for has had its turn — see maybeShowGuide.
       setTimeout(maybeShowGuide, 1200);
+      // What this person wants to be told about, for the switches inside tasks.
+      loadNotify();
     }).catch(function (err) {
       if (err.code === 'NOT_SIGNED_IN') { S.user = null; renderAuth(); return; }
       alert(err.code === 'NO_DATABASE' ? t('noDatabase') : t('errOffline'));

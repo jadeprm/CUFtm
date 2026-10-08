@@ -14,3 +14,15 @@ export function quietGuide(b) {
   b.newPage = async (opts) => (await b.newContext(opts)).newPage();
   return b;
 }
+
+/**
+ * The "coming up" list shows four rows and folds the rest behind ดูทั้งหมด.
+ * A suite looking for one particular meeting opens it first.
+ */
+export async function expandUpcoming(pg) {
+  const more = pg.locator('.upcoming .up-more');
+  if (await more.count() && /ดูทั้งหมด|See all/.test(await more.innerText())) {
+    await more.click();
+    await pg.waitForTimeout(300);
+  }
+}

@@ -7,7 +7,7 @@
  * tasks that are not under review.
  */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
 const ctx = await b.newContext({
@@ -212,8 +212,10 @@ await pg.waitForTimeout(300);
 await pg.locator('#tabs a[href="#/work"]').first().click();
 await pg.waitForTimeout(2200);
 ok('the work page still fits the screen with meetings on it', !(await sideways()));
-if (await pg.locator('.event-card.meeting').count()) {
-  await pg.locator('.event-card.meeting').first().click();
+await expandUpcoming(pg);
+if (await pg.locator('.up-row.meeting').count()) {
+  await expandUpcoming(pg);
+  await pg.locator('.up-row.meeting').first().click();
   await pg.waitForTimeout(1400);
   const agendaBox = await pg.locator('.veil .modal').first().boundingBox();
   ok('...and a meeting opens without pushing the page sideways', !(await sideways()));

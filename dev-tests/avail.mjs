@@ -7,7 +7,7 @@
  * pressing "go back" leaves nothing behind.
  */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4700';
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
@@ -295,7 +295,8 @@ ok('...once for each person who is actually double-booked',
   beaten.some((x) => x.username === 'Kaew_VP'),
   beaten.map((x) => x.username).join(', '));
 
-const card = ploy.locator('.event-card.meeting', { hasText: FIXTURE });
+await expandUpcoming(ploy);
+const card = ploy.locator('.up-row.meeting', { hasText: FIXTURE });
 ok('the meeting is on her work page to carry the mark',
   (await card.count()) === 1, String(await card.count()));
 ok('...and the mark is on screen for the person who is double-booked',

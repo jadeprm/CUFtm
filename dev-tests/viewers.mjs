@@ -97,7 +97,7 @@ const ph = await as('Ploy_StaffCon', 'memberPw11',
 await ph.evaluate(() => { location.hash = '#/'; }); await ph.waitForTimeout(1500);
 const card = ph.locator('li.task', { hasText: TITLE });
 ok('it is in her own list', (await card.count()) === 1);
-ok('...marked as one she follows', (await card.locator('.chip.watching').count()) === 1);
+ok('...marked as one she follows', (await card.locator('.role-badge.role-watch').count()) === 1);
 ok('...with the status locked', (await card.locator('.status-btn.locked').count()) === 1);
 await ph.screenshot({ path: '/tmp/claude-0/viewers-list.png' });
 await card.locator('.t-title').click(); await ph.waitForTimeout(900);

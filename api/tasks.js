@@ -1,5 +1,6 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser, canEditTasks, cannotAssign } from '../lib/auth.js';
+import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
 import { isDepartment, matchUnit } from '../lib/departments.js';
 import {
   isStatus, isPriority, seesEverything, canSeeTask, canPostTo, accessSet,
@@ -8,15 +9,8 @@ import {
   linkKind, safeUrl,
 } from '../lib/scope.js';
 import { sendToMany } from '../lib/push.js';
+import { sortRecipients } from '../lib/notifyprefs.js';
 import { withNode } from '../lib/http.js';
-
-// TEMPORARY: lib/availstore.js is missing, so these do nothing for now.
-// When the real file is restored, delete these 3 lines and put this back
-// at the top with the other imports:
-//   import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
-const precedenceOver = async () => ({});
-const clearPrecedence = async () => {};
-const applyPrecedence = async () => {};
 
 /**
  * Tasks.
@@ -83,7 +77,9 @@ export async function assembled(sql) {
                   ORDER BY l.created_at)
                 FROM task_links l WHERE l.task_id = t.id), '[]') AS links,
       COALESCE((SELECT json_agg(v.username ORDER BY v.username)
-                FROM task_viewers v WHERE v.task_id = t.id), '[]') AS watchers
+                FROM task_viewers v WHERE v.task_id = t.id), '[]') AS watchers,
+      COALESCE((SELECT json_object_agg(p.username, p.via)
+                FROM task_people p WHERE p.task_id = t.id), '{}') AS roles
     FROM tasks t
     ORDER BY
       CASE t.status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'feedback' THEN 2
@@ -97,6 +93,11 @@ export async function assembled(sql) {
     if (Array.isArray(value)) return value;
     if (typeof value === 'string') { try { return JSON.parse(value); } catch { return []; } }
     return [];
+  };
+  const asObject = (value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value === 'string') { try { return JSON.parse(value) || {}; } catch { return {}; } }
+    return {};
   };
 
   /**
@@ -136,6 +137,13 @@ export async function assembled(sql) {
     links: asArray(t.links),
     // Following it, not doing it — see task_viewers in lib/db.js.
     viewers: asArray(t.watchers),
+    /**
+     * How each person on it got there: 'named', 'dept' or 'part'. `named` is
+     * the list the form edits — the department tags and the pieces put the
+     * others on, and saving the form must not turn them into names.
+     */
+    roles: asObject(t.roles),
+    named: asArray(t.people).filter((u) => (asObject(t.roles)[u] || 'named') === 'named'),
   }));
 }
 
@@ -153,6 +161,10 @@ const withRights = (me, tasks) =>
     // Here because somebody asked them to keep an eye on it, not to do it.
     watching: Boolean(me) && (task.viewers || []).includes(me.username) &&
       !(task.assignees || []).includes(me.username),
+    // What this task is to this person — the label on their card.
+    myRole: !me ? null
+      : (task.assignees || []).includes(me.username) ? ((task.roles || {})[me.username] || 'named')
+        : (task.viewers || []).includes(me.username) ? 'watch' : null,
   }));
 
 /**
@@ -193,6 +205,13 @@ async function expandPeople(sql, assignees, departments) {
 
 async function writeTags(sql, taskId, assignees, departments) {
   const expanded = await expandPeople(sql, assignees, departments);
+  // People holding a piece of the task stay on it whatever the form sends —
+  // they came through the piece, which the form does not list.
+  const holders = (await sql`
+    SELECT DISTINCT assignee FROM task_parts WHERE task_id = ${taskId} AND assignee IS NOT NULL`)
+    .map((r) => r.assignee).filter((u) => !expanded.includes(u));
+  const everyone = expanded.concat(holders);
+  const viaOf = (u) => (assignees.includes(u) ? 'named' : holders.includes(u) ? 'part' : 'dept');
 
   /**
    * Whoever is still on the task keeps whatever they answered.
@@ -201,7 +220,7 @@ async function writeTags(sql, taskId, assignees, departments) {
    * re-adding them would wipe every accept and decline each time somebody
    * edited the due date. Only people genuinely taken off the task lose theirs.
    */
-  await sql`DELETE FROM task_people WHERE task_id = ${taskId} AND username <> ALL(${expanded})`;
+  await sql`DELETE FROM task_people WHERE task_id = ${taskId} AND username <> ALL(${everyone})`;
   await sql`DELETE FROM task_departments WHERE task_id = ${taskId}`;
 
   /**
@@ -211,11 +230,11 @@ async function writeTags(sql, taskId, assignees, departments) {
    * instead of twenty. With a serverless database every statement is its own
    * HTTPS call, and that is most of what "saving is slow" actually was.
    */
-  if (expanded.length) {
+  if (everyone.length) {
     await sql`
-      INSERT INTO task_people (task_id, username)
-      SELECT ${taskId}, u FROM unnest(${expanded}::text[]) AS u
-      ON CONFLICT DO NOTHING`;
+      INSERT INTO task_people (task_id, username, via)
+      SELECT ${taskId}, u, v FROM unnest(${everyone}::text[], ${everyone.map(viaOf)}::text[]) AS t(u, v)
+      ON CONFLICT (task_id, username) DO UPDATE SET via = EXCLUDED.via`;
   }
   if (departments.length) {
     await sql`
@@ -274,8 +293,20 @@ const promoteViewers = (sql, taskId) => sql`
   DELETE FROM task_viewers v USING task_people p
   WHERE v.task_id = ${taskId} AND p.task_id = v.task_id AND p.username = v.username`;
 
-async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
-  const targets = usernames.filter((u) => u !== actor); // nobody needs telling what they just did
+/** Which setting on the notifications page governs each kind of message. */
+const CATEGORY_OF = {
+  created: 'task_named', part: 'task_named', work: 'task_work', watch: 'task_watch', progress: 'task_watch',
+};
+
+async function notifyAssigned(sql, task, usernames, actor, kind, title, body, category) {
+  const asked = usernames.filter((u) => u !== actor); // nobody needs telling what they just did
+  if (!asked.length) return;
+
+  // Their settings decide: out loud, the bell only, or not at all.
+  const { loud, quiet } = await sortRecipients(sql, asked, {
+    category: category || CATEGORY_OF[kind] || 'task_named', scope: 'task', id: task.id,
+  });
+  const targets = loud.concat(quiet);
   if (!targets.length) return;
 
   const idFor = {};
@@ -296,7 +327,7 @@ async function notifyAssigned(sql, task, usernames, actor, kind, title, body) {
    */
   {
     try {
-      await sendToMany(sql, targets, (username) => ({
+      if (loud.length) await sendToMany(sql, loud, (username) => ({
         id: idFor[username],
         taskId: task.id,
         title,
@@ -363,7 +394,7 @@ async function handlePart(sql, me, request, url) {
      * only inside a task they were never tagged in.
      */
     if (assignee && assignee !== me.username) {
-      await sql`INSERT INTO task_people (task_id, username) VALUES (${task.id}, ${assignee})
+      await sql`INSERT INTO task_people (task_id, username, via) VALUES (${task.id}, ${assignee}, 'part')
                 ON CONFLICT DO NOTHING`;
       await promoteViewers(sql, task.id);
       await notifyAssigned(sql, { id: task.id }, [assignee], me.username, 'part',
@@ -401,7 +432,7 @@ async function handlePart(sql, me, request, url) {
       if (assignee) {
         const [who] = await sql`SELECT 1 FROM users WHERE username = ${assignee} AND active = true`;
         if (!who) return json({ error: 'NO_SUCH_USER' }, 400);
-        await sql`INSERT INTO task_people (task_id, username) VALUES (${row.task_id}, ${assignee})
+        await sql`INSERT INTO task_people (task_id, username, via) VALUES (${row.task_id}, ${assignee}, 'part')
                   ON CONFLICT DO NOTHING`;
         await promoteViewers(sql, row.task_id);
         if (assignee !== me.username && assignee !== row.assignee) {
@@ -614,8 +645,11 @@ async function handler(request) {
       }
 
       if (notify.includes('created')) {
-        await notifyAssigned(sql, { id }, expanded, me.username, 'created',
-          title, `${me.display_name || me.username} added you to this task.`);
+        const named = expanded.filter((u) => assignees.includes(u));
+        await notifyAssigned(sql, { id }, named, me.username, 'created',
+          title, `${me.display_name || me.username} added you to this task.`, 'task_named');
+        await notifyAssigned(sql, { id }, expanded.filter((u) => !named.includes(u)), me.username, 'created',
+          title, `${me.display_name || me.username} tagged your department on this task.`, 'task_dept');
       }
 
       const viewers = readViewers(body);
@@ -721,11 +755,12 @@ async function handler(request) {
 
       // Tags are replaced wholesale, but only when the caller sent them.
       if (body.assignees !== undefined || body.departments !== undefined) {
-        const current = await sql`SELECT username FROM task_people WHERE task_id = ${id}`;
+        const current = await sql`SELECT username, via FROM task_people WHERE task_id = ${id}`;
         const before = new Set(current.map((r) => r.username));
 
         const { assignees, departments } = readTags({
-          assignees: body.assignees ?? current.map((r) => r.username),
+          // Left out of the request: keep the names, not everyone the tags reached.
+          assignees: body.assignees ?? current.filter((r) => r.via === 'named').map((r) => r.username),
           departments: body.departments ?? [],
         });
 
@@ -743,8 +778,10 @@ async function handler(request) {
 
         const added = expanded.filter((u) => !before.has(u));
         if (added.length && String(existing.notify).includes('created')) {
-          await notifyAssigned(sql, { id }, added, me.username, 'created',
-            existing.title, `${me.display_name || me.username} added you to this task.`);
+          await notifyAssigned(sql, { id }, added.filter((u) => assignees.includes(u)), me.username, 'created',
+            existing.title, `${me.display_name || me.username} added you to this task.`, 'task_named');
+          await notifyAssigned(sql, { id }, added.filter((u) => !assignees.includes(u)), me.username, 'created',
+            existing.title, `${me.display_name || me.username} tagged your department on this task.`, 'task_dept');
         }
         await promoteViewers(sql, id);
       }

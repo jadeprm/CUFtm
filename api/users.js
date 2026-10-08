@@ -9,7 +9,11 @@ import {
   isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
 } from '../lib/departments.js';
 import { driveStatus } from '../lib/drive.js';
+import {
+  availabilityOf, setAvailability, addBlock, removeBlock, checkClashes,
+} from '../lib/availstore.js';
 import { withNode } from '../lib/http.js';
+import { prefsOf, setPref } from '../lib/notifyprefs.js';
 
 /**
  * People: the directory everyone can see, the profile each person owns, and
@@ -71,6 +75,36 @@ async function handler(request) {
   const action = url.searchParams.get('do');
 
   /**
+   * When people are free, and who is already spoken for.
+   *
+   * Rides on this endpoint rather than a file of its own because Vercel counts
+   * every file under api/ as a Serverless Function and the Hobby plan allows
+   * twelve, which are all in use. The work is in lib/availstore.js and the
+   * rules it applies are in lib/availability.js.
+   */
+  if (action === 'free' || action === 'block' || action === 'clashes') {
+    if (action === 'free' && request.method === 'GET') {
+      const who = url.searchParams.get('username') || me.username;
+      return json(await availabilityOf(sql, who, { forSelf: who === me.username }));
+    }
+    if (action === 'free' && request.method === 'PUT') {
+      return setAvailability(sql, me, await request.json().catch(() => ({})), { json });
+    }
+    if (action === 'block' && request.method === 'POST') {
+      return addBlock(sql, me, await request.json().catch(() => ({})), { json });
+    }
+    if (action === 'block' && request.method === 'DELETE') {
+      return removeBlock(sql, me, url.searchParams.get('id'), { json });
+    }
+    if (action === 'clashes' && request.method === 'POST') {
+      const roster = await sql`SELECT username, display_name, access FROM users`;
+      return checkClashes(sql, me, await request.json().catch(() => ({})),
+        { json, people: roster.map((p) => ({ ...p, displayName: p.display_name })) });
+    }
+    return json({ error: 'UNKNOWN_ACTION' }, 400);
+  }
+
+  /**
    * Why notifications are or are not arriving.
    *
    * Built because "notifications don't work" was impossible to answer from
@@ -78,6 +112,25 @@ async function handler(request) {
    * nothing is calling the hourly endpoint, nothing is due, or nobody has
    * switched notifications on. This says which.
    */
+  /**
+   * What this person wants to be told about — lib/notifyprefs.js.
+   *
+   *   GET  ?do=notify            every category, filled in, plus overrides
+   *   POST ?do=notify  { scope, id?, level }   level null = back to default
+   *
+   * Only ever one's own: nobody sets another person's notifications.
+   */
+  if (action === 'notify') {
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const problem = await setPref(sql, me.username, {
+        scope: String(body.scope || ''), id: body.id, level: body.level ?? null,
+      });
+      if (problem) return json({ error: problem }, 400);
+    }
+    return json(await prefsOf(sql, me.username));
+  }
+
   if (request.method === 'GET' && action === 'health') {
     if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
 

@@ -1,6 +1,6 @@
 /** Inviting somebody with no account here, the way a person would do it. */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
 const pg = await (await b.newContext({viewport:{width:1700,height:1000},deviceScaleFactor:1.3})).newPage();
 const errs=[]; pg.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
@@ -34,7 +34,8 @@ await pg.waitForTimeout(2800);
 ok('...and saving says which address it could not read',
   alerted.includes('ไม่ใช่อีเมล'), alerted || '(no message)');
 
-await pg.locator('.event-card.meeting', { hasText: tag }).first().click();
+await expandUpcoming(pg);
+await pg.locator('.up-row.meeting', { hasText: tag }).first().click();
 await pg.waitForTimeout(1500);
 const chips = await pg.locator('.veil .sum-row', { hasText: 'แขกภายนอก' })
   .locator('.chip').allInnerTexts();
@@ -62,7 +63,8 @@ console.log('\nRSVP: answer, then change it deliberately');
 await pg.keyboard.press('Escape');
 await pg.evaluate(() => document.querySelectorAll('.veil').forEach((v) => v.remove()));
 await pg.waitForTimeout(400);
-await pg.locator('.event-card.meeting', { hasText: tag }).first().click();
+await expandUpcoming(pg);
+await pg.locator('.up-row.meeting', { hasText: tag }).first().click();
 await pg.waitForTimeout(1400);
 
 /**

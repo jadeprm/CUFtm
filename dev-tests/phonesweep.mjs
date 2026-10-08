@@ -13,7 +13,7 @@
  * real phone sits under the painted bar here too, where it can be seen.
  */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 import { mkdirSync } from 'node:fs';
 
 const OUT = process.argv[2] || '/tmp/claude-0/sweep';
@@ -138,7 +138,8 @@ await fromFab(/นำเข้า/, 'import');
 await go('#/work');
 if (await tap(pg.locator('.ph-filter'))) await shot('filters');
 await go('#/work');
-if (await tap(pg.locator('.event-card.meeting').first())) await shot('meeting-view');
+await expandUpcoming(pg);
+if (await tap(pg.locator('.up-row.meeting').first())) await shot('meeting-view');
 await go('#/docs');
 if (await tap('#fab')) await shot('doc-upload');
 await go('#/docs');
@@ -151,7 +152,8 @@ if (await tap(pg.locator('.doc-card').first())) {
 await go('#/docs');
 if (await tap(pg.locator('#main .page-head button', { hasText: /เลขานุการ/ }).first())) await shot('secretaries');
 await go('#/work');
-if (await tap(pg.locator('.event-card:not(.meeting)').first())) await shot('event-view');
+await expandUpcoming(pg);
+if (await tap(pg.locator('.up-row.event').first())) await shot('event-view');
 await go('#/links');
 if (await tap(pg.locator('#main button', { hasText: /QR/ }).first())) await shot('qr');
 await go('#/work');

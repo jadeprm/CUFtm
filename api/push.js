@@ -1,3 +1,4 @@
+import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
 import { currentUser, canManageAccounts } from '../lib/auth.js';
 import { isDepartment, expandAccess } from '../lib/departments.js';
@@ -237,9 +238,17 @@ async function handler(request) {
       VALUES (${id}, ${me.username}, ${title}, ${text}, ${level},
               ${describeAudience(audience, names.length)}, ${link}, ${names.length})`;
 
+    /**
+     * Each person's announcement setting — except for an urgent one, which
+     * reaches everybody out loud: that is what urgent is for, and the people
+     * who may send one are few.
+     */
+    const heard = await sortRecipients(sql, names, { category: 'announce', force: level === 'urgent' });
+    const reachable = heard.loud.concat(heard.quiet);
+
     // Written to the bell first, so the message survives even for people whose
     // phone never receives the push.
-    for (const username of names) {
+    for (const username of reachable) {
       await sql`
         INSERT INTO notifications (id, username, task_id, kind, title, body, level, announcement_id)
         VALUES (${newId('n')}, ${username}, ${null}, ${'announce'}, ${title}, ${text},
@@ -251,7 +260,7 @@ async function handler(request) {
     const idFor = Object.fromEntries(rows.map((r) => [r.username, r.id]));
 
     const from = me.display_name || me.username;
-    const result = await sendToMany(sql, names, (username) => ({
+    const result = await sendToMany(sql, heard.loud, (username) => ({
       id: idFor[username],
       title,
       body: text,

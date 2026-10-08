@@ -4,7 +4,7 @@
  * actually performed and that silently did nothing.
  */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
 const pg = await (await b.newContext({viewport:{width:1700,height:1000},deviceScaleFactor:1.3})).newPage();
 const errs=[]; pg.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
@@ -64,7 +64,8 @@ await pg.locator('.veil footer button', { hasText: /^บันทึก/ }).firs
 await pg.waitForTimeout(2500);
 
 console.log('\nReopening it');
-await pg.locator('.event-card.meeting', { hasText: tag }).first().click();
+await expandUpcoming(pg);
+await pg.locator('.up-row.meeting', { hasText: tag }).first().click();
 await pg.waitForTimeout(1500);
 const nums2 = await pg.locator('.veil .agenda-row .t-code').allInnerTexts();
 console.log('  saved agenda:', nums2.join(' '));
@@ -81,7 +82,8 @@ await box2.locator('input[type="text"]').fill('แจ้งกำหนดกา
 await box2.locator('input[type="number"]').fill('5');
 await box2.locator('button').click();
 await pg.waitForTimeout(2500);
-await pg.locator('.event-card.meeting', { hasText: tag }).first().click();
+await expandUpcoming(pg);
+await pg.locator('.up-row.meeting', { hasText: tag }).first().click();
 await pg.waitForTimeout(1500);
 const nums3 = await pg.locator('.veil .agenda-row .t-code').allInnerTexts();
 console.log('  after proposing:', nums3.join(' '));

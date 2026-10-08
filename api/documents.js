@@ -1,3 +1,4 @@
+import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, toBuffer } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
@@ -470,7 +471,19 @@ async function createDocument(sql, me, body) {
  * digest, which is one message rather than eighty.
  */
 async function tellPeople(sql, { usernames, title, body, docId, priority, urgent, actor }) {
-  const people = [...new Set(usernames.filter(Boolean))];
+  const asked = [...new Set(usernames.filter(Boolean))];
+  if (!asked.length) return { told: 0 };
+
+  /**
+   * Their settings first. The person whose turn it is still gets the bell
+   * even with documents switched off — a document waiting on somebody who
+   * cannot see that it is waiting stops the whole chain.
+   */
+  const heard = await sortRecipients(sql, asked, { category: 'document', scope: 'doc', id: docId });
+  const turn = [].concat(actor || []).filter(Boolean);
+  const quiet = heard.quiet.concat(heard.off.filter((u) => turn.includes(u)));
+  const loud = heard.loud;
+  const people = loud.concat(quiet);
   if (!people.length) return { told: 0 };
 
   const ids = people.map(() => newId('n'));
@@ -490,14 +503,14 @@ async function tellPeople(sql, { usernames, title, body, docId, priority, urgent
   });
 
   try {
-    await sendToMany(sql, people, payload);
+    if (loud.length) await sendToMany(sql, loud, payload);
   } catch (error) {
     console.error('[documents] push failed:', String(error?.message || error).slice(0, 200));
   }
 
   // Only the person who has to act, and only if they have linked LINE.
   const payFor = [...new Set([].concat(actor || []).filter(Boolean))]
-    .filter((u) => people.includes(u));
+    .filter((u) => loud.includes(u));
 
   if (lineConfigured() && payFor.length) {
     try {

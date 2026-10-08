@@ -1,6 +1,6 @@
 /** Meetings where they now live: the work page, the calendar, and the dialog. */
 import { chromium } from 'playwright';
-import { quietGuide } from './quiet.mjs';
+import { quietGuide, expandUpcoming } from './quiet.mjs';
 const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
 const ctx = await b.newContext({ viewport:{width:1850,height:1000}, deviceScaleFactor:1.3 });
 const pg = await ctx.newPage();
@@ -21,7 +21,8 @@ await signIn('Jade_Pres','fairAdmin1');
 console.log('\nMeetings now live with the work');
 ok('the separate การประชุม tab is gone',
   (await pg.locator('#tabs a[href="#/meetings"]').count()) === 0);
-const rail = await pg.locator('.event-card.meeting').count();
+await expandUpcoming(pg);
+const rail = await pg.locator('.up-row.meeting').count();
 ok('upcoming meetings appear in the strip on the work page', rail >= 1, String(rail));
 ok('...and the work page offers นัดประชุม',
   (await pg.locator('.page-head button', { hasText: /นัดประชุม/ }).count()) >= 1);
@@ -69,7 +70,8 @@ await pg.evaluate(async () => {
 });
 await pg.locator('#tabs a[href="#/work"]').first().click(); await pg.waitForTimeout(1200);
 await pg.reload({ waitUntil: 'networkidle' }); await pg.waitForTimeout(2600);
-await pg.locator('.event-card.meeting', { hasText: 'ทดสอบวาระย่อย' }).first().click();
+await expandUpcoming(pg);
+await pg.locator('.up-row.meeting', { hasText: 'ทดสอบวาระย่อย' }).first().click();
 await pg.waitForTimeout(1400);
 // The agenda's own add boxes are inputs and belong in view mode; what must
 // NOT be showing is the detail form.

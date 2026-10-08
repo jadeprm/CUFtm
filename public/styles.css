@@ -1587,3 +1587,95 @@ main.board-wide { max-width: 104rem; }
 .chip.watching { background: var(--surface-3); color: var(--ink-soft); font-weight: 600; }
 .chip.watching .ic svg, .chip.viewers-n .ic svg { width: 13px; height: 13px; }
 .notice.watching-note { border-style: dashed; }
+
+/* ---------- what a task is to me ---------- */
+.role-badge {
+  display: inline-flex; align-items: center; gap: 4px; vertical-align: 1px;
+  font-size: 11px; font-weight: 700; line-height: 1; padding: 4px 8px 4px 6px; border-radius: 999px;
+  margin-right: 6px; white-space: nowrap; border: 1px solid transparent;
+}
+.role-badge .ic svg { width: 12px; height: 12px; stroke-width: 2.4; }
+.role-badge.role-named { background: var(--accent); color: var(--accent-ink); }
+.role-badge.role-dept { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.role-badge.role-watch { background: transparent; color: var(--ink-soft); border: 1px dashed var(--line); }
+li.task:has(.role-watch) { border-style: dashed; }
+.role-why { display: block; color: var(--ink-faint); font-size: 12px; margin-top: 4px; }
+.role-seg .n { margin-left: 4px; }
+
+/* ---------- notifications: three levels ---------- */
+.notify-seg button { display: inline-flex; align-items: center; gap: 5px; }
+.notify-seg .ic svg { width: 15px; height: 15px; }
+.notify-seg button[data-level="quiet"].on { background: var(--surface-3); color: var(--ink); }
+.notify-seg button[data-level="off"].on { background: var(--danger-soft); color: var(--danger); }
+.notify-ctl .notify-seg { flex-wrap: wrap; }
+.notify-box .hint { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 10px; line-height: 1.5; }
+.notify-cats { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.notify-cat { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--line-soft); }
+.notify-cat:first-child { border-top: none; }
+.nc-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nc-text b { font-size: 13.5px; font-weight: 600; }
+.nc-text small { font-size: 11.5px; color: var(--ink-faint); line-height: 1.4; }
+.notify-items { margin-top: 14px; }
+.notify-items > b { font-size: 13px; font-weight: 600; }
+.notify-items ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.notify-items li { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 8px; border-radius: 8px; background: var(--surface-2); }
+.ni-kind { font-size: 11px; color: var(--ink-faint); flex: none; }
+.ni-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ni-level { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; flex: none; color: var(--ink-soft); }
+.ni-level .ic svg { width: 14px; height: 14px; }
+.ni-level.lv-off { color: var(--danger); }
+
+/* ---------- coming up: an agenda, not a rail of cards ---------- */
+.upcoming { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.up-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 7px; }
+.up-head b { font-size: 13px; font-weight: 700; }
+.up-more { border: none; background: none; color: var(--accent); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 2px 4px; }
+.up-group {
+  font-size: 11px; font-weight: 700; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .02em;
+  padding: 6px 12px 3px; border-top: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.up-row {
+  --c: var(--accent);
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px;
+  padding: 7px 12px 7px 10px; border: none; border-left: 3px solid var(--c); border-top: 1px solid var(--line-soft);
+  background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+}
+.up-group + .up-row { border-top: none; }
+.up-row:hover { background: color-mix(in srgb, var(--c) 7%, var(--surface)); }
+.up-row.meeting { --c: var(--meet); }
+.up-row.pending { opacity: .6; }
+.up-date { flex: none; width: 4.4em; font-size: 12px; font-weight: 700; color: var(--c); font-variant-numeric: tabular-nums; }
+.up-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.up-title { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.up-place { font-size: 12px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+.up-time { flex: none; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 3.4em; text-align: right; }
+.up-kind {
+  flex: none; font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+  color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent);
+}
+.up-flag {
+  flex: none; font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+  background: var(--doing-soft); color: var(--doing);
+}
+@media (max-width: 720px) {
+  .upcoming { margin: 0 0 12px; border-radius: 10px; }
+  .up-place { display: none; }
+  .up-row { gap: 8px; min-height: 38px; padding: 6px 10px 6px 8px; }
+  .up-date { width: 3.9em; font-size: 11.5px; }
+  .up-title { font-size: 13px; }
+  .up-row .chip { display: none; }
+}
+/* The same tabs on a computer, under the coming-up list. */
+.ph-roles.role-tabs {
+  display: flex; gap: 2px; margin: 0 0 10px; padding: 0; border-bottom: 1px solid var(--line);
+}
+.role-tabs button {
+  border: none; background: none; font: inherit; font-size: 13.5px; color: var(--ink-soft);
+  padding: 8px 12px 9px; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
+}
+.role-tabs button:hover { color: var(--ink); }
+.role-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.role-tabs .n { margin-left: 5px; font-size: 12px; opacity: .7; }
+/* Long words on a computer; phone.css swaps in the short ones. */
+.role-badge .rb-short { display: none; }
+.notify-legend, .nc-now { display: none; }
