@@ -2402,6 +2402,12 @@ ok('with no site address the link is omitted entirely',
 ok('...and the list itself still works', bare.includes('งานของฉัน') || bare.includes('ไม่มีรายการ'));
 process.env.SITE_URL = keep;
 
+/**
+ * Every letter now says how it leaves: either เลขานุการ forwards it, which
+ * needs an address to forward to, or the writer posts it themselves. The
+ * sections below were written before that and are about other things, so they
+ * carry an address; the rule itself is section 76.
+ */
 head('41. Documents: the approval chain is built from who you are');
 
 const { PDFDocument: PDFDoc } = await import('pdf-lib');
@@ -2457,7 +2463,7 @@ const chain = (await call(docsApi, '/api/documents?do=propose',
 // A signing role with nowhere to put the signature is refused.
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'หนังสือขอใช้สถานที่', pdf: await makePdf(2), department: 'content',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือขอใช้สถานที่', pdf: await makePdf(2), department: 'content',
           steps: chain.map((s) => ({ role: s.role, username: s.username })) },
 });
 ok('a signing step with no marked box is refused', r.status === 400 && r.data.error === 'MARK_REQUIRED',
@@ -2470,21 +2476,21 @@ const withMarks = (pageFor = () => 1) => chain.map((s) => ({
 }));
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'x', pdf: await makePdf(2), department: 'content', steps: withMarks(() => 9) },
+  body: { recipientEmail: 'office@example.ac.th',  title: 'x', pdf: await makePdf(2), department: 'content', steps: withMarks(() => 9) },
 });
 ok('a box on a page that does not exist is refused', r.data.error === 'MARK_OFF_PAGE', JSON.stringify(r.data));
 
 // Something that is not a PDF is refused on its own bytes, not its name.
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'x', pdf: Buffer.from('totally not a pdf').toString('base64'),
+  body: { recipientEmail: 'office@example.ac.th',  title: 'x', pdf: Buffer.from('totally not a pdf').toString('base64'),
           department: 'content', steps: withMarks() },
 });
 ok('a file that is not really a PDF is refused', r.data.error === 'NOT_A_PDF', JSON.stringify(r.data));
 
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'หนังสือขอใช้สถานที่', note: 'ขอใช้หอประชุม', recipient: 'สำนักบริหารระบบกายภาพ',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือขอใช้สถานที่', note: 'ขอใช้หอประชุม', recipient: 'สำนักบริหารระบบกายภาพ',
           priority: 'high', pdf: await makePdf(2), department: 'content', steps: withMarks() },
 });
 ok('a complete submission is accepted', r.status === 201 && r.data.id, JSON.stringify(r.data).slice(0, 80));
@@ -2556,7 +2562,7 @@ const chain2 = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'หนังสือที่จะถูกตีกลับ', pdf: await makePdf(1), department: 'content',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือที่จะถูกตีกลับ', pdf: await makePdf(1), department: 'content',
           steps: chain2.map((s) => ({ role: s.role, username: s.username,
             mark: s.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
 });
@@ -2582,7 +2588,7 @@ const chain3 = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'หนังสือที่จะถูกแก้', pdf: await makePdf(2), department: 'content',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือที่จะถูกแก้', pdf: await makePdf(2), department: 'content',
           steps: chain3.map((s) => ({ role: s.role, username: s.username,
             mark: s.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
 });
@@ -2739,7 +2745,7 @@ const marked = freshChain.map((s) => ({
 }));
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'merch',
-  body: { title: 'หนังสือขอถอน', pdf: await makePdf(1), department: 'merchant', steps: marked },
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือขอถอน', pdf: await makePdf(1), department: 'merchant', steps: marked },
 });
 const mineId = r.data.id;
 ok('a second document is submitted', Boolean(mineId), JSON.stringify(r.data).slice(0, 60));
@@ -2857,7 +2863,7 @@ const archChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'merch',
-  body: {
+  body: { recipientEmail: 'office@example.ac.th', 
     title: 'หนังสือเชิญประชุมผู้ประกอบการ', recipient: 'ร้านค้าในงาน',
     pdf: await makePdf(1), department: 'merchant',
     steps: archChain.map((s) => ({
@@ -2935,7 +2941,7 @@ const refusedChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'merch',
-  body: { title: 'หนังสือฉบับที่สอง', pdf: await makePdf(1), department: 'merchant',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือฉบับที่สอง', pdf: await makePdf(1), department: 'merchant',
           steps: refusedChain.map((s) => ({ role: s.role, username: s.username,
             mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
@@ -2972,7 +2978,7 @@ const ownChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'merch',
-  body: { title: 'หนังสือเข้าโฟลเดอร์ของแอป', pdf: await makePdf(1), department: 'merchant',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือเข้าโฟลเดอร์ของแอป', pdf: await makePdf(1), department: 'merchant',
           steps: ownChain.map((st) => ({ role: st.role, username: st.username,
             mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
@@ -2998,7 +3004,7 @@ const againChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'merch', body: { department: 'merchant' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'merch',
-  body: { title: 'หนังสือฉบับถัดไป', pdf: await makePdf(1), department: 'merchant',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือฉบับถัดไป', pdf: await makePdf(1), department: 'merchant',
           steps: againChain.map((st) => ({ role: st.role, username: st.username,
             mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
@@ -3032,7 +3038,7 @@ const docChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: {
+  body: { recipientEmail: 'office@example.ac.th', 
     title: 'หนังสือขออนุมัติจัดกิจกรรม', recipient: 'คณบดี', priority: 'high',
     pdf: await makePdf(1), department: 'content',
     steps: docChain.map((s) => ({
@@ -3105,7 +3111,7 @@ const rejectChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'หนังสือที่จะถูกตีกลับจากไลน์', pdf: await makePdf(1), department: 'content',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือที่จะถูกตีกลับจากไลน์', pdf: await makePdf(1), department: 'content',
           steps: rejectChain.map((s) => ({ role: s.role, username: s.username,
             mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
@@ -3430,7 +3436,7 @@ async function toSecretary(as, body) {
     { method: 'POST', as, body: { department: body.department, unit: body.unit } })).data.steps;
   const made = await call(docsApi, '/api/documents?do=create', {
     method: 'POST', as,
-    body: {
+    body: { recipientEmail: 'office@example.ac.th', 
       ...body, pdf: await makePdf(1),
       steps: chain.map((st) => ({
         role: st.role, username: st.username,
@@ -3456,7 +3462,7 @@ let doc1 = await toSecretary('content', {
   title: 'ขอใช้หอประชุมจุฬาฯ', recipient: 'สำนักบริหารระบบกายภาพ',
   department: 'content', unit: 'Stage',
 });
-ok('a number is issued once every signature is in',
+ok('a number is issued, from the committee\u2019s own sheet',
   doc1.doc_number === 'อบจ.จฬฟ. 03.01-001/2569', doc1.doc_number);
 ok('...on the tab for that section, not the department',
   doc1.doc_tab === 'Stage', doc1.doc_tab);
@@ -3475,6 +3481,40 @@ ok('the next one takes the next number', doc2.doc_number === 'อบจ.จฬ�
 log = registerLog('Stage');
 ok('...on its own row, below the first', log.length === 2 && log[1].title === 'ขอยืมโต๊ะและเก้าอี้',
   JSON.stringify(log.map((r) => r.number + ' ' + r.title)));
+
+/**
+ * The number is taken the moment the letter is submitted, not at the end.
+ *
+ * It has to be written ON the letter, so a number that only exists once
+ * everybody has signed arrives too late to be any use. The row's สถานะ then
+ * follows the letter: รออนุมัติ while it climbs, รอเลขาฯ ส่ง when it is ready,
+ * ส่งแล้ว when it goes, ถูกตีกลับ if it dies.
+ */
+const atOnce = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'ขอเลขทันทีที่ส่ง', pdf: await makePdf(1),
+          department: 'content', unit: 'Stage',
+          steps: (await call(docsApi, '/api/documents?do=propose',
+            { method: 'POST', as: 'content', body: { department: 'content', unit: 'Stage' } })).data.steps
+            .map((st) => ({ role: st.role, username: st.username,
+              mark: st.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
+});
+ok('submitting gives the writer a number there and then',
+  atOnce.status === 201 && atOnce.data.numbering?.ok && /อบจ\.จฬฟ\./.test(atOnce.data.numbering.number),
+  JSON.stringify(atOnce.data.numbering));
+const freshLog = registerLog('Stage').find((x) => x.title === 'ขอเลขทันทีที่ส่ง');
+ok('...and the register row says it is still being approved', freshLog && freshLog.status === 'รออนุมัติ',
+  JSON.stringify(freshLog));
+const toldNumber = await sql`SELECT title FROM notifications
+  WHERE username = 'Kungking_HeadCon' AND task_id = ${atOnce.data.id} ORDER BY created_at DESC LIMIT 1`;
+ok('...and the writer is told it without being asked',
+  toldNumber[0] && toldNumber[0].title.includes(atOnce.data.numbering.number), JSON.stringify(toldNumber[0]));
+await call(docsApi, '/api/documents?do=reject',
+  { method: 'POST', as: 'admin', body: { id: atOnce.data.id, comment: 'ลองตีกลับ' } });
+const deadRow = registerLog('Stage').find((x) => x.title === 'ขอเลขทันทีที่ส่ง');
+ok('a letter that is sent back keeps its number, and the book says what became of it',
+  deadRow && deadRow.status === 'ถูกตีกลับ', JSON.stringify(deadRow));
+
 
 // A different section has its own sequence.
 const doc3 = await toSecretary('content', {
@@ -3514,7 +3554,9 @@ ok('a document still reaches the secretary when the register is unreachable',
   doc5.stage === 'secretary' && !doc5.doc_number, `${doc5.stage} / ${doc5.doc_number}`);
 const why = await sql`SELECT kind, detail FROM doc_events WHERE doc_id = ${doc5.id} AND kind = 'number_failed'`;
 ok('...and the failure is written into its history, not swallowed',
-  why.length === 1, JSON.stringify(why[0] || {}));
+  why.length >= 1, JSON.stringify(why[0] || {}));
+ok('...having been tried again when it was ready to send, not given up on',
+  why.length === 2, String(why.length));
 registerRefuses = false;
 
 // The names list, pushed from the roster into the register.
@@ -3539,7 +3581,7 @@ ok('...while anybody without a full name is reported rather than guessed at',
 // Somebody who has never given a full name is asked for one.
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'seesall',
-  body: { title: 'หนังสือไม่มีชื่อผู้รับผิดชอบ', pdf: await makePdf(1), department: 'sponsor', steps: [] },
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือไม่มีชื่อผู้รับผิดชอบ', pdf: await makePdf(1), department: 'sponsor', steps: [] },
 });
 ok('a first-time uploader is asked for their full name',
   r.status === 400 && r.data.error === 'FULL_NAME_REQUIRED', JSON.stringify(r.data));
@@ -3615,7 +3657,7 @@ const costChain = (await call(docsApi, '/api/documents?do=propose',
 lineSent.length = 0;
 r = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: { title: 'หนังสือวัดค่าใช้จ่าย', pdf: await makePdf(1), department: 'content',
+  body: { recipientEmail: 'office@example.ac.th',  title: 'หนังสือวัดค่าใช้จ่าย', pdf: await makePdf(1), department: 'content',
           steps: costChain.map((st) => ({ role: st.role, username: st.username,
             mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
@@ -3891,7 +3933,7 @@ ok('...and still nobody is asked to approve it',
 
 const dirDoc = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'admin',
-  body: {
+  body: { recipientEmail: 'office@example.ac.th', 
     title: 'หนังสือจากประธานโครงการ', pdf: await makePdf(2), department: 'exec',
     steps: topChain.map((x) => ({
       role: x.role, username: x.username,
@@ -3922,7 +3964,7 @@ const baseChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
 const noSig = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: {
+  body: { recipientEmail: 'office@example.ac.th', 
     title: 'หนังสือที่หัวหน้าอนุมัติแต่ไม่ลงนาม', pdf: await makePdf(2), department: 'content',
     steps: baseChain.map((x) => ({
       role: x.role, username: x.username,
@@ -3962,7 +4004,7 @@ const multiChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
 const multi = await call(docsApi, '/api/documents?do=create', {
   method: 'POST', as: 'content',
-  body: {
+  body: { recipientEmail: 'office@example.ac.th', 
     title: 'หนังสือที่ต้องลงนามหลายจุด', pdf: await makePdf(3), department: 'content',
     steps: multiChain.map((x) => ({
       role: x.role, username: x.username,
@@ -5738,6 +5780,191 @@ await sql`DELETE FROM tasks WHERE title LIKE 'แจ้ง:%' OR title LIKE 'บ
 await sql`DELETE FROM notifications WHERE title LIKE 'แจ้ง:%'`;
 await sql`DELETE FROM announcements WHERE title LIKE 'แจ้ง:%'`;
 await sql`DELETE FROM notify_prefs`;
+
+// ===========================================================================
+head('76. Documents: co-chairs, อำนวยการใหญ่, and who posts the letter');
+
+/**
+ * The three things she ran into on one letter.
+ *
+ * Several ฝ่าย are run by two ประธาน and both sign. อำนวยการ 1, 2 and 3 sit
+ * under อำนวยการใหญ่, so their letters pass through that chair before they
+ * reach ประธานโครงการ. And not every ฝ่าย wants เลขานุการ to do the posting.
+ */
+await sql`UPDATE users SET is_head = true WHERE username = 'Fah_StaffCon'`;
+await sql`UPDATE users SET position = 'ประธานฝ่ายเนื้อหา' WHERE username IN ('Kungking_HeadCon', 'Fah_StaffCon')`;
+await sql`UPDATE users SET department = 'oper2', unit = 'สถานที่', is_head = true,
+                           position = 'ประธานฝ่ายอำนวยการ 2' WHERE username = 'Ikkew_HeadOper1'`;
+await sql`UPDATE users SET department = 'operations', is_head = true,
+                           position = 'ประธานฝ่ายอำนวยการใหญ่' WHERE username = 'Totti_HeadOp'`;
+await sql`DELETE FROM user_departments WHERE username IN ('Ikkew_HeadOper1', 'Totti_HeadOp')`;
+await sql`INSERT INTO user_departments (username, department) VALUES
+            ('Ikkew_HeadOper1', 'oper2'), ('Totti_HeadOp', 'operations')
+          ON CONFLICT DO NOTHING`;
+await call(authApi, '/api/auth?do=login', { method: 'POST', remember: 'oper2head',
+  body: { username: 'Ikkew_HeadOper1', password: 'editorPw2' } });
+await call(usersApi, '/api/users?do=me', { method: 'PATCH', as: 'oper2head', body: { fullName: 'นอร์ท ใจกว้าง' } });
+
+// A staff member of a ฝ่าย with two ประธาน.
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'member', body: { department: 'content' },
+});
+let chainLine = r.data.steps.map((st) => `${st.role}:${st.username}`).join(' → ');
+ok('a ฝ่าย with two ประธาน gets a step for each of them',
+  r.data.steps.filter((st) => st.role === 'deptHead').length === 2, chainLine);
+const bothHeads = r.data.steps.filter((st) => st.role === 'deptHead').map((st) => st.username);
+ok('...two different people, not the same one twice',
+  new Set(bothHeads).size === 2 && bothHeads.every((u) => ['Kungking_HeadCon', 'Fah_StaffCon'].includes(u)),
+  JSON.stringify(bothHeads));
+ok('...and both of them sign', r.data.steps.filter((st) => st.role === 'deptHead').every((st) => st.signs));
+
+// The screenshot: a letter from the head of อำนวยการ 2.
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'oper2head', body: { department: 'oper2' },
+});
+chainLine = r.data.steps.map((st) => st.role).join(' → ');
+ok('a letter from อำนวยการ 2 climbs through อำนวยการใหญ่ before ประธานโครงการ',
+  chainLine === 'author → divisionHead → director → secretary', chainLine);
+const div = r.data.steps.find((st) => st.role === 'divisionHead');
+ok('...and อำนวยการใหญ่ is the person who runs it', div.username === 'Totti_HeadOp', div.username);
+ok('...who signs the letter, not just approves it', div.signs === true);
+ok('...and the form is told what the roles are called, for a row added by hand',
+  (r.data.roles || []).some((x) => x.role === 'divisionHead' && x.label === 'ประธานฝ่ายอำนวยการใหญ่'),
+  JSON.stringify(r.data.roles));
+
+// อำนวยการใหญ่'s own letter does not climb through itself.
+r = await call(authApi, '/api/auth?do=login', { method: 'POST', remember: 'opall',
+  body: { username: 'Totti_HeadOp', password: 'opAllPw12' } });
+if (r.status !== 200) {
+  await call(authApi, '/api/auth?do=setup', { method: 'POST', remember: 'opall',
+    body: { username: 'Totti_HeadOp', password: 'opAllPw12' } });
+}
+// A signing step cannot act without a signature on file, which is the point.
+await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: 'opall', body: { png: sigPng } });
+await call(usersApi, '/api/users?do=me', { method: 'PATCH', as: 'opall', body: { fullName: 'ต๊อด ใจเย็น' } });
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'opall', body: { department: 'operations' } });
+chainLine = r.data.steps.map((st) => st.role).join(' → ');
+ok('อำนวยการใหญ่’s own letter has no step through itself', chainLine === 'author → director → secretary', chainLine);
+
+// Sending it yourself.
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'oper2head', body: { department: 'oper2', sendMode: 'self' },
+});
+const selfChain = r.data.steps;
+chainLine = selfChain.map((st) => st.role).join(' → ');
+ok('choosing to send it yourself puts you at the end instead of เลขานุการ',
+  chainLine === 'author → divisionHead → director → sender', chainLine);
+ok('...as yourself', selfChain[selfChain.length - 1].username === 'Ikkew_HeadOper1');
+ok('...and that last step does not sign anything', selfChain[selfChain.length - 1].signs === false);
+
+const withBoxes = (list) => list.map((st) => ({
+  role: st.role, username: st.username,
+  mark: st.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null,
+}));
+
+// The address เลขานุการ forwards to.
+const letter = { title: 'หนังสือขอความอนุเคราะห์', pdf: await makePdf(1), department: 'oper2' };
+const secChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'oper2head', body: { department: 'oper2' } })).data.steps;
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head', body: { ...letter, steps: withBoxes(secChain) },
+});
+ok('a letter เลขานุการ must post needs an address to post it to',
+  r.status === 400 && r.data.error === 'EMAIL_REQUIRED', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head',
+  body: { ...letter, recipientEmail: 'not-an-address', steps: withBoxes(secChain) },
+});
+ok('...and something that is not an address does not count', r.data.error === 'EMAIL_REQUIRED', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head', body: { ...letter, internalUnit: true, steps: withBoxes(secChain) },
+});
+ok('...but a หน่วยงานภายในจุฬาฯ needs none', r.status === 201, JSON.stringify(r.data).slice(0, 90));
+const insideId = r.data.id;
+
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head',
+  body: { ...letter, recipientEmail: 'Office@Example.ac.th, สำนัก@x, two@example.com',
+          steps: withBoxes(secChain) },
+});
+ok('several addresses are kept, and the nonsense between them dropped', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+r = await call(docsApi, `/api/documents?id=${r.data.id}`, { as: 'oper2head' });
+ok('...and the letter carries them, so เลขานุการ knows where it goes',
+  r.data.document.recipientEmail === 'Office@Example.ac.th, two@example.com', r.data.document.recipientEmail);
+ok('...and says who is posting it', r.data.document.sendMode === 'secretary');
+
+// A chain that does not end with somebody posting it.
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head',
+  body: { ...letter, internalUnit: true, steps: withBoxes(secChain.filter((st) => st.role !== 'secretary')) },
+});
+ok('a chain with nobody to post the letter is refused', r.data.error === 'BAD_CHAIN_END', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head',
+  body: { ...letter, sendMode: 'self',
+          steps: withBoxes(secChain.slice(0, -1)).concat([{ role: 'sender', username: 'Jade_Pres' }]) },
+});
+ok('...and you cannot make somebody else send it for you under ส่งเอง',
+  r.data.error === 'SENDER_MUST_BE_YOU', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head',
+  body: { ...letter, internalUnit: true,
+          steps: withBoxes(secChain.slice(0, -1)).concat([{ role: 'secretary', username: 'Fah_StaffCon' }]) },
+});
+ok('...nor hand the posting to somebody who is not เลขานุการ',
+  r.data.error === 'NOT_A_SECRETARY', JSON.stringify(r.data));
+
+// A signer added by hand — the thing the form could not do at all.
+const extra = withBoxes(secChain.slice(0, -1))
+  .concat([{ role: 'deptHead', username: 'Kungking_HeadCon', mark: { page: 1, x: 0.3, y: 0.8, w: 0.2, h: 0.06 } }])
+  .concat(withBoxes(secChain.slice(-1)));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head', body: { ...letter, internalUnit: true, steps: extra },
+});
+ok('a signer added by hand is accepted', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+r = await call(docsApi, `/api/documents?id=${r.data.id}`, { as: 'oper2head' });
+ok('...and takes their place in the order', r.data.steps.map((st) => st.role).join(' → ') ===
+  'author → divisionHead → director → deptHead → secretary', r.data.steps.map((st) => st.role).join(' → '));
+
+// All the way through a letter the writer posts themselves.
+const selfSteps = withBoxes(selfChain);
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'oper2head',
+  body: { title: 'หนังสือที่ส่งเอง', pdf: await makePdf(1), department: 'oper2',
+          sendMode: 'self', steps: selfSteps },
+});
+ok('a letter the writer posts themselves needs no address at all', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+const selfId = r.data.id;
+for (const who of [['Totti_HeadOp', 'opall'], ['Jade_Pres', 'admin']]) {
+  await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: who[1], body: { id: selfId } });
+}
+r = await call(docsApi, `/api/documents?id=${selfId}`, { as: 'oper2head' });
+ok('once everybody has signed it comes back to the writer, not to เลขานุการ',
+  r.data.maySend === true && r.data.steps[r.data.steps.length - 1].role === 'sender',
+  `${r.data.document.stage} / ${r.data.maySend}`);
+r = await call(docsApi, `/api/documents?id=${selfId}`, { as: 'sunday' });
+ok('...and a secretary is not offered a ส่งแล้ว button for it', r.data.maySend === false, String(r.data.maySend));
+r = await call(docsApi, `/api/documents?id=${selfId}`, { as: 'admin' });
+ok('...though an admin can still close one whose writer has gone quiet', r.data.maySend === true);
+r = await call(docsApi, '/api/documents?do=send', { method: 'POST', as: 'member', body: { id: selfId } });
+ok('somebody who is not on the letter cannot say it has gone out', r.status === 403, String(r.status));
+r = await call(docsApi, '/api/documents?do=send', {
+  method: 'POST', as: 'oper2head', body: { id: selfId, to: 'คณะวิศวกรรมศาสตร์' } });
+ok('the writer marks it sent themselves', r.status === 200 && r.data.stage === 'sent', JSON.stringify(r.data).slice(0, 80));
+const sentRow = await sql`SELECT sent_by, send_mode FROM documents WHERE id = ${selfId}`;
+ok('...and the letter records that they were the one who posted it',
+  sentRow[0].sent_by === 'Ikkew_HeadOper1' && sentRow[0].send_mode === 'self', JSON.stringify(sentRow[0]));
+
+// เลขานุการ still posts the ones that are theirs.
+r = await call(docsApi, `/api/documents?id=${insideId}`, { as: 'admin' });
+const insideSec = r.data.steps.find((st) => st.role === 'secretary');
+ok('a เลขานุการ letter still ends on a secretary', Boolean(insideSec), JSON.stringify(r.data.steps.map((x) => x.role)));
+
+await sql`DELETE FROM documents WHERE title IN ('หนังสือขอความอนุเคราะห์', 'หนังสือที่ส่งเอง')`;
+await sql`UPDATE users SET is_head = false WHERE username = 'Fah_StaffCon'`;
+await sql`INSERT INTO user_departments (username, department) VALUES
+            ('Totti_HeadOp', 'oper1'), ('Totti_HeadOp', 'oper2'), ('Totti_HeadOp', 'oper3')
+          ON CONFLICT DO NOTHING`;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

@@ -12,6 +12,7 @@ import {
   proposeChain, pendingStep, canAct, canReplaceFile, canSeeDocument,
   progressOf, progressFraction, signsPdf, isSecretary, ROLE_TH,
   isHeadSecretary, canManageSecretaries, canDeleteDocument, pickSecretary,
+  canSend, isSendingRole, APPROVAL_ROLES, candidatesFor,
 } from '../lib/approval.js';
 import {
   stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
@@ -54,6 +55,20 @@ const MAX_PNG = 512 * 1024;
 const PRIORITIES = ['low', 'medium', 'high', 'highest'];
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const clean = (v, max = 400) => String(v ?? '').trim().slice(0, max);
+
+/**
+ * The addresses เลขานุการ will forward to.
+ *
+ * Several are allowed and usual — a letter to a faculty goes to the office
+ * and to the person who asked for it. Split on anything people actually type
+ * between addresses, kept only if they look like addresses at all, and
+ * returned as one comma-separated string, which is what a mail client wants.
+ */
+function cleanEmails(value) {
+  const parts = String(value ?? '').split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+  const ok = parts.filter((x) => /^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(x));
+  return [...new Set(ok)].slice(0, 10).join(', ').slice(0, 400);
+}
 
 function fromBase64(value, limit) {
   const raw = String(value || '').replace(/^data:[^,]*,/, '');
@@ -141,6 +156,10 @@ const shapeDoc = (d) => ({
   archivedAt: d.archived_at,
   docNumber: d.doc_number || null,
   docTab: d.doc_tab || null,
+  // Who posts it, and where to — see the send_mode column in lib/db.js.
+  sendMode: d.send_mode === 'self' ? 'self' : 'secretary',
+  recipientEmail: d.recipient_email || '',
+  internalUnit: d.internal_unit === true,
 });
 
 const shapeStep = (s) => ({
@@ -214,7 +233,7 @@ async function oneDocument(sql, me, id) {
     fraction: progressFraction(doc, steps),
     myTurn: canAct(me, doc, steps),
     mayReplace: canReplaceFile(me, doc, steps),
-    maySend: isSecretary(me) && doc.stage === 'secretary',
+    maySend: canSend(me, doc, steps),
     mayDelete: canDeleteDocument(me, doc, steps),
     mayAssign: canManageSecretaries(me) && doc.stage !== 'sent',
   });
@@ -276,15 +295,21 @@ async function propose(sql, me, body) {
   const people = asPeople(await rosterFor(sql));
   const department = isDepartment(body.department) ? body.department : (me.department || null);
   const unit = department ? matchUnit(department, body.unit) : null;
+  const parent = departmentByKey(department)?.parent || null;
   const rule = await secretaryRule(sql);
   const chain = proposeChain(me, {
-    people, department, unit,
+    people, department, unit, parent,
+    sendMode: body.sendMode === 'self' ? 'self' : 'secretary',
     secretaryPick: (options) => pickSecretary(options, { ...rule, department }),
   });
 
   return json({
     department,
     unit,
+    parent,
+    // What each role is called, so the form can offer them when somebody adds
+    // a signer by hand rather than hard-coding the list in two places.
+    roles: APPROVAL_ROLES.map((role) => ({ role, label: ROLE_TH[role] || role })),
     steps: chain.map((s) => ({ ...s, roleLabel: ROLE_TH[s.role] || s.role })),
     // Everything needed to let the uploader change who is on it.
     people: people.map((p) => ({
@@ -324,6 +349,45 @@ async function createDocument(sql, me, body) {
   const steps = Array.isArray(body.steps) ? body.steps : [];
   if (!steps.length) return json({ error: 'NO_APPROVERS' }, 400);
 
+  /**
+   * Who sends the finished letter.
+   *
+   * 'self' is the writer posting it themselves — some ฝ่าย deal with their own
+   * recipients and routing it through เลขานุการ only adds a day. Either way
+   * the chain ends on exactly one sending step, and it is last: a letter that
+   * went out before the last signature would be the one mistake this whole
+   * flow exists to prevent.
+   */
+  const sendMode = body.sendMode === 'self' ? 'self' : 'secretary';
+  const sending = steps.filter((st) => isSendingRole(st.role));
+  if (sending.length !== 1 || !isSendingRole(steps[steps.length - 1].role)) {
+    return json({ error: 'BAD_CHAIN_END' }, 400);
+  }
+  const lastStep = steps[steps.length - 1];
+  if (sendMode === 'self' && (lastStep.role !== 'sender' || lastStep.username !== me.username)) {
+    return json({ error: 'SENDER_MUST_BE_YOU' }, 400);
+  }
+  if (sendMode === 'secretary' && lastStep.role !== 'secretary') {
+    return json({ error: 'BAD_CHAIN_END' }, 400);
+  }
+  if (steps.slice(0, -1).some((st) => !APPROVAL_ROLES.includes(st.role))) {
+    return json({ error: 'BAD_ROLE' }, 400);
+  }
+
+  /**
+   * The address เลขานุการ forwards to.
+   *
+   * Only when they are the ones sending, and not for a letter that stays
+   * inside the university — those travel by Chula's own internal post, and
+   * demanding an address for them would be asking for something that does not
+   * exist.
+   */
+  const internalUnit = body.internalUnit === true;
+  const email = cleanEmails(body.recipientEmail);
+  if (sendMode === 'secretary' && !internalUnit && !email) {
+    return json({ error: 'EMAIL_REQUIRED' }, 400);
+  }
+
   // Everyone named must exist and be active — a chain pointing at a departed
   // member would stall silently and nobody would know why.
   const people = asPeople(await rosterFor(sql));
@@ -337,6 +401,21 @@ async function createDocument(sql, me, body) {
   }
   const bad = steps.filter((s) => !known.has(s.username));
   if (bad.length) return json({ error: 'UNKNOWN_APPROVER', who: bad.map((s) => s.username) }, 400);
+
+  /**
+   * The person named as เลขานุการ has to be one.
+   *
+   * The form only ever offers secretaries, so this is for anything that does
+   * not come from the form — a letter whose last step is somebody who cannot
+   * see the เอกสาร page would sit there with nobody able to send it.
+   */
+  if (sendMode === 'secretary') {
+    const allowed = candidatesFor('secretary', { people, department: null, unit: null, uploader: me })
+      .map((p) => p.username);
+    if (allowed.length && !allowed.includes(lastStep.username)) {
+      return json({ error: 'NOT_A_SECRETARY' }, 400);
+    }
+  }
 
   /**
    * The boxes a step will sign in.
@@ -364,10 +443,12 @@ async function createDocument(sql, me, body) {
   const id = newId('doc');
 
   await sql`
-    INSERT INTO documents (id, title, note, recipient, priority, stage, department, unit, created_by)
+    INSERT INTO documents (id, title, note, recipient, priority, stage, department, unit,
+                           created_by, send_mode, recipient_email, internal_unit)
     VALUES (${id}, ${title}, ${clean(body.note, 2000)}, ${clean(body.recipient, 200)},
             ${PRIORITIES.includes(body.priority) ? body.priority : 'medium'},
-            'approving', ${department}, ${unit}, ${me.username})`;
+            'approving', ${department}, ${unit}, ${me.username},
+            ${sendMode}, ${email}, ${internalUnit})`;
 
   await sql`
     INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages)
@@ -410,6 +491,23 @@ async function createDocument(sql, me, body) {
   await note(sql, id, 'created', me.username, title);
 
   /**
+   * The เลขรันเอกสาร, taken the moment the letter is submitted.
+   *
+   * It used to be issued at the far end, once every signature was in, which
+   * kept the book free of numbers for letters that were never sent — but it
+   * also meant the number did not exist while the letter was being written on,
+   * and the number belongs ON the letter. So it is taken here and the writer
+   * is told it straight away; a letter that is later ตีกลับ keeps its number
+   * and its row says so, which is a truer record than a gap.
+   *
+   * Best effort: a spreadsheet that cannot be reached must never stop a
+   * document being submitted, and the next stage tries again.
+   */
+  const numbering = await issueNumber(sql, {
+    id, department, unit, title, created_by: me.username,
+  }, REGISTER_STATUS.approving);
+
+  /**
    * The author's signature goes on straight away.
    *
    * Their step is already approved, so without this the signed copy would not
@@ -425,16 +523,39 @@ async function createDocument(sql, me, body) {
   // letter the author signed is already done.
   const first = steps.find((s) => clean(s.role, 20) !== 'author') || steps[0];
   const watchers = await secretaries(sql);
+  const numberTag = numbering?.ok ? ` · เลขที่ ${numbering.number}` : '';
   await tellPeople(sql, {
     usernames: [first.username, ...watchers],
     actor: first.username,
     docId: id,
     priority: body.priority,
     title: `${urgencyTag(body.priority)}เอกสารรออนุมัติ: ${title}`,
-    body: `${me.display_name || me.username} ส่งเอกสารให้คุณลงนาม/อนุมัติ`,
+    body: `${me.display_name || me.username} ส่งเอกสารให้คุณลงนาม/อนุมัติ${numberTag}`,
   });
 
-  return json({ ok: true, id, pages }, 201);
+  /**
+   * And the writer is told their own number, in the chat as well as the bell.
+   *
+   * This is the one message a person genuinely needs pushed to them about
+   * their own document: the number has to go onto the letter, and hunting for
+   * it in a spreadsheet is exactly the errand this replaces.
+   */
+  if (numbering?.ok) {
+    /**
+     * No `actor`, so this one does not go out over LINE. The person is
+     * looking at the screen that just told them the number, and a LINE push
+     * is charged per message — see tellPeople. The bell keeps it findable.
+     */
+    await tellPeople(sql, {
+      usernames: [me.username],
+      docId: id,
+      priority: body.priority,
+      title: `เลขที่หนังสือของคุณ: ${numbering.number}`,
+      body: `${title} — เขียนเลขนี้ลงบนหนังสือได้เลย`,
+    });
+  }
+
+  return json({ ok: true, id, pages, numbering }, 201);
 }
 
 /**
@@ -619,7 +740,7 @@ async function approve(sql, me, body) {
   const stamped = await rebuildSigned(sql, doc.id, after);
 
   const next = pendingStep(after);
-  const stage = next ? (next.role === 'secretary' ? 'secretary' : 'approving') : 'done';
+  const stage = next ? (isSendingRole(next.role) ? 'secretary' : 'approving') : 'done';
   await sql`
     UPDATE documents SET stage = ${stage === 'done' ? 'done' : stage}, updated_at = now(),
       finished_at = ${stage === 'done' ? new Date().toISOString() : null}
@@ -640,8 +761,20 @@ async function approve(sql, me, body) {
    * signed document, so it is recorded as unnumbered and the secretary is told.
    */
   let numbering = null;
-  if (next && next.role === 'secretary' && !doc.doc_number) {
-    numbering = await issueNumber(sql, doc);
+  if (next && isSendingRole(next.role)) {
+    /**
+     * The number is taken when the letter is submitted, so by now it normally
+     * exists and only its สถานะ needs moving on. The retry is for the day the
+     * spreadsheet was unreachable at submission: a letter that is signed and
+     * ready to go must not be the one without a number.
+     */
+    if (doc.doc_number) {
+      await updateRegisterStatus({
+        tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.secretary,
+      });
+    } else {
+      numbering = await issueNumber(sql, doc);
+    }
   }
 
   const watchers = await secretaries(sql);
@@ -651,11 +784,15 @@ async function approve(sql, me, body) {
       actor: next.username,
       docId: doc.id,
       priority: doc.priority,
-      title: `${urgencyTag(doc.priority)}${next.role === 'secretary' ? 'เอกสารพร้อมส่ง' : 'เอกสารรออนุมัติ'}: ${doc.title}`,
-      body: next.role === 'secretary'
-        ? (numbering?.ok
-            ? `ลงนามครบแล้ว เลขที่ ${numbering.number} — รอเลขานุการส่งให้ผู้รับ`
-            : 'ลงนามครบแล้ว รอเลขานุการส่งให้ผู้รับ')
+      title: `${urgencyTag(doc.priority)}${isSendingRole(next.role) ? 'เอกสารพร้อมส่ง' : 'เอกสารรออนุมัติ'}: ${doc.title}`,
+      body: isSendingRole(next.role)
+        ? [
+            'ลงนามครบแล้ว',
+            doc.doc_number || numbering?.number ? `เลขที่ ${doc.doc_number || numbering.number}` : '',
+            next.role === 'sender' ? 'ส่งให้ผู้รับแล้วกดยืนยันในระบบ' : 'รอเลขานุการส่งให้ผู้รับ',
+            next.role === 'secretary' && doc.recipient_email ? `ส่งไปที่ ${doc.recipient_email}` : '',
+            next.role === 'secretary' && doc.internal_unit ? 'หน่วยงานภายในจุฬาฯ' : '',
+          ].filter(Boolean).join(' · ')
         : `${me.display_name || me.username} อนุมัติแล้ว ถึงคิวของคุณ`,
     });
   } else {
@@ -686,7 +823,7 @@ async function approve(sql, me, body) {
  * uploader, by their full name, because that is who the recipient will ask
  * about the letter.
  */
-async function issueNumber(sql, doc) {
+async function issueNumber(sql, doc, status = REGISTER_STATUS.secretary) {
   const [uploader] = await sql`
     SELECT full_name, display_name, username FROM users WHERE username = ${doc.created_by}`;
   const dept = departmentByKey(doc.department);
@@ -695,7 +832,7 @@ async function issueNumber(sql, doc) {
     department: dept ? dept.th : null,
     unit: doc.unit || null,
     title: doc.title,
-    status: REGISTER_STATUS.secretary,
+    status,
     responsible: uploader?.full_name || uploader?.display_name || doc.created_by,
   });
 
@@ -881,15 +1018,21 @@ async function markSent(sql, me, body) {
   if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const { doc, steps } = found;
 
-  if (!isSecretary(me)) return json({ error: 'NOT_ALLOWED' }, 403);
   if (doc.stage === 'rejected') return json({ error: 'WAS_REJECTED' }, 400);
-
-  // The secretary is the last step, so approving it and sending are one act.
   const step = pendingStep(steps);
-  if (step && step.role === 'secretary' && step.username === me.username) {
+  /**
+   * Whoever the last step names does the sending — เลขานุการ, or the writer
+   * when they chose to send it themselves. A head secretary may still stand
+   * in for a secretary who is away.
+   */
+  if (!canSend(me, doc, steps)) {
+    if (step && !isSendingRole(step.role)) return json({ error: 'STILL_WAITING', on: step.username }, 400);
+    return json({ error: 'NOT_ALLOWED' }, 403);
+  }
+
+  // The sending step is the last one, so completing it and sending are one act.
+  if (step) {
     await sql`UPDATE doc_steps SET state = 'approved', acted_at = now() WHERE id = ${step.id}`;
-  } else if (step) {
-    return json({ error: 'STILL_WAITING', on: step.username }, 400);
   }
 
   await sql`
@@ -904,12 +1047,15 @@ async function markSent(sql, me, body) {
     tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.sent,
   });
 
+  // Nobody needs telling what they themselves just did, so a writer who sent
+  // their own letter gets no notice; the secretaries watching still do.
   await tellPeople(sql, {
-    usernames: [doc.created_by],
+    usernames: [doc.created_by === me.username ? null : doc.created_by, ...(await secretaries(sql))],
     docId: doc.id,
     priority: doc.priority,
     title: `ส่งเอกสารแล้ว: ${doc.title}`,
-    body: `${me.display_name || me.username} ส่งให้ ${clean(body.to || doc.recipient, 120) || 'ผู้รับ'} เรียบร้อย`,
+    body: `${me.display_name || me.username} ส่งให้ ${clean(body.to || doc.recipient, 120) || 'ผู้รับ'} เรียบร้อย` +
+      (doc.doc_number ? ` · เลขที่ ${doc.doc_number}` : ''),
   });
 
   return json({ ok: true, stage: 'sent', number: doc.doc_number || null, registered });

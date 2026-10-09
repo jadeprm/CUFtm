@@ -1470,12 +1470,17 @@
    */
   function openDocUpload() {
     var draft = { title: '', note: '', recipient: '', priority: 'medium',
-                  department: S.user.department || null, unit: S.user.unit || null };
+                  department: S.user.department || null, unit: S.user.unit || null,
+                  // Who posts the finished letter, and how เลขานุการ reaches
+                  // the recipient when it is them — see the เอกสาร section of
+                  // api/documents.js.
+                  sendMode: 'secretary', recipientEmail: '', internalUnit: false };
     var pdfBase64 = null;
     var pdfBytes = null;
     var pages = 0;
     var chain = [];
     var people = [];
+    var roleChoices = [];
     var stage = 'details';
     var marking = null;          // which step we are placing a box for
     var pageShown = 1;
@@ -1552,6 +1557,48 @@
           return h('option', { value: d.key, text: deptOptionLabel(d), selected: draft.department === d.key });
         })));
 
+      /**
+       * Who sends the finished letter, and where to.
+       *
+       * Some ฝ่าย deal with their own recipients and going through เลขานุการ
+       * only adds a day; others need the secretariat to send on their behalf,
+       * and then the address has to travel with the letter. A letter that
+       * stays inside Chula needs no address at all, which is what the tick box
+       * is for — asking for one would be asking for something that does not
+       * exist.
+       */
+      var sendBox = h('div', { class: 'field' });
+      function drawSend() {
+        clear(sendBox);
+        sendBox.appendChild(h('label', { text: t('docWhoSends') }));
+        sendBox.appendChild(h('div', { class: 'seg wrap' }, [
+          ['secretary', 'docSendBySecretary'], ['self', 'docSendMyself'],
+        ].map(function (pair) {
+          return h('button', {
+            type: 'button', class: draft.sendMode === pair[0] ? 'on' : '', text: t(pair[1]),
+            onclick: function () { draft.sendMode = pair[0]; drawSend(); },
+          });
+        })));
+        sendBox.appendChild(h('small', { class: 'field-hint',
+          text: t(draft.sendMode === 'self' ? 'docSendMyselfWhy' : 'docSendBySecretaryWhy') }));
+        if (draft.sendMode !== 'secretary') return;
+
+        var inside = h('input', { type: 'checkbox', checked: draft.internalUnit });
+        var mail = h('input', {
+          type: 'text', value: draft.recipientEmail, maxlength: '400',
+          placeholder: t('docEmailPlaceholder'), disabled: draft.internalUnit,
+        });
+        mail.addEventListener('input', function () { draft.recipientEmail = mail.value; });
+        inside.addEventListener('change', function () {
+          draft.internalUnit = inside.checked;
+          mail.disabled = inside.checked;
+        });
+        sendBox.appendChild(h('div', { class: 'field', style: 'margin-top:8px' }, [
+          h('label', { text: t('docRecipientEmail') }), mail,
+          h('label', { class: 'inline-check' }, [inside, t('docInsideChula')]),
+        ]));
+      }
+
       var fileInput = h('input', { type: 'file', accept: 'application/pdf,.pdf' });
       var fileNote = h('p', { class: 'hint', text: t('docPdfHelp') });
       fileInput.addEventListener('change', function () {
@@ -1603,9 +1650,11 @@
           ]),
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('priority') }), prio]),
+        sendBox,
         h('div', { class: 'field' }, [h('label', { text: t('docPdf') }), fileInput, fileNote]),
       ]));
       fillUnits();
+      drawSend();
 
       footer.appendChild(h('button', {
         class: 'btn primary', text: t('docNext'),
@@ -1617,6 +1666,10 @@
           if (!draft.fullName) { fail(t('docNeedFullName')); fullName.focus(); return; }
           if (!draft.title) { fail(t('docNeedTitle')); return; }
           if (!pdfBase64) { fail(t('docNeedPdf')); return; }
+          if (draft.sendMode === 'secretary' && !draft.internalUnit &&
+              !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(draft.recipientEmail.split(/[\s,;]+/)[0] || '')) {
+            fail(t('docNeedEmail')); return;
+          }
           // Remembered locally as well, so the field is pre-filled next time
           // even before the page has been reloaded.
           S.user.fullName = draft.fullName;
@@ -1629,38 +1682,133 @@
 
     function loadChain() {
       api('/api/documents?do=propose', {
-        method: 'POST', body: { department: draft.department, unit: draft.unit },
+        method: 'POST',
+        body: { department: draft.department, unit: draft.unit, sendMode: draft.sendMode },
       }).then(function (data) {
         chain = data.steps.map(function (s) {
           return { role: s.role, roleLabel: s.roleLabel, username: s.username,
                    options: s.options, signs: s.signs, marks: [] };
         });
         people = data.people;
+        roleChoices = data.roles || [];
         stage = 'who';
         drawWho();
       }).catch(function (err) { fail(errText(err.code)); });
     }
 
     /* ---- stage 2: who signs ---- */
+    /**
+     * The chain, as something you can actually edit.
+     *
+     * It used to be a fixed list of three dropdowns, which was wrong in two
+     * ways she ran into on the same letter: a ฝ่าย with two ประธาน had nowhere
+     * to put the second signature, and a letter from อำนวยการ 2 had no way to
+     * pass through อำนวยการใหญ่ before ประธานโครงการ. So every row can now be
+     * added, removed, moved and have its role changed.
+     *
+     * The last row is the exception. Somebody has to send the finished letter,
+     * exactly one person does, and it must happen after the last signature —
+     * so that row is fixed in place and only its person can change.
+     */
+    function sendingStep() {
+      return chain.filter(function (s) { return s.role === 'secretary' || s.role === 'sender'; })[0] || null;
+    }
+
+    function personOptions(step) {
+      var list = step.options && step.options.length
+        ? step.options.map(function (u) {
+            return people.filter(function (p) { return p.username === u; })[0] || { username: u };
+          })
+        : people;
+      var label = function (p) {
+        return (p.displayName || p.username) + (p.position ? ' \u00b7 ' + p.position : '');
+      };
+      // Grouped by ฝ่าย once the list is the whole roster, which it is for a
+      // row somebody added by hand — a flat hundred names is not a choice.
+      if (!step.options || !step.options.length) {
+        var byDept = {};
+        list.forEach(function (p) { (byDept[p.department || ''] = byDept[p.department || ''] || []).push(p); });
+        return Object.keys(byDept).sort().map(function (key) {
+          return h('optgroup', { label: key ? deptLabel(key) : '\u2014' }, byDept[key].map(function (p) {
+            return h('option', { value: p.username, text: label(p), selected: step.username === p.username });
+          }));
+        });
+      }
+      return list.map(function (p) {
+        return h('option', { value: p.username, text: label(p), selected: step.username === p.username });
+      });
+    }
+
     function drawWho() {
       clear(bodyBox); clear(footer);
-      var rows = chain.map(function (step, i) {
-        var choices = step.options.length ? step.options : people.map(function (p) { return p.username; });
-        var select = h('select', {
-          onchange: function (e) { step.username = e.target.value || null; },
-        }, [h('option', { value: '', text: t('docPickPerson') })].concat(
-          choices.map(function (u) {
-            var p = people.filter(function (x) { return x.username === u; })[0];
-            var label = (p ? (p.displayName || p.username) : u) + (p && p.position ? ' · ' + p.position : '');
-            return h('option', { value: u, text: label, selected: step.username === u });
-          })));
+      var sendStep = sendingStep();
 
-        return h('div', { class: 'chain-row' }, [
+      var rows = chain.map(function (step, i) {
+        var isSending = step === sendStep;
+        var locked = isSending || step.role === 'author';
+
+        var person = h('select', {
+          onchange: function (e) { step.username = e.target.value || null; },
+        }, [h('option', { value: '', text: t('docPickPerson') })].concat(personOptions(step)));
+        // The writer signs their own letter and nobody else can; so does the
+        // person who said they would post it themselves.
+        person.disabled = step.role === 'author' || step.role === 'sender';
+
+        var roleSelect = h('select', {
+          class: 'chain-role',
+          onchange: function (e) {
+            step.role = e.target.value;
+            step.roleLabel = (roleChoices.filter(function (r) { return r.role === step.role; })[0] || {}).label || step.role;
+            // A changed role is a different question, so the shortlist that
+            // came with the old one no longer applies.
+            step.options = [];
+            step.signs = step.role !== 'unitHead';
+            drawWho();
+          },
+        }, roleChoices.map(function (r) {
+          return h('option', { value: r.role, text: r.label, selected: step.role === r.role });
+        }));
+
+        var signBox = h('input', { type: 'checkbox', checked: step.signs, disabled: isSending });
+        signBox.addEventListener('change', function () {
+          step.signs = signBox.checked;
+          if (!step.signs) step.marks = [];
+        });
+
+        var move = function (by) {
+          return h('button', {
+            type: 'button', class: 'btn ghost sm', text: by < 0 ? '\u2191' : '\u2193',
+            disabled: locked || i + by < 0 || i + by >= chain.length - 1 ||
+              chain[i + by].role === 'author',
+            onclick: function () {
+              var other = chain[i + by];
+              chain[i + by] = step; chain[i] = other;
+              drawWho();
+            },
+          });
+        };
+
+        return h('div', { class: 'chain-row' + (isSending ? ' sending' : '') }, [
           h('span', { class: 'chain-n', text: String(i + 1) }),
           h('div', { class: 'chain-main' }, [
-            h('label', {}, [step.roleLabel, step.signs
-              ? h('span', { class: 'chip unit', style: 'margin-left:6px', text: t('docSigns') }) : null]),
-            select,
+            h('div', { class: 'chain-head' }, [
+              locked
+                ? h('label', { text: step.roleLabel || step.role })
+                : roleSelect,
+              h('span', { class: 'grow' }),
+              isSending ? null : h('label', { class: 'inline-check sm' }, [signBox, t('docSigns')]),
+              move(-1), move(1),
+              h('button', {
+                type: 'button', class: 'btn ghost sm danger', text: '\u2715',
+                title: t('docRemoveSigner'), disabled: locked,
+                onclick: function () {
+                  chain = chain.filter(function (x) { return x !== step; });
+                  drawWho();
+                },
+              }),
+            ]),
+            person,
+            isSending ? h('small', { class: 'field-hint', text: t(step.role === 'sender' ? 'docSenderIsYou' : 'docSecretarySends') }) : null,
           ]),
         ]);
       });
@@ -1669,6 +1817,16 @@
         notice,
         h('p', { class: 'hint', text: t('docChainHelp') }),
         h('div', { class: 'chain' }, rows),
+        h('button', {
+          type: 'button', class: 'btn add-signer', text: '+ ' + t('docAddSigner'),
+          onclick: function () {
+            var at = chain.indexOf(sendingStep());
+            var step = { role: 'deptHead', roleLabel: (roleChoices.filter(function (r) { return r.role === 'deptHead'; })[0] || {}).label || 'deptHead',
+                         username: null, options: [], signs: true, marks: [] };
+            chain.splice(at < 0 ? chain.length : at, 0, step);
+            drawWho();
+          },
+        }),
       ]));
 
       footer.appendChild(h('button', {
@@ -1676,6 +1834,11 @@
         onclick: function () {
           var blank = chain.filter(function (s) { return !s.username; });
           if (blank.length) { fail(t('docPickEveryone')); return; }
+          var twice = chain.filter(function (s, i) {
+            return chain.findIndex(function (x) { return x.username === s.username; }) !== i &&
+              s.role !== 'sender' && s.role !== 'secretary';
+          });
+          if (twice.length) { fail(t('docSamePersonTwice').replace('%n', nameOf(twice[0].username))); return; }
           notice.hidden = true;
           stage = 'marks';
           drawMarks();
@@ -1690,7 +1853,8 @@
       var needMarks = chain.filter(function (s) { return s.signs; });
       if (!needMarks.length) { submit(); return; }
 
-      marking = marking || needMarks[0];
+      // A step that has been removed since cannot be the one being placed.
+      if (needMarks.indexOf(marking) === -1) marking = needMarks[0];
       var canvas = h('canvas', { class: 'pdf-canvas' });
       var overlay = h('div', { class: 'pdf-overlay' });
       var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
@@ -1821,22 +1985,65 @@
           title: draft.title, note: draft.note, recipient: draft.recipient,
           fullName: draft.fullName,
           priority: draft.priority, department: draft.department, unit: draft.unit,
+          sendMode: draft.sendMode,
+          recipientEmail: draft.sendMode === 'secretary' && !draft.internalUnit ? draft.recipientEmail : '',
+          internalUnit: draft.sendMode === 'secretary' && draft.internalUnit,
           pdf: pdfBase64,
           steps: chain.map(function (s) {
             return { role: s.role, username: s.username, marks: s.marks };
           }),
         },
       }).then(function (data) {
-        veil.remove();
         api('/api/documents').then(function (fresh) {
           S.docs = fresh.documents || [];
           renderPage();
-          openDoc(data.id);
         });
+        /**
+         * The เลขรันเอกสาร, said once and clearly.
+         *
+         * It is taken from the committee's own sheet the moment the letter is
+         * submitted, and it has to be written onto the letter — so it gets a
+         * panel of its own rather than being a line in a document view the
+         * person has to go and find.
+         */
+        showNumber(data);
       }).catch(function (err) {
         fail(err.data && err.data.error === 'FILE_TOO_BIG' ? t('docTooBig') : errText(err.code));
         drawMarks();
       });
+    }
+
+    function showNumber(data) {
+      clear(bodyBox); clear(footer);
+      var got = data.numbering && data.numbering.ok;
+      bodyBox.appendChild(h('div', { class: 'pane doc-done' }, [
+        h('div', { class: 'gd-card done' }, [
+          guideIcon('check'),
+          h('b', { text: t('docSubmitted') }),
+          got ? h('div', { class: 'doc-number' }, [
+            h('small', { text: t('docYourNumber') }),
+            h('strong', { text: data.numbering.number }),
+            h('button', {
+              class: 'btn sm', text: t('copyIt'),
+              onclick: function (e) {
+                var btn = e.target;
+                var done = function () {
+                  btn.textContent = t('copied');
+                  setTimeout(function () { btn.textContent = t('copyIt'); }, 1600);
+                };
+                if (navigator.clipboard) navigator.clipboard.writeText(data.numbering.number).then(done, done);
+                else done();
+              },
+            }),
+          ]) : h('p', { text: t('docNoNumberYet') }),
+          h('p', { text: t(draft.sendMode === 'self' ? 'docNextSelf' : 'docNextSecretary') }),
+        ]),
+      ]));
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: t('docOpenIt'),
+        onclick: function () { veil.remove(); openDoc(data.id); },
+      }));
+      footer.appendChild(h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }));
     }
 
     drawDetails();
@@ -1914,7 +2121,32 @@
       pane.appendChild(steps);
 
       pane.appendChild(h('div', { class: 'view-rows' }, [
+        // The number first: it is what everybody opens a letter's page to find.
+        doc.docNumber
+          ? vRow(t('docNumber'), h('span', { class: 'doc-no', text: doc.docNumber }))
+          : null,
         vRow(t('docRecipient'), doc.recipient ? h('span', { text: doc.recipient }) : vMuted('—')),
+        /**
+         * How it leaves, and where to.
+         *
+         * Shown to everybody rather than only the sender: a head approving a
+         * letter should be able to see at a glance whether it is going out by
+         * email and to which address, because a wrong address is the kind of
+         * mistake that is cheap now and expensive later.
+         */
+        vRow(t('docWhoSends'), h('span', {}, [
+          doc.sendMode === 'self'
+            ? h('span', {}, [t('docSendMyself'), ' \u00b7 ', nameOf(doc.createdBy)])
+            : h('span', { text: t('docSendBySecretary') }),
+          doc.internalUnit ? h('span', { class: 'chip unit', style: 'margin-left:6px', text: t('docInsideChula') }) : null,
+        ])),
+        doc.recipientEmail
+          ? vRow(t('docRecipientEmail'), h('a', {
+              class: 'chip dept', href: 'mailto:' + doc.recipientEmail + '?subject=' +
+                encodeURIComponent((doc.docNumber ? doc.docNumber + ' ' : '') + doc.title),
+              text: doc.recipientEmail,
+            }))
+          : null,
         vRow(t('docUploader'), h('span', { class: 'selected' },
           [h('span', { class: 'chip who' }, [avatarNode(doc.createdBy, 'sm'), nameOf(doc.createdBy)])])),
         vRow(t('docFiles'), h('span', { class: 'selected' }, data.files.map(function (f) {
@@ -1975,7 +2207,8 @@
 
       if (data.maySend) {
         footer.appendChild(h('button', {
-          class: 'btn primary', text: t('docMarkSent'),
+          class: 'btn primary',
+          text: doc.sendMode === 'self' ? t('docConfirmSent') : t('docMarkSent'),
           onclick: function () {
             if (!confirm(t('docMarkSentSure'))) return;
             act('send', { to: doc.recipient });

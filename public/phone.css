@@ -739,3 +739,9 @@ li.task:has(.role-watch) { border-style: solid; }
 .notify-cat .notify-seg .ic svg { width: 16px; height: 16px; }
 .notify-cat .notify-seg button.on[data-level="quiet"] { background: var(--ink-soft); color: var(--surface); }
 .notify-cat .notify-seg button.on[data-level="off"] { background: var(--danger); color: #fff; }
+
+/* The chain editor on a phone: the controls wrap under the role. */
+.chain-head { flex-wrap: wrap; gap: 4px; }
+.chain-role { min-width: 0; flex: 1 1 100%; height: 32px; }
+.chain-head .inline-check.sm { margin-right: auto; }
+.doc-number strong { font-size: 1.05rem; }
