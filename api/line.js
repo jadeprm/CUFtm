@@ -1,4 +1,5 @@
 import { getSql } from '../lib/db.js';
+import { spaceIdsFor } from '../lib/spaces.js';
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
 import { assembled } from './tasks.js';
@@ -376,6 +377,8 @@ async function personFor(sql, username) {
     : (() => { try { return JSON.parse(row.depts); } catch { return []; } })();
   row.allDepartments = row.all_departments;
   delete row.depts;
+  // Spaces widen what a person can see — the same rule as the web page.
+  row.spaceIds = await spaceIdsFor(sql, row);
   return row;
 }
 

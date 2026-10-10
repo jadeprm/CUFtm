@@ -128,7 +128,7 @@ const seed = await pg.evaluate(async () => {
  * so the list is chosen first, the way a person would with the toggle.
  * The board has its own suite (kanban.mjs).
  */
-await pg.evaluate(() => { try { localStorage.setItem('fair-work-view', 'list'); } catch (e) {} });
+await pg.evaluate(() => { try { localStorage.setItem('fair-work-view2', 'list'); } catch (e) {} });
 await pg.reload({ waitUntil: 'networkidle' });
 await pg.waitForTimeout(2000);
 

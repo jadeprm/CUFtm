@@ -207,7 +207,7 @@ async function handler(request) {
       }
       if (action === 'meeting' && request.method === 'POST') return createMeeting(sql, me, await request.json().catch(() => ({})), kit);
       if (action === 'meeting' && request.method === 'PATCH') return updateMeeting(sql, me, await request.json().catch(() => ({})), kit);
-      if (action === 'meeting' && request.method === 'DELETE') return removeMeeting(sql, me, url.searchParams.get('id'), kit);
+      if (action === 'meeting' && request.method === 'DELETE') return removeMeeting(sql, me, url.searchParams.get('id'), kit, url.searchParams.get('scope') || 'one');
       if (action === 'agenda' && request.method === 'POST') return addAgendaItem(sql, me, await request.json().catch(() => ({})), kit);
       if (action === 'agenda' && request.method === 'PATCH') return editAgendaItem(sql, me, await request.json().catch(() => ({})), kit);
       if (action === 'agenda' && request.method === 'DELETE') return removeAgendaItem(sql, me, url.searchParams.get('id'), kit);

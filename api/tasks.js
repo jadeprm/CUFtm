@@ -11,6 +11,7 @@ import {
 import { sendToMany } from '../lib/push.js';
 import { sortRecipients } from '../lib/notifyprefs.js';
 import { withNode } from '../lib/http.js';
+import { handleSpaces, spaceIdsFor } from '../lib/spaces.js';
 
 /**
  * Tasks.
@@ -121,6 +122,10 @@ export async function assembled(sql) {
     description: t.description,
     dueDate: toIsoDate(t.due_date),
     dueTime: t.due_time || null,
+    // Where the Gantt bar begins, when somebody set one.
+    startDate: toIsoDate(t.start_date),
+    doneAt: t.done_at || null,
+    spaceId: t.space_id || null,
     status: t.status,
     priority: t.priority || 'medium',
     department: t.department || null,
@@ -147,6 +152,20 @@ export async function assembled(sql) {
   }));
 }
 
+
+/**
+ * The space a task is being filed into, checked: it must exist, not be
+ * archived, and be one this person is in (admins may file anywhere).
+ * Returns { id } — null meaning "no space" — or { error }.
+ */
+async function readSpace(sql, me, value) {
+  if (value === null || value === '' || value === undefined) return { id: null };
+  const id = clean(value, 64);
+  const [row] = await sql`SELECT id FROM spaces WHERE id = ${id} AND archived = false`;
+  if (!row) return { error: 'NO_SUCH_SPACE' };
+  if (!seesEverything(me) && !(me.spaceIds || []).includes(id)) return { error: 'NOT_IN_SPACE' };
+  return { id };
+}
 
 /** Stamps each task with what this person is allowed to do to it. */
 const withRights = (me, tasks) =>
@@ -542,6 +561,10 @@ async function handler(request) {
   const action = url.searchParams.get('do');
 
   try {
+    // Which spaces this person is in, for canSeeTask. One small query.
+    me.spaceIds = await spaceIdsFor(sql, me);
+    if (action && action.startsWith('space')) return await handleSpaces(sql, me, request, url, json);
+
     // Sub-tasks and attachments hang off a task, so they live on this
     // endpoint rather than adding two more serverless functions.
     if (action === 'part') return await handlePart(sql, me, request, url);
@@ -596,16 +619,23 @@ async function handler(request) {
        * so a task can never claim to live somewhere it does not.
        */
       const unit = department ? matchUnit(department, body.unit) : null;
+      const space = await readSpace(sql, me, body.spaceId);
+      if (space.error) return json({ error: space.error }, 403);
+      const startStatus = isStatus(body.status) ? body.status : 'todo';
+      // A start after the deadline is a typo; keep the deadline, drop the start.
+      let startDate = cleanDate(body.startDate);
+      if (startDate && cleanDate(body.dueDate) && startDate > cleanDate(body.dueDate)) startDate = null;
 
       await sql`
         INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
-                           department, unit, created_by, notify)
+                           department, unit, created_by, notify, start_date, space_id, done_at)
         VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
                 ${title}, ${clean(body.description, 4000)},
                 ${cleanDate(body.dueDate)}, ${cleanTime(body.dueTime)},
-                ${isStatus(body.status) ? body.status : 'todo'},
+                ${startStatus},
                 ${isPriority(body.priority) ? body.priority : 'medium'},
-                ${department}, ${unit}, ${me.username}, ${notify})`;
+                ${department}, ${unit}, ${me.username}, ${notify},
+                ${startDate}, ${space.id}, ${startStatus === 'done' ? new Date() : null})`;
 
       const { assignees, departments } = readTags(body);
 
@@ -719,6 +749,17 @@ async function handler(request) {
         nextUnit = nextDepartment ? matchUnit(nextDepartment, existing.unit) : null;
       }
 
+      let nextSpace;
+      if (body.spaceId !== undefined) {
+        const space = await readSpace(sql, me, body.spaceId);
+        if (space.error) return json({ error: space.error }, 403);
+        nextSpace = space.id;
+      }
+      const nextStatus = isStatus(body.status) ? body.status : null;
+      // done_at follows the status: stamped on arrival at done, cleared on leaving it.
+      const doneChange = nextStatus && nextStatus !== existing.status
+        ? (nextStatus === 'done' ? 'set' : (existing.status === 'done' ? 'clear' : null)) : null;
+
       // COALESCE keeps every field the caller left out, so two people editing
       // different fields of one task cannot overwrite each other.
       await sql`
@@ -732,6 +773,9 @@ async function handler(request) {
           department  = CASE WHEN ${body.department === undefined} THEN department
                              ELSE ${isDepartment(body.department) ? body.department : null} END,
           unit        = CASE WHEN ${nextUnit === undefined} THEN unit ELSE ${nextUnit ?? null} END,
+          start_date  = CASE WHEN ${body.startDate === undefined} THEN start_date ELSE ${cleanDate(body.startDate)}::date END,
+          space_id    = CASE WHEN ${nextSpace === undefined} THEN space_id ELSE ${nextSpace ?? null} END,
+          done_at     = CASE WHEN ${doneChange === 'set'} THEN now() WHEN ${doneChange === 'clear'} THEN NULL ELSE done_at END,
           notify      = COALESCE(${
             Array.isArray(body.notify)
               ? body.notify.filter((k) => NOTIFY_KINDS.includes(k)).join(',')

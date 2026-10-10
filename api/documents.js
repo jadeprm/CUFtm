@@ -2,7 +2,7 @@ import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, toBuffer } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
-import { isDepartment, matchUnit, departmentByKey } from '../lib/departments.js';
+import { isDepartment, matchUnit, departmentByKey, DEPARTMENTS, DEPARTMENT_KEYS } from '../lib/departments.js';
 import { writeAccess } from '../lib/sheets.js';
 import {
   registerDocument, updateStatus as updateRegisterStatus, writeNames,
@@ -12,7 +12,7 @@ import {
   proposeChain, pendingStep, canAct, canReplaceFile, canSeeDocument,
   progressOf, progressFraction, signsPdf, isSecretary, ROLE_TH,
   isHeadSecretary, canManageSecretaries, canDeleteDocument, pickSecretary,
-  canSend, isSendingRole, APPROVAL_ROLES, candidatesFor,
+  canSend, canBounce, isSendingRole, APPROVAL_ROLES, candidatesFor,
 } from '../lib/approval.js';
 import {
   stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
@@ -51,6 +51,53 @@ const json = (body, status = 200) =>
  */
 const MAX_PDF = 3 * 1024 * 1024;
 const MAX_PNG = 512 * 1024;
+const MAX_SOURCE = 3 * 1024 * 1024;
+
+/**
+ * The editable original that may ride along with the PDF.
+ *
+ * Word first, because that is what the committee writes letters in, but a
+ * .doc, an .odt or a Pages export are all somebody's editable master and
+ * there is no reason to refuse them. The PDF is still the thing that gets
+ * signed; this is only ever a copy to correct from.
+ */
+const SOURCE_TYPES = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  odt: 'application/vnd.oasis.opendocument.text',
+  rtf: 'application/rtf',
+  pages: 'application/x-iwork-pages-sffpages',
+};
+const SOURCE_EXTS = Object.keys(SOURCE_TYPES);
+
+/**
+ * Reads the attached source file, or says why it cannot.
+ *
+ * The extension decides the type: browsers disagree about what a .docx is
+ * (Chrome says the long OpenXML name, some Windows setups say
+ * application/octet-stream), so trusting the name the person chose is both
+ * more reliable and what they will see again on the way out.
+ */
+function readSource(value) {
+  if (!value || !value.data) return { none: true };
+  const name = clean(value.name, 200) || 'document.docx';
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (!SOURCE_EXTS.includes(ext)) return { error: 'NOT_A_DOC' };
+  const got = fromBase64(value.data, MAX_SOURCE);
+  if (got.error) return { error: got.error === 'FILE_TOO_BIG' ? 'SOURCE_TOO_BIG' : got.error, size: got.size, limit: got.limit };
+  return { buffer: got.buffer, name, mime: SOURCE_TYPES[ext] };
+}
+
+/** Writes (or replaces) the editable original on a document. */
+async function putSource(sql, docId, source) {
+  await sql`
+    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, file_name, mime, updated_at)
+    VALUES (${docId}, 'source', ${source.buffer}, ${source.buffer.length}, 0,
+            ${source.name}, ${source.mime}, now())
+    ON CONFLICT (doc_id, kind) DO UPDATE SET
+      bytes = EXCLUDED.bytes, byte_size = EXCLUDED.byte_size,
+      file_name = EXCLUDED.file_name, mime = EXCLUDED.mime, updated_at = now()`;
+}
 
 const PRIORITIES = ['low', 'medium', 'high', 'highest'];
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -111,6 +158,7 @@ async function handler(request) {
     case 'approve':   return approve(sql, me, body);
     case 'reject':    return reject(sql, me, body);
     case 'replace':   return replaceFile(sql, me, body);
+    case 'source':    return putSourceFile(sql, me, body);
     case 'send':      return markSent(sql, me, body);
     case 'secretaries': return changeSecretaries(sql, me, body);
     case 'names':       return syncNames(sql, me);
@@ -222,46 +270,68 @@ async function oneDocument(sql, me, id) {
   if (!canSeeDocument(me, doc, steps)) return json({ error: 'NOT_ALLOWED' }, 403);
 
   const events = await sql`SELECT * FROM doc_events WHERE doc_id = ${id} ORDER BY at`;
-  const files = await sql`SELECT kind, byte_size, pages, updated_at FROM doc_files WHERE doc_id = ${id}`;
+  const files = await sql`SELECT kind, byte_size, pages, file_name, mime, updated_at FROM doc_files WHERE doc_id = ${id}`;
 
   return json({
     document: shapeDoc(doc),
     steps: steps.map(shapeStep),
     events: events.map((e) => ({ id: e.id, at: e.at, kind: e.kind, username: e.username, detail: e.detail })),
-    files: files.map((f) => ({ kind: f.kind, size: f.byte_size, pages: f.pages, at: f.updated_at })),
+    files: files.map((f) => ({
+      kind: f.kind, size: f.byte_size, pages: f.pages, at: f.updated_at,
+      name: f.file_name || '', mime: f.mime || '',
+    })),
     progress: progressOf(doc, steps),
     fraction: progressFraction(doc, steps),
     myTurn: canAct(me, doc, steps),
     mayReplace: canReplaceFile(me, doc, steps),
     maySend: canSend(me, doc, steps),
+    // Sending it back for a correction — see canBounce in lib/approval.js.
+    mayBounce: canBounce(me, doc, steps),
     mayDelete: canDeleteDocument(me, doc, steps),
     mayAssign: canManageSecretaries(me) && doc.stage !== 'sent',
   });
 }
 
 async function downloadFile(sql, me, id, kind) {
-  const want = kind === 'signed' ? 'signed' : 'original';
+  const want = kind === 'signed' ? 'signed' : (kind === 'source' ? 'source' : 'original');
   const [doc] = await sql`SELECT * FROM documents WHERE id = ${id}`;
   if (!doc) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const steps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
   if (!canSeeDocument(me, doc, steps)) return json({ error: 'NOT_ALLOWED' }, 403);
 
-  const [row] = await sql`SELECT bytes FROM doc_files WHERE doc_id = ${id} AND kind = ${want}`;
+  const [row] = await sql`
+    SELECT bytes, file_name, mime FROM doc_files WHERE doc_id = ${id} AND kind = ${want}`;
   const buffer = toBuffer(row?.bytes);
   if (!buffer) {
     // Cleared after archiving: the copy in Drive is the one that exists now.
     if (doc.drive_url) return json({ error: 'ARCHIVED', driveUrl: doc.drive_url }, 410);
     // Cleared on rejection: the record survives so the reason can be read.
-    if (doc.stage === 'rejected') return json({ error: 'REJECTED_FILE_REMOVED' }, 410);
+    if (doc.stage === 'rejected' && want !== 'source') {
+      return json({ error: 'REJECTED_FILE_REMOVED' }, 410);
+    }
     return json({ error: 'NO_FILE' }, 404);
   }
+
+  /**
+   * The PDF opens in the browser; the editable original downloads.
+   *
+   * Nothing renders a .docx in a tab, so `inline` would only produce a
+   * mystery file in the downloads folder with the wrong name. It keeps the
+   * name it was uploaded under, because that is what the person who has to
+   * correct it will be looking for.
+   */
+  const isSource = want === 'source';
+  const name = isSource
+    ? (row.file_name || 'document.docx')
+    : `${doc.title || 'document'}.pdf`;
 
   return new Response(buffer, {
     status: 200,
     headers: {
-      'content-type': 'application/pdf',
+      'content-type': isSource ? (row.mime || 'application/octet-stream') : 'application/pdf',
       'content-length': String(buffer.length),
-      'content-disposition': `inline; filename="${encodeURIComponent(doc.title || 'document')}.pdf"`,
+      'content-disposition':
+        `${isSource ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(name)}`,
       'cache-control': 'private, no-store',
     },
   });
@@ -307,9 +377,19 @@ async function propose(sql, me, body) {
     department,
     unit,
     parent,
-    // What each role is called, so the form can offer them when somebody adds
-    // a signer by hand rather than hard-coding the list in two places.
-    roles: APPROVAL_ROLES.map((role) => ({ role, label: ROLE_TH[role] || role })),
+    /**
+     * Every role, with who can fill it.
+     *
+     * Sent whether or not the proposed chain uses the role, because the form
+     * lets somebody change a row's role or add one — and a row that offered
+     * the whole roster is how ต๊อดติ ended up sitting under ประธานโครงการ,
+     * a post he does not hold.
+     */
+    roles: APPROVAL_ROLES.map((role) => ({
+      role,
+      label: ROLE_TH[role] || role,
+      options: pickList(role, { people, department, unit, uploader: me, parent }),
+    })),
     steps: chain.map((s) => ({ ...s, roleLabel: ROLE_TH[s.role] || s.role })),
     // Everything needed to let the uploader change who is on it.
     people: people.map((p) => ({
@@ -317,6 +397,49 @@ async function propose(sql, me, body) {
       position: p.position, department: p.department, unit: p.unit, isHead: p.is_head,
     })),
   });
+}
+
+/**
+ * Who to offer for a role, as against who the chain proposes for it.
+ *
+ * The proposal is about THIS letter: the ประธานฝ่าย of the ฝ่าย it came from,
+ * the chair of the division that ฝ่าย sits under. The list behind the role
+ * dropdown is a different question — somebody who changes a row to
+ * ประธานฝ่ายอำนวยการใหญ่ on a letter from ฝ่ายเนื้อหา means the people who
+ * hold that post, and scoping it to the letter's own ฝ่าย offered them
+ * nobody at all. So: this letter's people first, then everybody else who
+ * holds the same kind of post.
+ */
+const UMBRELLAS = [...new Set(DEPARTMENTS.filter((d) => d.parent).map((d) => d.parent))];
+
+function pickList(role, { people, department, unit, uploader, parent }) {
+  const seen = new Set();
+  const out = [];
+  const add = (list) => {
+    for (const person of list) {
+      if (seen.has(person.username)) continue;
+      seen.add(person.username);
+      out.push(person.username);
+    }
+  };
+
+  add(candidatesFor(role, { people, department, unit, uploader, parent }));
+  if (role === 'deptHead') {
+    for (const key of DEPARTMENT_KEYS) {
+      add(candidatesFor('deptHead', { people, department: key, unit: null, uploader }));
+    }
+  }
+  if (role === 'divisionHead') {
+    for (const key of UMBRELLAS) {
+      add(candidatesFor('divisionHead', { people, department, unit, uploader, parent: key }));
+    }
+  }
+  if (role === 'unitHead' && department) {
+    for (const name of (departmentByKey(department)?.units || [])) {
+      add(candidatesFor('unitHead', { people, department, unit: name, uploader }));
+    }
+  }
+  return out;
 }
 
 async function createDocument(sql, me, body) {
@@ -345,6 +468,15 @@ async function createDocument(sql, me, body) {
 
   const pages = await pageCount(got.buffer);
   if (!pages) return json({ error: 'UNREADABLE_PDF' }, 400);
+
+  /**
+   * The Word original, if one was attached. Optional: plenty of letters
+   * arrive as a PDF from somewhere else and there is nothing to attach.
+   * Checked here, before anything is written, so a bad file is refused
+   * rather than leaving a letter with half its files.
+   */
+  const source = readSource(body.source);
+  if (source.error) return json({ error: source.error, limit: source.limit, size: source.size }, 400);
 
   const steps = Array.isArray(body.steps) ? body.steps : [];
   if (!steps.length) return json({ error: 'NO_APPROVERS' }, 400);
@@ -453,6 +585,7 @@ async function createDocument(sql, me, body) {
   await sql`
     INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages)
     VALUES (${id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages})`;
+  if (!source.none) await putSource(sql, id, source);
 
   let position = 0;
   for (const step of steps) {
@@ -907,7 +1040,13 @@ async function reject(sql, me, body) {
   const found = await loadFor(sql, clean(body.id, 64));
   if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const { doc, steps } = found;
-  if (!canAct(me, doc, steps)) return json({ error: 'NOT_YOUR_TURN' }, 403);
+  /**
+   * Whoever the document is sitting with may send it back — including
+   * เลขานุการ, who until now could only post it. They are the last pair of
+   * eyes on a letter before it leaves the university, and they were the ones
+   * finding the mistakes with no way to say so.
+   */
+  if (!canBounce(me, doc, steps)) return json({ error: 'NOT_YOUR_TURN' }, 403);
 
   const comment = clean(body.comment, 1000);
   if (!comment) return json({ error: 'REASON_REQUIRED' }, 400);
@@ -927,8 +1066,17 @@ async function reject(sql, me, body) {
    * remember, so those are kept for good. Deleting both would answer "why?"
    * with silence.
    */
-  await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id}`;
-  await note(sql, doc.id, 'files_removed', null, 'ลบไฟล์ออกจากระบบแล้ว เก็บเฉพาะประวัติและเหตุผล');
+  /**
+   * The Word original stays, when there is one. It is the whole point of
+   * attaching it: a letter comes back to be corrected, and the person
+   * correcting it needs the file they can actually edit. It is small, it is
+   * their own draft, and it goes when the document does.
+   */
+  await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind <> 'source'`;
+  const [keptSource] = await sql`SELECT file_name FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source'`;
+  await note(sql, doc.id, 'files_removed', null, keptSource
+    ? `ลบไฟล์ PDF ออกจากระบบแล้ว เก็บไฟล์ต้นฉบับ (${keptSource.file_name}) ไว้ให้แก้ไข`
+    : 'ลบไฟล์ออกจากระบบแล้ว เก็บเฉพาะประวัติและเหตุผล');
 
   /**
    * A number is only issued once every signature is in, so a rejection
@@ -1011,6 +1159,37 @@ async function replaceFile(sql, me, body) {
   });
 
   return json({ ok: true, pages, restamped: stamped.placed.length, alreadySigned });
+}
+
+/**
+ * Attaching, replacing or removing the editable original after the fact.
+ *
+ * Same permission as replacing the PDF: anybody named in the chain, and the
+ * writer while nothing has been signed. A letter that is sent back for a
+ * correction is the commonest reason to want this, so it stays available on
+ * a rejected document too.
+ */
+async function putSourceFile(sql, me, body) {
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+  const bounced = doc.stage === 'rejected' && doc.created_by === me.username;
+  if (!canReplaceFile(me, doc, steps) && !bounced) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  if (body.remove) {
+    await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source'`;
+    await note(sql, doc.id, 'source_removed', me.username, '');
+    return json({ ok: true, source: null });
+  }
+
+  const source = readSource(body.source);
+  if (source.none) return json({ error: 'EMPTY_FILE' }, 400);
+  if (source.error) return json({ error: source.error, limit: source.limit, size: source.size }, 400);
+
+  await putSource(sql, doc.id, source);
+  await sql`UPDATE documents SET updated_at = now() WHERE id = ${doc.id}`;
+  await note(sql, doc.id, 'source_added', me.username, source.name);
+  return json({ ok: true, source: { name: source.name, size: source.buffer.length } });
 }
 
 async function markSent(sql, me, body) {

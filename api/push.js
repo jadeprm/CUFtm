@@ -50,14 +50,39 @@ async function resolveAudience(sql, audience) {
       (Array.isArray(audience.departments) ? audience.departments : []).filter(isDepartment),
     );
     if (!keys.length) return [];
-    // all_departments people are included here on purpose: an announcement to
-    // Content is committee business the directors should see, unlike a task
-    // tag, which would just be noise to them.
+    /**
+     * The people IN those departments — not everyone who can SEE them.
+     *
+     * This used to add everybody with "ทุกฝ่าย" access as well, on the theory
+     * that an announcement to one ฝ่าย is committee business the directors
+     * should see. In practice it meant every notice a sub-department sent went
+     * to the whole board: ต๊อดติ sent one to อำนวยการ 1–3 and it reached the
+     * project director, both deputies, two assistants and the secretaries.
+     * Access is about what you may read; it is not a standing subscription to
+     * everything. Whoever wants the board as well now ticks the box for it,
+     * which is `includeAll` below.
+     */
+    const includeAll = Boolean(audience.includeAll);
     const rows = await sql`
       SELECT DISTINCT u.username FROM users u
       LEFT JOIN user_departments d ON d.username = u.username
       WHERE u.active = true AND u.suspended = false
-        AND (d.department = ANY(${keys}) OR u.all_departments = true)`;
+        AND (d.department = ANY(${keys})
+             OR (${includeAll} AND u.all_departments = true))`;
+    return rows.map((r) => r.username);
+  }
+
+  /**
+   * Everybody whose access is "ทุกฝ่าย" — the board and the secretaries.
+   *
+   * Their own kind of audience, because they belong to no department and so
+   * cannot be reached by ticking departments at all: the roster gives them
+   * "All" instead of a ฝ่าย, which leaves them with no grants to match.
+   */
+  if (kind === 'board') {
+    const rows = await sql`
+      SELECT username FROM users
+      WHERE active = true AND suspended = false AND all_departments = true`;
     return rows.map((r) => r.username);
   }
 
@@ -70,8 +95,10 @@ async function resolveAudience(sql, audience) {
 function describeAudience(audience, count) {
   const kind = audience?.kind || 'everyone';
   if (kind === 'people') return `people:${count}`;
+  if (kind === 'board') return 'board';
   if (kind === 'departments') {
-    return `departments:${(audience.departments || []).join('+')}`;
+    return `departments:${(audience.departments || []).join('+')}` +
+      (audience.includeAll ? '+board' : '');
   }
   return 'everyone';
 }

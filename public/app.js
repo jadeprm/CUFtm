@@ -82,6 +82,13 @@
     var table = window.STRINGS[S.lang] || window.STRINGS.th;
     return table[key] !== undefined ? table[key] : key;
   };
+  /**
+   * What this PAGE is. The server reports its own — see lib/version.js — and
+   * the profile page says so when the two disagree, which is what a
+   * half-finished deployment looks like from the outside.
+   */
+  var APP_VERSION = '2026-10-11b';
+
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
     return key ? t(key) : t('errGeneric');
@@ -691,6 +698,27 @@
     meeting: '<circle cx="8" cy="9" r="2.8"/><circle cx="16" cy="9" r="2.8"/><path d="M3 19c.5-2.8 2.5-4.4 5-4.4s4.5 1.6 5 4.4M11 19c.5-2.8 2.5-4.4 5-4.4s4.5 1.6 5 4.4"/>',
     upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v4.5h16V15"/>',
     filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+    gantt: '<path d="M4 5v14M4 7.5h8M7 12h10M10 16.5h8"/>',
+    flag: '<path d="M5.5 21V4.5M5.5 5h11l-2 4 2 4h-11"/>',
+    spark: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>',
+    trophy: '<path d="M8 4.5h8v4.5a4 4 0 01-8 0z"/><path d="M8 6H5a3 3 0 003 4M16 6h3a3 3 0 01-3 4M12 13v4M8.5 20h7M10 17h4"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    flame: '<path d="M12 21c-3.6 0-6-2.4-6-5.6 0-3 2-4.6 3-7 .6 1.4 1.4 2.3 2.5 2.7C11.5 7.6 13 5 15.5 3.5c-.4 2.5.4 4.2 1.7 5.9 1.1 1.4 1.8 3 1.8 4.9C19 18.2 16 21 12 21z"/>',
+    alert: '<path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17.2v.3"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+    chart: '<path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/>',
+    pie: '<path d="M12 3.5a8.5 8.5 0 108.5 8.5H12z"/><path d="M15 3.8A8.5 8.5 0 0120.2 9H15z"/>',
+    target: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/>',
+    bolt: '<path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/>',
+    grid: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    calplus: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v5M9.5 15h5"/>',
+    door: '<path d="M6 20.5V4.5a1 1 0 011-1h10a1 1 0 011 1v16"/><path d="M4 20.5h16M14.5 12.5v.5"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2L5.5 5.5"/>',
+    repeat: '<path d="M4 11V9a3 3 0 013-3h12l-3-3M20 13v2a3 3 0 01-3 3H5l3 3"/>',
+    megaphone: '<path d="M4 10v4h3l6 4V6L7 10z"/><path d="M16.5 9.5a3.5 3.5 0 010 5"/>',
+    user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.7-3.6 3.6-5.5 7-5.5s6.3 1.9 7 5.5"/>',
+    link: '<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
     search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>',
     doc: '<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4"/>',
     chevron: '<path d="M9 6l6 6-6 6"/>',
@@ -846,6 +874,10 @@
     var action = null;
     if ((S.page === 'work' || S.page === 'calendar') && mayCreate()) action = openCreateSheet;
     if (S.page === 'docs') action = function () { openDocUpload(); };
+    if (S.page === 'home' && mayCreate()) action = openCreateSheet;
+    // On a phone the schedule's own buttons sit above the fold; the + adds an appointment.
+    if (S.page === 'schedule') action = function () { openAppointment(null, { on: S.schedAnchor || todayIso() }); };
+    if (S.page === 'space' && mayCreate()) action = function () { S.newTaskSpace = S.spaceId; openTask(null); };
     fab.hidden = !action;
     fab.onclick = action;
     fab.setAttribute('aria-label', S.page === 'docs' ? t('docNew') : t('phCreateWhat'));
@@ -853,10 +885,198 @@
 
   /** The name of the page, for the top bar on a phone. */
   function pageTitle() {
+    if (S.page === 'space') {
+      var sp = spaceBy(S.spaceId);
+      return sp ? sp.name : t('spaces');
+    }
     return t({
+      home: 'navHome', schedule: 'navSchedule',
       work: 'navWork', calendar: 'navCalendar', docs: 'navDocs', announce: 'navAnnounce',
       admin: 'navAdmin', profile: 'profile', links: 'navLinks',
     }[S.page] || 'navWork');
+  }
+
+  /** The small line under the title: today's date on home, the scope elsewhere. */
+  function pageSub() {
+    if (S.page === 'home' || S.page === 'schedule') {
+      return fmtDate(todayIso(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    }
+    if (S.page === 'work' && S.dept) return deptLabel(S.dept);
+    if (S.page === 'space') { var sp = spaceBy(S.spaceId); return sp && sp.description ? sp.description : ''; }
+    return '';
+  }
+
+  /* ---------- the sidebar ------------------------------------------------ */
+
+  /**
+   * Three ways to have the sidebar on a computer, remembered on this device:
+   *   'full'  — docked, with names (the default)
+   *   'rail'  — docked, icons only, for a narrow window or a wide board
+   *   'float' — detached: off the page until the ☰ in the top bar opens it,
+   *             then floating over the content and closing on a click away
+   * On a phone it is always the drawer behind the เมนู tab.
+   */
+  var SB_MODES = ['full', 'rail', 'float'];
+  function sbMode() {
+    if (S.sbMode) return S.sbMode;
+    try { S.sbMode = localStorage.getItem('fair-sb') || 'full'; } catch (e) { S.sbMode = 'full'; }
+    if (SB_MODES.indexOf(S.sbMode) === -1) S.sbMode = 'full';
+    return S.sbMode;
+  }
+  function setSbMode(mode) {
+    S.sbMode = mode;
+    try { localStorage.setItem('fair-sb', mode); } catch (e) {}
+    applySbMode();
+  }
+  function applySbMode() {
+    var root = document.documentElement;
+    root.classList.toggle('sb-rail', sbMode() === 'rail');
+    root.classList.toggle('sb-float', sbMode() === 'float');
+    if (sbMode() !== 'float' && !isPhone()) openDrawer(false);
+    var c = $('sb-collapse'); var d = $('sb-detach');
+    if (c) { c.title = sbMode() === 'rail' ? t('sbExpand') : t('sbCollapse'); c.setAttribute('aria-label', c.title); }
+    if (d) { d.title = sbMode() === 'float' ? t('sbDock') : t('sbDetach'); d.setAttribute('aria-label', d.title); }
+  }
+  function openDrawer(open) {
+    var root = document.documentElement;
+    root.classList.toggle('sb-open', Boolean(open));
+    var scrim = $('sb-scrim');
+    if (scrim) scrim.hidden = !open;
+  }
+  if ($('sb-collapse')) $('sb-collapse').addEventListener('click', function () {
+    setSbMode(sbMode() === 'rail' ? 'full' : 'rail');
+  });
+  if ($('sb-detach')) $('sb-detach').addEventListener('click', function () {
+    setSbMode(sbMode() === 'float' ? 'full' : 'float');
+  });
+  if ($('sb-open')) $('sb-open').addEventListener('click', function (e) { e.stopPropagation(); openDrawer(true); });
+  if ($('sb-scrim')) $('sb-scrim').addEventListener('click', function () { openDrawer(false); });
+  if ($('tab-more')) $('tab-more').addEventListener('click', function (e) {
+    e.preventDefault();
+    openDrawer(!document.documentElement.classList.contains('sb-open'));
+  });
+  // Picking anything in a floating sidebar or the drawer closes it.
+  if ($('sidebar')) $('sidebar').addEventListener('click', function (e) {
+    var hit = e.target.closest('a[href], .sb-item');
+    if (hit && (isPhone() || sbMode() === 'float') && hit.id !== 'tab-more') setTimeout(function () { openDrawer(false); }, 0);
+  });
+  applySbMode();
+
+  /**
+   * The nav lives in the sidebar on a computer and along the bottom on a
+   * phone. Moving the one element, rather than keeping two copies, keeps a
+   * single set of links for everything that looks for them.
+   */
+  function placeNav() {
+    var nav = $('tabs');
+    var side = $('sidebar');
+    var app = $('app-view');
+    if (!nav || !side || !app) return;
+    if (isPhone()) {
+      if (nav.parentNode !== app) app.insertBefore(nav, $('fab'));
+    } else if (nav.parentNode !== side) {
+      side.insertBefore(nav, $('sb-extra'));
+    }
+    applySbMode();
+  }
+
+  function spaceBy(id) {
+    return (S.spaces || []).filter(function (x) { return x.id === id; })[0] || null;
+  }
+  var SPACE_HEX = { pink: '#e0457b', indigo: '#5b5bd6', teal: '#0fa5a0', amber: '#f59e0b',
+    violet: '#8b5cf6', green: '#12a36b', blue: '#2f7ff0', red: '#e5484d' };
+  function spaceHex(sp) { return SPACE_HEX[(sp && sp.colour) || 'pink'] || SPACE_HEX.pink; }
+  function spaceBadge(sp, cls) {
+    var letter = sp.icon || String(sp.name || '?').trim().charAt(0).toUpperCase();
+    return h('span', { class: cls || 'sb-ico', style: 'background:' + spaceHex(sp), text: letter });
+  }
+
+  function sbFolded(key, many) {
+    var saved = null;
+    try { saved = localStorage.getItem('fair-sb-fold-' + key); } catch (e) {}
+    // A long list starts folded, so the spaces above it stay in view.
+    return saved === null ? Boolean(many) : saved === '1';
+  }
+  function sbSection(key, title, items, addButton) {
+    var sec = h('div', { class: 'sb-sec' + (sbFolded(key, items.length > 8) ? ' folded' : ''), dataset: { sec: key } });
+    sec.appendChild(h('div', { class: 'sb-sec-head' }, [
+      h('button', { type: 'button', class: 'sb-fold', onclick: function () {
+        var now = !sec.classList.contains('folded');
+        sec.classList.toggle('folded', now);
+        try { localStorage.setItem('fair-sb-fold-' + key, now ? '1' : '0'); } catch (e) {}
+      } }, [h('i', { text: '\u25be' }), title]),
+    ]));
+    sec.appendChild(h('div', { class: 'sb-list' }, items.concat(addButton ? [addButton] : [])));
+    return sec;
+  }
+
+  /**
+   * Spaces and departments, under the nav. Departments are the ones this
+   * person can work in; picking one opens everyone's work filtered to it,
+   * which is what the dropdown on the work page did one click deeper.
+   */
+  function renderSidebar() {
+    var box = $('sb-extra');
+    if (!box || !S.user) return;
+    clear(box);
+
+    // On a phone, the drawer also carries the pages that have no room in the bar.
+    if (isPhone()) {
+      var pages = [['calendar', 'navCalendar', 'event'], ['announce', 'navAnnounce', 'megaphone', S.canManage],
+        ['admin', 'navAdmin', 'people', S.canManage], ['profile', 'profile', 'user'], ['links', 'navLinks', 'link']];
+      box.appendChild(h('div', { class: 'sb-drawer-nav' }, pages.filter(function (p) {
+        return p[3] === undefined || p[3];
+      }).map(function (p) {
+        return h('a', { class: 'sb-item' + (S.page === p[0] ? ' on' : ''), href: '#/' + p[0] }, [
+          h('span', { class: 'sb-ico', style: 'background:rgba(255,255,255,.1)' }, [icon(p[2])]),
+          h('span', { class: 'sb-label', text: t(p[1]) }),
+        ]);
+      })));
+    }
+
+    var spaces = (S.spaces || []).filter(function (sp) { return sp.mine || S.seesEverything; });
+    box.appendChild(sbSection('spaces', t('spaces'), spaces.map(function (sp) {
+      return h('a', {
+        class: 'sb-item' + (S.page === 'space' && S.spaceId === sp.id ? ' on' : ''),
+        href: '#/space/' + encodeURIComponent(sp.id), title: sp.name,
+      }, [
+        spaceBadge(sp),
+        h('span', { class: 'sb-label', text: sp.name }),
+        sp.openTasks ? h('span', { class: 'sb-n', text: String(sp.openTasks) }) : null,
+      ]);
+    }), h('button', { type: 'button', class: 'sb-item sb-add', onclick: function () { openSpace(null); } }, [
+      h('span', { class: 'sb-plus', text: '+' }), h('span', { class: 'sb-label', text: t('spaceNew') }),
+    ])));
+
+    var depts = (S.departments || []).filter(function (d) {
+      return S.seesEverything || (S.myDepartments || []).indexOf(d.key) !== -1;
+    });
+    if (depts.length) {
+      box.appendChild(sbSection('depts', t('departments'), depts.map(function (d) {
+        var open = S.tasks.filter(function (x) {
+          return x.status !== 'done' && (x.department === d.key ||
+            (x.departments || []).some(function (y) { return y.key === d.key; }));
+        }).length;
+        return h('button', {
+          type: 'button', class: 'sb-item' + (S.page === 'work' && S.dept === d.key ? ' on' : ''), title: deptLabel(d.key),
+          onclick: function () {
+            S.dept = d.key; S.unit = ''; S.scope = 'all'; S.role = '';
+            if (location.hash === '#/work') { renderShell(); renderPage(); } else location.hash = '#/work';
+          },
+        }, [
+          h('span', { class: 'sb-dot', style: 'background:' + deptHue(d.key) }),
+          h('span', { class: 'sb-label', text: deptLabel(d.key) }),
+          open ? h('span', { class: 'sb-n', text: String(open) }) : null,
+        ]);
+      })));
+    }
+  }
+
+  /** A steady colour per department, from the chart palette, so a dot always means the same ฝ่าย. */
+  var DEPT_HUES = ['#e0457b', '#5b5bd6', '#0fa5a0', '#f59e0b', '#8b5cf6', '#12a36b', '#2f7ff0', '#e5484d', '#d9468f', '#0ea5e9', '#a16207', '#7c3aed'];
+  function deptHue(key) {
+    var i = (S.departments || []).map(function (d) { return d.key; }).indexOf(key);
+    return DEPT_HUES[(i < 0 ? 0 : i) % DEPT_HUES.length];
   }
 
   /**
@@ -913,6 +1133,10 @@
     });
     $('tab-admin').hidden = !S.canManage;
     $('tab-announce').hidden = !S.canManage;
+    // The page's own name and a line under it, on the left of the top bar.
+    if ($('bar-sub')) $('bar-sub').textContent = pageSub();
+    placeNav();
+    renderSidebar();
 
     var av = clear($('me-avatar'));
     if (S.user.avatar) av.appendChild(h('img', { src: S.user.avatar, alt: '' }));
@@ -1025,7 +1249,7 @@
     routeFromHash(); renderShell(); renderPage(); flushPendingTask();
   });
   function routeFromHash() {
-    var raw = (location.hash || '#/mine').replace('#/', '');
+    var raw = (location.hash || '#/home').replace('#/', '');
 
     /**
      * #/n/<id> is where a tapped notification lands. It opens the detail
@@ -1080,7 +1304,23 @@
     // and the tasks. The old address still resolves so a link somebody already
     // shared lands somewhere sensible rather than nowhere.
     if (page === 'meetings') page = 'work';
-    if (['work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce'].indexOf(page) === -1) page = 'work';
+    // #/space/<id> — one working group's page.
+    if (page.indexOf('space/') === 0) {
+      S.spaceId = decodeURIComponent(page.slice(6));
+      page = 'space';
+    }
+    // #/schedule?google=ok — the word Google's return left in the address.
+    if (page.indexOf('schedule?') === 0) {
+      var q = page.split('?')[1] || '';
+      var m = q.match(/google=([^&]+)/);
+      if (m) S.googleNotice = decodeURIComponent(m[1]);
+      var bk = q.match(/book=([^&]+)/);
+      if (bk) S.bookHost = decodeURIComponent(bk[1]);
+      page = 'schedule';
+      try { history.replaceState(null, '', '#/schedule'); } catch (e) {}
+    }
+    if (page === 'more') page = S.page || 'home';
+    if (['home', 'schedule', 'space', 'work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce'].indexOf(page) === -1) page = 'home';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -1477,6 +1717,9 @@
                   sendMode: 'secretary', recipientEmail: '', internalUnit: false };
     var pdfBase64 = null;
     var pdfBytes = null;
+    // The optional Word original, kept out here beside the PDF because
+    // submit() is a sibling of the form that collects it.
+    var sourceFile = null;
     var pages = 0;
     var chain = [];
     var people = [];
@@ -1599,8 +1842,41 @@
         ]));
       }
 
-      var fileInput = h('input', { type: 'file', accept: 'application/pdf,.pdf' });
+      var fileInput = h('input', { type: 'file', id: 'doc-pdf', accept: 'application/pdf,.pdf' });
       var fileNote = h('p', { class: 'hint', text: t('docPdfHelp') });
+
+      /**
+       * The Word original, alongside the PDF.
+       *
+       * Letters come back to be corrected, and a PDF is no use for that —
+       * asked for by เลขานุการ, who were the ones finding the mistakes. It is
+       * optional: a letter that arrived as a PDF from somewhere else has no
+       * editable original to attach.
+       */
+      var srcInput = h('input', {
+        type: 'file', id: 'doc-source',
+        accept: '.docx,.doc,.odt,.rtf,.pages,application/msword,' +
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      });
+      var srcNote = h('p', { class: 'hint', text: t('docSourceHelp') });
+      var srcClear = h('button', {
+        type: 'button', class: 'btn sm ghost', hidden: true, text: t('remove'),
+        onclick: function () {
+          sourceFile = null; srcInput.value = '';
+          srcNote.textContent = t('docSourceHelp'); srcClear.hidden = true;
+        },
+      });
+      srcInput.addEventListener('change', function () {
+        var file = srcInput.files && srcInput.files[0];
+        if (!file) return;
+        if (file.size > 3 * 1024 * 1024) { fail(t('docTooBig')); srcInput.value = ''; return; }
+        notice.hidden = true;
+        fileToBase64(file).then(function (b64) {
+          sourceFile = { name: file.name, data: b64 };
+          srcNote.textContent = file.name + ' · ' + Math.round(file.size / 1024) + ' KB';
+          srcClear.hidden = false;
+        }).catch(function () { fail(t('errGeneric')); });
+      });
       fileInput.addEventListener('change', function () {
         var file = fileInput.files && fileInput.files[0];
         if (!file) return;
@@ -1651,7 +1927,11 @@
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('priority') }), prio]),
         sendBox,
-        h('div', { class: 'field' }, [h('label', { text: t('docPdf') }), fileInput, fileNote]),
+        h('div', { class: 'field' }, [h('label', { for: 'doc-pdf', text: t('docPdf') }), fileInput, fileNote]),
+        h('div', { class: 'field' }, [
+          h('label', { for: 'doc-source' }, [t('docSource'), h('small', { class: 'opt-tag', text: t('optional') })]),
+          srcInput, srcNote, srcClear,
+        ]),
       ]));
       fillUnits();
       drawSend();
@@ -1714,29 +1994,51 @@
       return chain.filter(function (s) { return s.role === 'secretary' || s.role === 'sender'; })[0] || null;
     }
 
+    /** Who the roster says holds this role, in the order the server ranked them. */
+    function candidatesFor(role) {
+      var found = roleChoices.filter(function (r) { return r.role === role; })[0];
+      return (found && found.options) || [];
+    }
+
+    /**
+     * The people offered for one row.
+     *
+     * Whoever holds that post first, under the role's own name — a row that
+     * says ประธานโครงการ should offer the three people who are, not a hundred
+     * names in roster order. Everybody else is still there underneath, by
+     * ฝ่าย, because the roster is never quite right and the form must never
+     * be the reason a letter cannot be sent.
+     */
     function personOptions(step) {
-      var list = step.options && step.options.length
-        ? step.options.map(function (u) {
-            return people.filter(function (p) { return p.username === u; })[0] || { username: u };
-          })
-        : people;
+      var find = function (u) {
+        return people.filter(function (p) { return p.username === u; })[0] || { username: u };
+      };
       var label = function (p) {
         return (p.displayName || p.username) + (p.position ? ' \u00b7 ' + p.position : '');
       };
-      // Grouped by ฝ่าย once the list is the whole roster, which it is for a
-      // row somebody added by hand — a flat hundred names is not a choice.
-      if (!step.options || !step.options.length) {
-        var byDept = {};
-        list.forEach(function (p) { (byDept[p.department || ''] = byDept[p.department || ''] || []).push(p); });
-        return Object.keys(byDept).sort().map(function (key) {
-          return h('optgroup', { label: key ? deptLabel(key) : '\u2014' }, byDept[key].map(function (p) {
-            return h('option', { value: p.username, text: label(p), selected: step.username === p.username });
-          }));
-        });
-      }
-      return list.map(function (p) {
+      var option = function (p) {
         return h('option', { value: p.username, text: label(p), selected: step.username === p.username });
+      };
+
+      var best = (step.options || []).slice();
+      var taken = {};
+      best.forEach(function (u) { taken[u] = true; });
+
+      var groups = [];
+      if (best.length) {
+        groups.push(h('optgroup', { label: step.roleLabel || '' }, best.map(function (u) { return option(find(u)); })));
+      }
+      var byDept = {};
+      people.forEach(function (p) {
+        if (taken[p.username]) return;
+        (byDept[p.department || ''] = byDept[p.department || ''] || []).push(p);
       });
+      Object.keys(byDept).sort().forEach(function (key) {
+        groups.push(h('optgroup', {
+          label: (best.length ? t('docAnyoneElse') + ' \u00b7 ' : '') + (key ? deptLabel(key) : '\u2014'),
+        }, byDept[key].map(option)));
+      });
+      return groups;
     }
 
     function drawWho() {
@@ -1759,9 +2061,16 @@
           onchange: function (e) {
             step.role = e.target.value;
             step.roleLabel = (roleChoices.filter(function (r) { return r.role === step.role; })[0] || {}).label || step.role;
-            // A changed role is a different question, so the shortlist that
-            // came with the old one no longer applies.
-            step.options = [];
+            /**
+             * A different role is a different question, so the row takes that
+             * role's own people — and the person on it, unless they hold the
+             * new post too. Keeping the old name was how a row could end up
+             * saying ประธานโครงการ above somebody who is not one.
+             */
+            step.options = candidatesFor(step.role);
+            if (step.options.length && step.options.indexOf(step.username) === -1) {
+              step.username = step.options[0];
+            }
             step.signs = step.role !== 'unitHead';
             drawWho();
           },
@@ -1821,8 +2130,9 @@
           type: 'button', class: 'btn add-signer', text: '+ ' + t('docAddSigner'),
           onclick: function () {
             var at = chain.indexOf(sendingStep());
+            var picks = candidatesFor('deptHead');
             var step = { role: 'deptHead', roleLabel: (roleChoices.filter(function (r) { return r.role === 'deptHead'; })[0] || {}).label || 'deptHead',
-                         username: null, options: [], signs: true, marks: [] };
+                         username: picks[0] || null, options: picks, signs: true, marks: [] };
             chain.splice(at < 0 ? chain.length : at, 0, step);
             drawWho();
           },
@@ -1989,6 +2299,7 @@
           recipientEmail: draft.sendMode === 'secretary' && !draft.internalUnit ? draft.recipientEmail : '',
           internalUnit: draft.sendMode === 'secretary' && draft.internalUnit,
           pdf: pdfBase64,
+          source: sourceFile,
           steps: chain.map(function (s) {
             return { role: s.role, username: s.username, marks: s.marks };
           }),
@@ -2008,7 +2319,8 @@
          */
         showNumber(data);
       }).catch(function (err) {
-        fail(err.data && err.data.error === 'FILE_TOO_BIG' ? t('docTooBig') : errText(err.code));
+        var code = err.data && err.data.error;
+        fail(code === 'FILE_TOO_BIG' || code === 'SOURCE_TOO_BIG' ? t('docTooBig') : errText(err.code));
         drawMarks();
       });
     }
@@ -2150,10 +2462,14 @@
         vRow(t('docUploader'), h('span', { class: 'selected' },
           [h('span', { class: 'chip who' }, [avatarNode(doc.createdBy, 'sm'), nameOf(doc.createdBy)])])),
         vRow(t('docFiles'), h('span', { class: 'selected' }, data.files.map(function (f) {
+          // The Word original downloads under its own name; the PDFs open.
+          var isSource = f.kind === 'source';
           return h('a', {
-            class: 'chip dept', target: '_blank', rel: 'noopener',
+            class: 'chip dept' + (isSource ? ' src' : ''),
+            target: isSource ? null : '_blank', rel: 'noopener',
             href: '/api/documents?id=' + encodeURIComponent(doc.id) + '&file=' + f.kind,
-            text: (f.kind === 'signed' ? t('docSignedCopy') : t('docOriginal')) +
+            title: isSource ? f.name : '',
+            text: (isSource ? t('docSource') : f.kind === 'signed' ? t('docSignedCopy') : t('docOriginal')) +
               ' · ' + Math.round(f.size / 1024) + ' KB',
           });
         }).concat(doc.driveUrl ? [h('a', {
@@ -2216,6 +2532,24 @@
         }));
       }
 
+      /**
+       * Sending it back, for whoever is holding it and has not been offered
+       * the button already with the approve/reject pair above — in practice
+       * เลขานุการ, who get the letter to post and were the ones spotting the
+       * mistakes with no way to say so.
+       */
+      if (data.mayBounce && !data.myTurn) {
+        footer.appendChild(h('button', {
+          class: 'btn danger', text: t('docReject'),
+          onclick: function () {
+            var why = prompt(t('docRejectWhy'));
+            if (why === null) return;
+            if (!why.trim()) { alert(t('docRejectWhy')); return; }
+            act('reject', { comment: why.trim() });
+          },
+        }));
+      }
+
       if (data.mayReplace) {
         var replaceInput = h('input', { type: 'file', accept: 'application/pdf,.pdf', style: 'display:none' });
         replaceInput.addEventListener('change', function () {
@@ -2231,6 +2565,36 @@
         footer.appendChild(replaceInput);
         footer.appendChild(h('button', {
           class: 'btn', text: t('docReplace'), onclick: function () { replaceInput.click(); },
+        }));
+      }
+
+      /**
+       * The editable original, attached or swapped after the fact — including
+       * on a letter that has just been sent back, which is exactly when
+       * somebody realises they never attached it.
+       */
+      var bouncedMine = doc.stage === 'rejected' && doc.createdBy === S.user.username;
+      if (data.mayReplace || bouncedMine) {
+        var hasSource = data.files.some(function (f) { return f.kind === 'source'; });
+        var srcPick = h('input', {
+          type: 'file', style: 'display:none',
+          accept: '.docx,.doc,.odt,.rtf,.pages,application/msword,' +
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        });
+        srcPick.addEventListener('change', function () {
+          var file = srcPick.files && srcPick.files[0];
+          if (!file) return;
+          if (file.size > 3 * 1024 * 1024) { alert(t('docTooBig')); return; }
+          fileToBase64(file).then(function (b64) {
+            return api('/api/documents?do=source', {
+              method: 'POST', body: { id: doc.id, source: { name: file.name, data: b64 } },
+            });
+          }).then(load).catch(function (err) { alert(errText(err.code)); });
+        });
+        footer.appendChild(srcPick);
+        footer.appendChild(h('button', {
+          class: 'btn', text: hasSource ? t('docSourceReplace') : t('docSourceAdd'),
+          onclick: function () { srcPick.click(); },
         }));
       }
 
@@ -2413,6 +2777,10 @@
     // tabs on a phone kept the old scroll position and landed mid-list.
     if (isPhone() && S.lastPainted !== S.page) window.scrollTo(0, 0);
     S.lastPainted = S.page;
+    main.classList.remove('wide');
+    if (S.page === 'home') return pageHome(main);
+    if (S.page === 'schedule') return pageSchedule(main);
+    if (S.page === 'space') return pageSpace(main);
     if (S.page === 'work') return pageTasks(main);
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'docs') return pageDocs(main);
@@ -2655,12 +3023,15 @@
    */
   function workView() {
     if (S.workView) return S.workView;
-    try { S.workView = localStorage.getItem('fair-work-view') || 'board'; } catch (e) { S.workView = 'board'; }
+    // The compact list is the default since the redesign — a fresh key, so
+    // everybody sees it once and can then pick the board again if they prefer.
+    try { S.workView = localStorage.getItem('fair-work-view2') || 'list'; } catch (e) { S.workView = 'list'; }
+    if (['board', 'list', 'gantt'].indexOf(S.workView) === -1) S.workView = 'list';
     return S.workView;
   }
   function setWorkView(v) {
     S.workView = v;
-    try { localStorage.setItem('fair-work-view', v); } catch (e) {}
+    try { localStorage.setItem('fair-work-view2', v); } catch (e) {}
     renderPage();
   }
 
@@ -2821,10 +3192,12 @@
   function pageTasks(main) {
     var mineOnly = S.scope !== 'all';
     var phone = isPhone();
-    var board = workView() === 'board';
+    var view = workView();
+    var board = view === 'board';
+    var gantt = view === 'gantt';
     // The board wants the width of the window, not the width of a column of
     // text; every other page keeps the narrower measure.
-    main.classList.toggle('board-wide', board && !phone);
+    main.classList.toggle('board-wide', (board || gantt) && !phone);
 
     /**
      * On a phone: one line. Mine / everyone, then search and filters as two
@@ -2840,12 +3213,12 @@
           });
         })),
         h('span', { class: 'grow' }),
-        // Board ⇄ list. The icon shows what you will GET, not what you have.
+        // Board → list → timeline. The icon shows what you will GET, not what you have.
         h('button', {
           type: 'button', class: 'ph-ibtn ph-view',
-          'aria-label': board ? t('viewList') : t('viewBoard'),
-          onclick: function () { setWorkView(board ? 'list' : 'board'); },
-        }, [icon(board ? 'list' : 'board')]),
+          'aria-label': t({ board: 'viewList', list: 'viewGantt', gantt: 'viewBoard' }[view] || 'viewList'),
+          onclick: function () { setWorkView({ board: 'list', list: 'gantt', gantt: 'board' }[view] || 'board'); },
+        }, [icon({ board: 'list', list: 'gantt', gantt: 'board' }[view] || 'list')]),
         h('button', {
           type: 'button', class: 'ph-ibtn ph-find' + (S.phSearch || S.q ? ' on' : ''),
           'aria-label': t('searchPlaceholder'),
@@ -2872,7 +3245,7 @@
           onclick: function () { S.scope = pair[0]; if (S.role === 'none') S.role = ''; renderPage(); },
         });
       })),
-      h('div', { class: 'seg view-seg' }, [['board', 'viewBoard', 'board'], ['list', 'viewList', 'list']].map(function (x) {
+      h('div', { class: 'seg view-seg' }, [['board', 'viewBoard', 'board'], ['list', 'viewList', 'list'], ['gantt', 'viewGantt', 'gantt']].map(function (x) {
         return h('button', {
           class: workView() === x[0] ? 'on' : '', title: t(x[1]),
           onclick: function () { setWorkView(x[0]); },
@@ -2965,7 +3338,9 @@
       var roles = roleSeg(mineOnly);
       roles.className = 'ph-roles';
       main.appendChild(roles);
-      if (board) {
+      if (gantt) {
+        // The timeline has its own controls; the status chips would only narrow it.
+      } else if (board) {
         /**
          * On the board the chips are a map of the columns: tapping one swipes
          * the board to it, and the one lit up follows the swipe.
@@ -3008,7 +3383,7 @@
       }
     } else {
       main.appendChild(h('div', { class: 'filters' }, [
-        board ? null : seg, board ? null : h('span', { class: 'grow' }),
+        board || gantt ? null : seg, board || gantt ? null : h('span', { class: 'grow' }),
         searchBox,
         h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
       ]));
@@ -3023,7 +3398,11 @@
       }));
     }
 
-    var rows = visibleTasks(mineOnly, board);
+    var rows = visibleTasks(mineOnly, board || gantt);
+    if (gantt && pool.length) {
+      main.appendChild(ganttChart(rows, { phone: phone }));
+      return;
+    }
     if (board && pool.length) {
       main.appendChild(kanbanBoard(rows, phone));
       return;
@@ -3035,7 +3414,7 @@
       ]));
       return;
     }
-    main.appendChild(h('ul', { class: 'tasks' }, rows.map(taskRow)));
+    main.appendChild(groupedList(rows));
   }
 
   /**
@@ -3281,7 +3660,8 @@
     ]));
   }
 
-  function taskRow(task) {
+  function taskRow(task, mode) {
+    if (mode === 'list') return listRow(task);
     var meta = [];
     var prio = task.priority || 'medium';
     // Only show a chip when it is not the default — otherwise every card
@@ -3329,9 +3709,12 @@
     var stack = h('span', { class: 'stack' }, task.assignees.slice(0, 4).map(function (u) { return avatarNode(u, 'sm'); }));
     if (task.assignees.length > 4) stack.appendChild(h('span', { class: 'avatar sm', text: '+' + (task.assignees.length - 4) }));
 
+    var sp = task.spaceId ? spaceBy(task.spaceId) : null;
+    if (sp) meta.push(h('span', { class: 'chip space-chip', style: '--sp:' + spaceHex(sp) }, [sp.name]));
+
     return h('li', {
       class: 'task' + (task.pending ? ' pending' : ''),
-      dataset: { status: task.status, prio: task.priority || 'medium', urgency: urgencyOf(task) },
+      dataset: { status: task.status, st: task.status, prio: task.priority || 'medium', urgency: urgencyOf(task) },
       onclick: function () { openTask(task); },
     }, [
       h('button', {
@@ -3467,6 +3850,19 @@
     descInput.value = draft.description;
     var dateInput = h('input', { type: 'date', value: draft.dueDate || '', disabled: !mayEdit });
     var timeInput = h('input', { type: 'time', value: draft.dueTime || '', disabled: !mayEdit });
+    // Where the bar starts on the timeline. Optional; without it the task is a point on its due date.
+    var startInput = h('input', { type: 'date', value: (task && task.startDate) || '', disabled: !mayEdit });
+    /**
+     * The space it is filed in. Offered from the spaces this person is in,
+     * and opened from a space's own page the space is already chosen.
+     */
+    var spaceChoices = (S.spaces || []).filter(function (sp) { return sp.mine || S.seesEverything; });
+    var presetSpace = task ? (task.spaceId || '') : (S.newTaskSpace || '');
+    S.newTaskSpace = null;
+    var spaceSelect = h('select', { disabled: !mayEdit }, [h('option', { value: '', text: t('spaceNone') })]
+      .concat(spaceChoices.map(function (sp) {
+        return h('option', { value: sp.id, text: sp.name, selected: sp.id === presetSpace });
+      })));
 
     var peopleBox = h('div', { class: 'picker' + (mayEdit ? '' : ' readonly') });
     /**
@@ -3754,7 +4150,7 @@
       var doneParts = parts.filter(function (p) { return p.done; }).length;
 
       var band = h('div', { class: 'view-band' }, [
-        h('span', { class: 'vb-status st-' + task.status, text: statusLabel(task.status) }),
+        statusPill(task.status),
         (task.priority && task.priority !== 'medium')
           ? h('span', { class: 'vb-prio prio-' + task.priority, text: prioLabel(task.priority) })
           : null,
@@ -3791,6 +4187,9 @@
               task.unit ? h('span', { class: 'chip unit', style: 'margin-left:6px', text: task.unit }) : null,
             ])
           : vMuted('—')),
+        task.spaceId && spaceBy(task.spaceId) ? vRow(t('space'), h('a', { class: 'where-chip', href: '#/space/' + encodeURIComponent(task.spaceId),
+          style: '--sp:' + spaceHex(spaceBy(task.spaceId)), onclick: function () { close(); } }, [h('i'), spaceBy(task.spaceId).name])) : null,
+        task.startDate ? vRow(t('startDate'), document.createTextNode(whenWording(task.startDate))) : null,
       ];
 
       // Sub-tasks and attachments, each a line that takes you to its tab.
@@ -3870,10 +4269,12 @@
     function buildDetailPane() { return h('div', { class: 'pane' }, [
         h('div', { class: 'field' }, [h('label', { text: t('taskTitle') }), titleInput]),
         h('div', { class: 'field' }, [h('label', { text: t('description') }), descInput]),
-        h('div', { class: 'two' }, [
+        h('div', { class: 'two three' }, [
           h('div', { class: 'field' }, [h('label', { text: t('dueDate') }), dateInput]),
           h('div', { class: 'field' }, [h('label', { text: t('dueTime') }), timeInput]),
+          h('div', { class: 'field' }, [h('label', { text: t('startDate') }), startInput]),
         ]),
+        spaceChoices.length || presetSpace ? h('div', { class: 'field' }, [h('label', { text: t('space') }), spaceSelect]) : null,
         h('div', { class: 'field' }, [h('label', { text: t('assignTo') }), peopleBox, replyBox]),
         h('div', { class: 'field' }, [
           h('label', { text: t('viewers') }),
@@ -4135,6 +4536,8 @@
         description: descInput.value.trim(),
         dueDate: dateInput.value || null,
         dueTime: timeInput.value || null,
+        startDate: startInput.value || null,
+        spaceId: spaceSelect.value || null,
         status: draft.status,
         priority: draft.priority,
         department: draft.department,
@@ -5327,6 +5730,27 @@
     return S.colours.length ? S.colours[0].hex : '#b51e64';
   }
 
+  /**
+   * Which version is running, said where somebody can read it out.
+   *
+   * The page and the server each report their own. They should be the same
+   * string; when they are not, the site has been updated in halves and the
+   * page says so rather than leaving somebody to work it out from a feature
+   * that is mysteriously missing.
+   */
+  function versionBox() {
+    var mismatch = S.serverVersion && S.serverVersion !== APP_VERSION;
+    return h('div', { class: 'field version-box' }, [
+      h('label', { text: t('appVersion') }),
+      h('p', { class: 'hint' }, [
+        h('code', { text: APP_VERSION }),
+        S.serverVersion ? h('span', { text: ' \u00b7 ' + t('appVersionServer') + ' ' }) : null,
+        S.serverVersion ? h('code', { text: S.serverVersion }) : null,
+      ]),
+      mismatch ? h('div', { class: 'notice warn', text: t('appVersionMismatch') }) : null,
+    ]);
+  }
+
   function pageProfile(main) {
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('profile') })]));
 
@@ -5424,6 +5848,7 @@
         h('div', { class: 'field' }, [h('label', { text: t('sigTitle') }), signatureBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('freeTitle') }), availabilityBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
+        versionBox(),
       ]),
       h('footer', {}, [
         h('button', {
@@ -6632,12 +7057,42 @@
       var headCb = h('input', { type: 'checkbox', checked: u.isHead, disabled: !!blocked });
       headCb.addEventListener('change', function () { manage(u, { isHead: headCb.checked }); });
 
-      return h('tr', { class: u.active ? '' : 'off' }, [
-        h('td', {}, [h('div', { class: 'who-cell' }, [
-          avatarNode(u.username), h('div', {}, [
-            h('div', { text: u.displayName }),
+      /**
+       * On a phone each person folds to one line: name, then a short summary
+       * of level, home department and flags. Tapping the line opens the
+       * controls. Which row is open is kept in S.userOpen so a change (which
+       * redraws the page) does not snap it shut under the admin's thumb.
+       */
+      var open = S.userOpen === u.username;
+      var nDepts = u.allDepartments ? 0 : (u.departments || []).length;
+      var sum = h('div', { class: 'u-sum' }, [
+        h('span', { class: 'badge ' + u.access,
+          text: t('access' + u.access.charAt(0).toUpperCase() + u.access.slice(1)) }),
+        h('span', { class: 'u-sum-dept', text: u.allDepartments ? t('allDepartments')
+          : (u.department ? '\u2605 ' + deptLabel(u.department) : (nDepts ? deptLabel(u.departments[0]) : t('noAccess'))) +
+            (nDepts > 1 ? ' +' + (nDepts - 1) : '') }),
+        u.isHead ? h('span', { class: 'u-sum-flag', text: t('headShort') }) : null,
+      ].concat(status.map(function (n) { return n.cloneNode(true); })));
+      var tr = h('tr', {
+        class: 'urow' + (u.active ? '' : ' off') + (open ? ' open' : ''),
+        dataset: { find: [u.displayName, u.username, u.position || '',
+          (u.departments || []).map(deptLabel).join(' ')].join(' ').toLowerCase() },
+      }, [
+        h('td', { class: 'u-head', onclick: function (e) {
+          if (!isPhone() || e.target.closest('select,button,input,a')) return;
+          S.userOpen = open ? null : u.username;
+          open = !open;
+          Array.prototype.forEach.call(tr.parentNode.children, function (r) {
+            if (r !== tr) r.classList.remove('open');
+          });
+          tr.classList.toggle('open', open);
+        } }, [h('div', { class: 'who-cell' }, [
+          avatarNode(u.username), h('div', { class: 'u-who' }, [
+            h('div', { class: 'u-name', text: u.displayName }),
             h('small', { style: 'color:var(--ink-faint)', text: u.username }),
+            sum,
           ]),
+          h('span', { class: 'u-caret', 'aria-hidden': 'true', text: '\u203a' }),
         ])]),
         // The labels are for a phone, where each row becomes a card and the
         // column headings are gone — see .tablewrap in phone.css.
@@ -6670,9 +7125,24 @@
             }) : null,
           ])]),
       ]);
+      return tr;
     });
 
-    main.appendChild(h('div', { class: 'tablewrap' }, [
+    // Find a person by name, username, position or department without
+    // scrolling past everyone else. Filters in place so typing keeps focus.
+    function filterUsers() {
+      S.userQuery = findBox.value;
+      var q = findBox.value.trim().toLowerCase();
+      rows.forEach(function (r) { r.hidden = !!q && r.dataset.find.indexOf(q) === -1; });
+    }
+    var findBox = h('input', {
+      type: 'search', class: 'user-find', placeholder: t('userFind'), value: S.userQuery || '',
+      oninput: filterUsers,
+    });
+    main.appendChild(findBox);
+    if (S.userQuery) filterUsers();
+
+    main.appendChild(h('div', { class: 'tablewrap users-table' }, [
       h('table', {}, [
         h('thead', {}, [h('tr', {}, [
           h('th', { text: t('displayName') }), h('th', { text: t('accessLevel') }),
@@ -7137,18 +7607,23 @@
     return reply === 'accepted' ? 'yes' : reply === 'declined' ? 'no' : 'maybe';
   }
 
-  function openMeeting(meeting) {
+  function openMeeting(meeting, preset) {
     var isNew = !meeting;
+    preset = preset || {};
     var draft = {
-      title: meeting ? meeting.title : '',
+      title: meeting ? meeting.title : (preset.title || ''),
       note: meeting ? meeting.note : '',
-      meetsOn: meeting ? meeting.meetsOn : '',
-      meetsAt: meeting ? (meeting.meetsAt || '') : '',
+      meetsOn: meeting ? meeting.meetsOn : (preset.meetsOn || ''),
+      meetsAt: meeting ? (meeting.meetsAt || '') : (preset.meetsAt || ''),
+      endsAt: meeting ? (meeting.endsAt || '') : (preset.endsAt || ''),
+      spaceId: meeting ? (meeting.spaceId || '') : (preset.spaceId || ''),
+      repeat: { freq: 'none', count: 4, until: '' },
       place: meeting ? meeting.place : '',
       joinUrl: meeting ? meeting.joinUrl : '',
       agendaUrl: meeting ? meeting.agendaUrl : '',
       minutesUrl: meeting ? meeting.minutesUrl : '',
-      assignees: meeting ? meeting.people.map(function (p) { return p.username; }) : [S.user.username],
+      assignees: meeting ? meeting.people.map(function (p) { return p.username; })
+        : [S.user.username].concat((preset.people || []).filter(function (u) { return u !== S.user.username; })),
       departments: [],
       // People with no account here, invited by email through Google.
       guests: meeting ? meeting.guests.map(function (g) { return g.email; }).join(', ') : '',
@@ -7218,10 +7693,48 @@
     noteIn.value = draft.note || '';
     noteIn.addEventListener('input', function () { draft.note = noteIn.value; });
 
+    /**
+     * Repeating, for a new meeting: how often, and until when. Every
+     * occurrence becomes a meeting of its own (see lib/meetingstore.js), so
+     * this is only asked once, at the start.
+     */
+    var repeatBox = null;
+    if (isNew) {
+      var freqSel = h('select', {}, [['none', 'repeatNone'], ['daily', 'repeatDaily'], ['weekdays', 'repeatWeekdays'],
+        ['weekly', 'repeatWeekly'], ['biweekly', 'repeatBiweekly'], ['monthly', 'repeatMonthly']].map(function (x) {
+        return h('option', { value: x[0], text: t(x[1]) });
+      }));
+      var endKind = h('select', {}, [h('option', { value: 'count', text: t('repeatTimes') }), h('option', { value: 'until', text: t('repeatUntil') })]);
+      var countIn = h('input', { type: 'number', min: '2', max: '52', value: '4', style: 'max-width:6rem' });
+      var untilIn = h('input', { type: 'date', hidden: true });
+      var endRow = h('div', { class: 'repeat-end', hidden: true }, [endKind, countIn, untilIn]);
+      var repeatNote = h('small', { class: 'field-hint' });
+      var syncRepeat = function () {
+        draft.repeat.freq = freqSel.value;
+        endRow.hidden = freqSel.value === 'none';
+        countIn.hidden = endKind.value !== 'count';
+        untilIn.hidden = endKind.value !== 'until';
+        draft.repeat.count = endKind.value === 'count' ? Number(countIn.value) || 0 : null;
+        draft.repeat.until = endKind.value === 'until' ? untilIn.value : '';
+        repeatNote.textContent = freqSel.value === 'none' ? '' : t('repeatHint');
+      };
+      [freqSel, endKind, countIn, untilIn].forEach(function (el) {
+        el.addEventListener('change', syncRepeat); el.addEventListener('input', syncRepeat);
+      });
+      repeatBox = h('div', { class: 'field repeat-box' }, [h('label', { text: t('repeat') }),
+        h('div', { class: 'repeat-row' }, [freqSel, endRow]), repeatNote]);
+    }
+    var spaceOpts = (S.spaces || []).filter(function (sp) { return sp.mine || S.seesEverything; });
+    var spaceSel = h('select', { disabled: !mayEdit }, [h('option', { value: '', text: t('spaceNone') })].concat(
+      spaceOpts.map(function (sp) { return h('option', { value: sp.id, text: sp.name, selected: sp.id === draft.spaceId }); })));
+    spaceSel.addEventListener('change', function () { draft.spaceId = spaceSel.value; });
+
     var detailPane = h('div', { class: 'pane' }, [
       field(t('mtgTitle'), input('title')),
       field(t('mtgDate'), input('meetsOn', 'date')),
-      field(t('mtgStart'), input('meetsAt', 'time')),
+      h('div', { class: 'two' }, [field(t('mtgStart'), input('meetsAt', 'time')), field(t('mtgEnd'), input('endsAt', 'time'))]),
+      repeatBox,
+      spaceOpts.length ? field(t('space'), spaceSel) : null,
       field(t('mtgPlace'), input('place')),
       field(t('mtgNote'), noteIn),
       field(t('mtgJoin'), input('joinUrl', 'url')),
@@ -7258,7 +7771,9 @@
             : h('span', { class: 'sum-value', text: value }),
         ]));
       };
-      line(t('mtgDate'), meeting.meetsOn + (meeting.meetsAt ? ' · ' + meeting.meetsAt : ''));
+      line(t('mtgDate'), meeting.meetsOn + (meeting.meetsAt ? ' · ' + meeting.meetsAt + (meeting.endsAt ? '–' + meeting.endsAt : '') : ''));
+      if (meeting.repeatRule) line(t('repeat'), t({ daily: 'repeatDaily', weekdays: 'repeatWeekdays', weekly: 'repeatWeekly', biweekly: 'repeatBiweekly', monthly: 'repeatMonthly' }[meeting.repeatRule] || 'repeat'));
+      if (meeting.spaceId && spaceBy(meeting.spaceId)) line(t('space'), spaceBy(meeting.spaceId).name);
       line(t('mtgPlace'), meeting.place);
       /**
        * The description was being shown under the label "หัวข้อการประชุม" —
@@ -7805,12 +8320,19 @@
           if (!draft.meetsOn) { fail(t('mtgDate')); return; }
           var body = {
             title: draft.title, note: draft.note, meetsOn: draft.meetsOn,
-            meetsAt: draft.meetsAt || null, place: draft.place,
+            meetsAt: draft.meetsAt || null, endsAt: draft.endsAt || null, place: draft.place,
             joinUrl: draft.joinUrl, agendaUrl: draft.agendaUrl,
             people: draft.assignees,
             guests: draft.guests,
+            spaceId: draft.spaceId || null,
           };
-          if (isNew) { body.template = 'blank'; body.agenda = draft.agenda; }
+          if (isNew) {
+            body.template = 'blank'; body.agenda = draft.agenda;
+            if (draft.repeat.freq !== 'none') {
+              if (!draft.repeat.count && !draft.repeat.until) { fail(t('repeatNeedsEnd')); return; }
+              body.repeat = { freq: draft.repeat.freq, count: draft.repeat.count || undefined, until: draft.repeat.until || undefined };
+            }
+          }
           else { body.id = meeting.id; body.minutesUrl = draft.minutesUrl; }
 
           // A meeting with no start time cannot clash with an hour.
@@ -7821,7 +8343,8 @@
             if (!answer.go) return;
             if (answer.prioritise) body.prioritise = true;
 
-            api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body })
+            (isNew || !meeting.seriesId ? Promise.resolve('one') : askSeriesScope(t('seriesEditWhich')))
+              .then(function (scope) { body.scope = scope; return api('/api/events?do=meeting', { method: isNew ? 'POST' : 'PATCH', body: body }); })
               .then(function (d) {
                 // An address that could not be read is named rather than
                 // silently dropped — the meeting saves either way.
@@ -7851,9 +8374,12 @@
     var delBtn = h('button', {
       class: 'btn danger', text: t('mtgDelete'), hidden: true,
       onclick: function () {
-        if (!confirm(t('mtgDeleteSure'))) return;
-        api('/api/events?do=meeting&id=' + encodeURIComponent(meeting.id), { method: 'DELETE' })
-          .then(function () { veil.remove(); reloadMeetings(); })
+        var go = function (scope) {
+          return api('/api/events?do=meeting&id=' + encodeURIComponent(meeting.id) + '&scope=' + scope, { method: 'DELETE' });
+        };
+        var asked = meeting.seriesId ? askSeriesScope(t('seriesDeleteWhich')) : Promise.resolve(confirm(t('mtgDeleteSure')) ? 'one' : null);
+        asked.then(function (scope) { return scope ? go(scope).then(function () { return true; }) : false; })
+          .then(function (done) { if (done) { veil.remove(); reloadMeetings(); } })
           .catch(function (err) { fail(errText(err.code)); });
       },
     });
@@ -7887,7 +8413,7 @@
       title: '',
       body: '',
       level: 'normal',
-      audience: { kind: 'everyone', departments: [], people: [] },
+      audience: { kind: 'everyone', departments: [], people: [], includeAll: false },
       includeSelf: false,
     };
 
@@ -7910,6 +8436,20 @@
      * that says 8 and then sends to 7 makes everything else on the page look
      * untrustworthy.
      */
+    /** Somebody whose access is "ทุกฝ่าย": the board and the secretaries. */
+    function boardish(u) { return Boolean(u.allDepartments); }
+    /** Ticking an umbrella covers the departments under it, as the server does. */
+    function expandDeptKeys(keys) {
+      var out = [];
+      (keys || []).forEach(function (key) {
+        if (out.indexOf(key) === -1) out.push(key);
+        (S.departments || []).forEach(function (d) {
+          if (d.parent === key && out.indexOf(d.key) === -1) out.push(d.key);
+        });
+      });
+      return out;
+    }
+
     function recipientCount() {
       var live = S.users.filter(function (u) {
         if (!u.active || u.suspended) return false;
@@ -7922,13 +8462,16 @@
         }).length;
       }
 
+      if (draft.audience.kind === 'board') return live.filter(boardish).length;
+
       if (draft.audience.kind === 'departments') {
-        var keys = draft.audience.departments;
+        var keys = expandDeptKeys(draft.audience.departments);
         if (!keys.length) return 0;
         return live.filter(function (u) {
-          return u.allDepartments || (u.departments || []).some(function (k) {
-            return keys.indexOf(k) !== -1;
-          });
+          // In the department, not merely able to see it — see resolveAudience
+          // in api/push.js for why the board is no longer swept in.
+          if (draft.audience.includeAll && boardish(u)) return true;
+          return (u.departments || []).some(function (k) { return keys.indexOf(k) !== -1; });
         }).length;
       }
 
@@ -7947,6 +8490,7 @@
       var seg = h('div', { class: 'seg wrap' }, [
         ['everyone', t('audEveryone')],
         ['departments', t('audDepartments')],
+        ['board', t('audBoard')],
         ['people', t('audPeople')],
       ].map(function (pair) {
         return h('button', {
@@ -7971,6 +8515,33 @@
           }, [deptOptionLabel(d)]));
         });
         audienceBox.appendChild(opts);
+
+        /**
+         * The board is nobody's ฝ่าย, so ticking departments never reaches
+         * them — and until this release every department announcement reached
+         * them whether or not it was meant to. Off by default, with the count
+         * said out loud so it is a decision rather than a surprise.
+         */
+        var boardN = S.users.filter(function (u) {
+          return u.active && !u.suspended && boardish(u) &&
+            (draft.includeSelf || u.username !== S.user.username);
+        }).length;
+        var alsoBoard = h('input', { type: 'checkbox', checked: draft.audience.includeAll });
+        alsoBoard.addEventListener('change', function () {
+          draft.audience.includeAll = alsoBoard.checked;
+          paintCount();
+        });
+        audienceBox.appendChild(h('label', { class: 'inline-check also-board' }, [
+          alsoBoard,
+          h('span', {}, [
+            t('audAlsoBoard'),
+            h('small', { text: t('audAlsoBoardWho').replace('%n', String(boardN)) }),
+          ]),
+        ]));
+      }
+
+      if (draft.audience.kind === 'board') {
+        audienceBox.appendChild(h('p', { class: 'hint', text: t('audBoardWho') }));
       }
 
       if (draft.audience.kind === 'people') {
@@ -8885,6 +9456,1619 @@
     $('modal-root').appendChild(veil);
   }
 
+
+  /* ======================================================================
+     The 2026-10 redesign: list, timeline, home, schedule, spaces.
+     ====================================================================== */
+
+  /* ---------- drawing ----------------------------------------------------- */
+
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs, kids) {
+    var node = document.createElementNS(SVGNS, tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (attrs[k] !== null && attrs[k] !== undefined) node.setAttribute(k, attrs[k]);
+    });
+    (kids || []).forEach(function (kid) { if (kid) node.appendChild(kid); });
+    return node;
+  }
+  var STATUS_HEX = { todo: '#8b8fa0', doing: '#2f7ff0', review: '#f0a020', feedback: '#8b5cf6', done: '#12a36b' };
+  var CHART = ['#e0457b', '#5b5bd6', '#0fa5a0', '#f59e0b', '#8b5cf6'];
+
+  /** A ring of coloured arcs. `parts` is [{ value, colour, label }]. */
+  function donut(parts, opts) {
+    opts = opts || {};
+    var size = opts.size || 140;
+    var stroke = opts.stroke || 18;
+    var r = (size - stroke) / 2;
+    var c = 2 * Math.PI * r;
+    var total = parts.reduce(function (a, p) { return a + p.value; }, 0);
+    var g = svgEl('svg', { viewBox: '0 0 ' + size + ' ' + size, width: size, height: size, class: 'donut', role: 'img',
+      'aria-label': opts.label || '' });
+    g.appendChild(svgEl('circle', { cx: size / 2, cy: size / 2, r: r, fill: 'none', stroke: 'var(--surface-3)', 'stroke-width': stroke }));
+    var at = 0;
+    parts.forEach(function (p) {
+      if (!total || !p.value) return;
+      var len = (p.value / total) * c;
+      g.appendChild(svgEl('circle', {
+        cx: size / 2, cy: size / 2, r: r, fill: 'none', stroke: p.colour, 'stroke-width': stroke,
+        'stroke-dasharray': Math.max(0, len - 2) + ' ' + (c - Math.max(0, len - 2)),
+        'stroke-dashoffset': String(-at), transform: 'rotate(-90 ' + size / 2 + ' ' + size / 2 + ')',
+        'stroke-linecap': 'butt',
+      }));
+      at += len;
+    });
+    if (opts.center !== undefined) {
+      var t1 = svgEl('text', { x: size / 2, y: size / 2 + (opts.sub ? -2 : 6), 'text-anchor': 'middle', class: 'donut-big' });
+      t1.textContent = String(opts.center);
+      g.appendChild(t1);
+      if (opts.sub) {
+        var t2 = svgEl('text', { x: size / 2, y: size / 2 + 16, 'text-anchor': 'middle', class: 'donut-sub' });
+        t2.textContent = opts.sub;
+        g.appendChild(t2);
+      }
+    }
+    return g;
+  }
+
+  /** Vertical bars with labels underneath. */
+  function barChart(values, labels, opts) {
+    opts = opts || {};
+    var w = opts.width || 320;
+    var hgt = opts.height || 140;
+    var pad = 22;
+    var max = Math.max.apply(null, values.concat([1]));
+    var bw = (w - 8) / values.length;
+    var g = svgEl('svg', { viewBox: '0 0 ' + w + ' ' + hgt, class: 'bars', preserveAspectRatio: 'none', role: 'img', 'aria-label': opts.label || '' });
+    values.forEach(function (v, i) {
+      var bh = Math.round(((hgt - pad - 14) * v) / max);
+      var x = 4 + i * bw + bw * 0.18;
+      var y = hgt - pad - bh;
+      var hi = opts.highlight === i;
+      g.appendChild(svgEl('rect', { x: x, y: y, width: bw * 0.64, height: Math.max(bh, v ? 3 : 1.5), rx: 5,
+        fill: hi ? (opts.hiColour || '#e0457b') : (opts.colour || 'color-mix(in srgb, #e0457b 35%, transparent)') }));
+      if (v) {
+        var tv = svgEl('text', { x: x + bw * 0.32, y: y - 4, 'text-anchor': 'middle', class: 'bar-val' });
+        tv.textContent = String(v);
+        g.appendChild(tv);
+      }
+      var tl = svgEl('text', { x: x + bw * 0.32, y: hgt - 6, 'text-anchor': 'middle', class: 'bar-lab' + (hi ? ' hi' : '') });
+      tl.textContent = labels[i];
+      g.appendChild(tl);
+    });
+    return g;
+  }
+
+  function statusPill(st) { return h('span', { class: 'st-pill', dataset: { st: st }, text: statusLabel(st) }); }
+
+  /* ---------- the list, ClickUp style ------------------------------------ */
+
+  /** A flag in the priority's colour, or nothing for an ordinary one. */
+  function prioFlag(prio) {
+    if (!prio || prio === 'medium') return null;
+    return h('span', { class: 'prio-flag p-' + prio, title: prioLabel(prio) }, [icon('flag'), h('span', { text: prioLabel(prio) })]);
+  }
+  function dueChip(task) {
+    if (!task.dueDate) return h('span', { class: 'due-chip none', text: '—' });
+    var rel = relativeDay(task.dueDate);
+    return h('span', { class: 'due-chip u-' + urgencyOf(task), title: whenWording(task.dueDate, task.dueTime) },
+      [(isOverdue(task) ? t('overdue') + ' · ' : '') + (rel || fmtDate(task.dueDate)) + (task.dueTime ? ' ' + task.dueTime : '')]);
+  }
+  function whereChip(task) {
+    var sp = task.spaceId ? spaceBy(task.spaceId) : null;
+    if (sp) return h('span', { class: 'where-chip', style: '--sp:' + spaceHex(sp) }, [h('i'), sp.name]);
+    var dept = task.department || (task.departments[0] && task.departments[0].key);
+    if (dept) return h('span', { class: 'where-chip dept', style: '--sp:' + deptHue(dept) }, [h('i'), deptLabel(dept)]);
+    return h('span', { class: 'where-chip none', text: '' });
+  }
+
+  /**
+   * One task as a slim row: status, title, then columns for who, when,
+   * priority and where. The whole row opens the task; the round button on
+   * the left changes the status, as it does on the board.
+   */
+  function listRow(task) {
+    var extra = [];
+    var parts = task.parts || [];
+    if (parts.length) {
+      var done = parts.filter(function (p) { return p.done; }).length;
+      extra.push(h('span', { class: 'mini parts' + (done === parts.length ? ' done' : ''), text: '✓ ' + done + '/' + parts.length }));
+    }
+    if ((task.links || []).length) extra.push(h('span', { class: 'mini', text: '↗ ' + task.links.length }));
+    if ((task.viewers || []).length && task.mayEdit) {
+      extra.push(h('span', { class: 'mini chip viewers-n', title: t('viewers') }, [icon('eye'), String(task.viewers.length)]));
+    }
+    var beaten = outrankedNote(task);
+    if (beaten) extra.push(beaten);
+
+    var stack = h('span', { class: 'stack' }, task.assignees.slice(0, 3).map(function (u) { return avatarNode(u, 'sm'); }));
+    if (task.assignees.length > 3) stack.appendChild(h('span', { class: 'avatar sm more', text: '+' + (task.assignees.length - 3) }));
+
+    return h('li', {
+      class: 'task lrow' + (task.pending ? ' pending' : ''),
+      dataset: { status: task.status, st: task.status, prio: task.priority || 'medium', urgency: urgencyOf(task) },
+      onclick: function () { openTask(task); },
+    }, [
+      h('button', {
+        class: 'status-btn' + (task.maySetStatus ? '' : ' locked'),
+        text: MARK[task.status],
+        title: statusLabel(task.status) + (task.maySetStatus ? '' : ' · ' + t('statusLocked')),
+        onclick: function (e) {
+          e.stopPropagation();
+          if (!task.maySetStatus) return;
+          if (isPhone()) openStatusSheet(task);
+          else openStatusMenu(e.currentTarget, task);
+        },
+      }),
+      h('div', { class: 't-title' }, [
+        // What it is to me leads, as on the board (see roleBadge).
+        isPhone() ? null : roleBadge(task),
+        task.code ? h('span', { class: 't-code', text: task.code }) : null,
+        h('span', { class: 't-name', text: task.title }),
+        extra.length ? h('span', { class: 'lr-extra' }, extra) : null,
+        task.myPart ? h('div', {
+          class: 'my-part' + (task.myPart.done ? ' done' : ''),
+          text: (task.myPart.done ? '✓ ' : '▸ ') + t('yourPart') + ': ' + task.myPart.title,
+        }) : null,
+      ]),
+      h('div', { class: 'lr-due' }, [dueChip(task)]),
+      // One box on a phone (a single line under the title); on a computer
+      // display:contents lets each part sit in its own column.
+      h('div', { class: 'lr-meta' }, [
+        isPhone() ? roleBadge(task) : null,
+        h('div', { class: 'lr-who' }, [stack]),
+        h('div', { class: 'lr-prio' }, [prioFlag(task.priority)]),
+        h('div', { class: 'lr-where' }, [whereChip(task)]),
+      ]),
+    ]);
+  }
+
+  /**
+   * The list, in groups by status, each under a header in its colour with
+   * a count — so "how much is waiting for review" is answered by looking,
+   * not by counting. A group folds on a click, and stays folded.
+   */
+  function groupedList(rows) {
+    S.groupFold = S.groupFold || {};
+    var box = h('div', { class: 'glist' });
+    if (!isPhone()) {
+      box.appendChild(h('div', { class: 'glist-head' }, [
+        h('span', { class: 'gh-name', text: t('colTask') }),
+        h('span', { class: 'gh-who', text: t('colWho') }),
+        h('span', { class: 'gh-due', text: t('colDue') }),
+        h('span', { class: 'gh-prio', text: t('colPrio') }),
+        h('span', { class: 'gh-where', text: t('colWhere') }),
+      ]));
+    }
+    STATUS_LIST.forEach(function (st) {
+      var items = rows.filter(function (r) { return r.status === st; });
+      if (!items.length) return;
+      var folded = Boolean(S.groupFold[st]);
+      var group = h('section', { class: 'lgroup' + (folded ? ' folded' : ''), dataset: { st: st } });
+      group.appendChild(h('button', { type: 'button', class: 'lg-head', onclick: function () {
+        S.groupFold[st] = !S.groupFold[st];
+        group.classList.toggle('folded', S.groupFold[st]);
+      } }, [
+        h('i', { class: 'lg-caret', text: '▾' }),
+        statusPill(st),
+        h('span', { class: 'lg-n', text: String(items.length) }),
+      ]));
+      group.appendChild(h('ul', { class: 'tasks list-view' }, items.map(function (task) { return listRow(task); })));
+      box.appendChild(group);
+    });
+    return box;
+  }
+
+  /* ---------- the timeline (Gantt) --------------------------------------- */
+
+  /**
+   * Every task as a bar from its start to its deadline, coloured by status,
+   * against a ruler of days with today marked. A task with no start is a
+   * diamond on its deadline; one with no deadline is left off and counted.
+   *
+   * On a computer a bar can be dragged to move the task, or its right end
+   * dragged to move the deadline, when you may edit it. Scrolls sideways on
+   * a phone; the names stay pinned on the left.
+   */
+  function ganttChart(rows, opts) {
+    opts = opts || {};
+    var phone = Boolean(opts.phone);
+    var zoom = S.ganttZoom || 'week';
+    var DAY = zoom === 'month' ? (phone ? 14 : 18) : (phone ? 30 : 40);
+    var showDone = Boolean(S.ganttDone);
+    var group = S.ganttGroup || 'status';
+
+    var dated = rows.filter(function (x) { return x.dueDate && (showDone || x.status !== 'done'); });
+    var undated = rows.filter(function (x) { return !x.dueDate && (showDone || x.status !== 'done'); }).length;
+    var today = todayIso();
+
+    // The ruler: from a few days before the earliest start (or today) to after the last deadline.
+    var first = today;
+    var last = addDays(today, 21);
+    dated.forEach(function (x) {
+      var s = x.startDate && x.startDate <= x.dueDate ? x.startDate : x.dueDate;
+      if (s < first) first = s;
+      if (x.dueDate > last) last = x.dueDate;
+    });
+    first = addDays(first, -3);
+    last = addDays(last, 5);
+    // Start the ruler on a Monday so the week lines fall on week boundaries.
+    var wd = (new Date(first + 'T12:00:00Z').getUTCDay() + 6) % 7;
+    first = addDays(first, -wd);
+    var days = [];
+    for (var d = first; d <= last && days.length < 400; d = addDays(d, 1)) days.push(d);
+    var col = function (iso) { return daysFromToday(iso) - daysFromToday(first); };
+
+    var wrap = h('div', { class: 'gantt' + (phone ? ' g-phone' : '') });
+
+    // Controls.
+    wrap.appendChild(h('div', { class: 'g-bar' }, [
+      h('div', { class: 'seg' }, [['week', 'ganttWeek'], ['month', 'ganttMonth']].map(function (z) {
+        return h('button', { class: zoom === z[0] ? 'on' : '', text: t(z[1]), onclick: function () { S.ganttZoom = z[0]; renderPage(); } });
+      })),
+      h('div', { class: 'seg' }, [['status', 'ganttByStatus'], ['where', 'ganttByWhere'], ['none', 'ganttFlat']].map(function (z) {
+        return h('button', { class: group === z[0] ? 'on' : '', text: t(z[1]), onclick: function () { S.ganttGroup = z[0]; renderPage(); } });
+      })),
+      h('label', { class: 'inline-check' }, [
+        h('input', { type: 'checkbox', checked: showDone, onchange: function (e) { S.ganttDone = e.target.checked; renderPage(); } }),
+        t('ganttShowDone'),
+      ]),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn sm', text: t('today'), onclick: function () {
+        var sc = wrap.querySelector('.g-scroll');
+        if (sc) sc.scrollTo({ left: Math.max(0, col(today) * DAY - 120), behavior: 'smooth' });
+      } }),
+    ]));
+
+    if (!dated.length) {
+      wrap.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('ganttEmpty') }), t('ganttEmptySub')]));
+      return wrap;
+    }
+
+    // Groups.
+    var groups = [];
+    if (group === 'status') {
+      STATUS_LIST.forEach(function (st) {
+        var items = dated.filter(function (x) { return x.status === st; });
+        if (items.length) groups.push({ key: st, label: statusLabel(st), colour: STATUS_HEX[st], items: items });
+      });
+    } else if (group === 'where') {
+      var map = {};
+      dated.forEach(function (x) {
+        var sp = x.spaceId ? spaceBy(x.spaceId) : null;
+        var key = sp ? 'sp:' + sp.id : 'd:' + (x.department || '');
+        if (!map[key]) map[key] = { key: key, label: sp ? sp.name : (x.department ? deptLabel(x.department) : t('noDept')),
+          colour: sp ? spaceHex(sp) : (x.department ? deptHue(x.department) : '#94849b'), items: [] };
+        map[key].items.push(x);
+      });
+      groups = Object.keys(map).map(function (k) { return map[k]; });
+    } else {
+      groups.push({ key: 'all', label: '', items: dated });
+    }
+    groups.forEach(function (g) {
+      g.items.sort(function (a, b) {
+        var sa = a.startDate || a.dueDate; var sb = b.startDate || b.dueDate;
+        return sa < sb ? -1 : sa > sb ? 1 : (a.dueDate < b.dueDate ? -1 : 1);
+      });
+    });
+
+    var width = days.length * DAY;
+    var scroll = h('div', { class: 'g-scroll' });
+    var grid = h('div', { class: 'g-grid', style: '--day:' + DAY + 'px;--days:' + days.length + ';width:calc(var(--g-label) + ' + width + 'px)' });
+
+    // Ruler: months on top, days below.
+    var months = h('div', { class: 'g-months' });
+    var dayRow = h('div', { class: 'g-days' });
+    var runStart = 0;
+    days.forEach(function (iso, i) {
+      var next = days[i + 1];
+      if (!next || next.slice(0, 7) !== iso.slice(0, 7)) {
+        months.appendChild(h('div', { class: 'g-month', style: 'left:' + runStart * DAY + 'px;width:' + (i - runStart + 1) * DAY + 'px',
+          text: fmtDate(iso, { month: 'long', year: 'numeric' }) }));
+        runStart = i + 1;
+      }
+      var dow = (new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7;
+      var label = zoom === 'month' ? (dow === 0 ? String(Number(iso.slice(8))) : '') : String(Number(iso.slice(8)));
+      dayRow.appendChild(h('div', {
+        class: 'g-day' + (iso === today ? ' today' : '') + (dow >= 5 ? ' wkend' : '') + (dow === 0 ? ' mon' : ''),
+        style: 'left:' + i * DAY + 'px;width:' + DAY + 'px',
+      }, [h('b', { text: label }), zoom === 'week' && !phone ? h('small', { text: fmtDate(iso, { weekday: 'narrow' }) }) : null]));
+    });
+    grid.appendChild(h('div', { class: 'g-head' }, [
+      h('div', { class: 'g-corner', text: t('colTask') }),
+      h('div', { class: 'g-ruler' }, [months, dayRow]),
+    ]));
+
+    // Background: weekend columns and the today line, once for the whole body.
+    var body = h('div', { class: 'g-body' });
+    var bg = h('div', { class: 'g-bg' });
+    days.forEach(function (iso, i) {
+      var dow = (new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7;
+      if (dow >= 5) bg.appendChild(h('i', { class: 'g-wk', style: 'left:' + i * DAY + 'px;width:' + DAY + 'px' }));
+      if (dow === 0) bg.appendChild(h('i', { class: 'g-wline', style: 'left:' + i * DAY + 'px' }));
+    });
+    bg.appendChild(h('i', { class: 'g-today', style: 'left:' + (col(today) * DAY + DAY / 2) + 'px' }));
+    body.appendChild(bg);
+
+    groups.forEach(function (g) {
+      if (g.label) {
+        body.appendChild(h('div', { class: 'g-group' }, [
+          h('div', { class: 'g-glabel' }, [h('i', { style: 'background:' + g.colour }), g.label, h('span', { class: 'n', text: String(g.items.length) })]),
+          h('div', { class: 'g-gfill' }),
+        ]));
+      }
+      g.items.forEach(function (task) {
+        var start = task.startDate && task.startDate <= task.dueDate ? task.startDate : null;
+        var from = col(start || task.dueDate);
+        var to = col(task.dueDate);
+        var late = isOverdue(task);
+        var label = h('button', { type: 'button', class: 'g-label', onclick: function () { openTask(task); } }, [
+          h('span', { class: 'st-dot', dataset: { st: task.status } }),
+          task.code ? h('span', { class: 't-code', text: task.code }) : null,
+          h('span', { class: 'g-name', text: task.title }),
+        ]);
+        var bar;
+        if (start) {
+          bar = h('div', {
+            class: 'g-barline' + (late ? ' late' : ''), dataset: { st: task.status },
+            style: 'left:' + (from * DAY + 2) + 'px;width:' + Math.max(DAY - 4, (to - from + 1) * DAY - 4) + 'px',
+            title: task.title + ' · ' + fmtDate(start) + ' – ' + fmtDate(task.dueDate),
+          }, [
+            h('span', { class: 'g-bartext', text: (to - from + 1) * DAY > 90 ? task.title : '' }),
+            h('span', { class: 'g-stack' }, task.assignees.slice(0, 2).map(function (u) { return avatarNode(u, 'sm'); })),
+            task.mayEdit && !phone ? h('i', { class: 'g-grip' }) : null,
+          ]);
+        } else {
+          bar = h('div', {
+            class: 'g-milestone' + (late ? ' late' : ''), dataset: { st: task.status },
+            style: 'left:' + (to * DAY + DAY / 2 - 8) + 'px',
+            title: task.title + ' · ' + fmtDate(task.dueDate),
+          });
+        }
+        bar.addEventListener('click', function (e) { if (!bar._dragged) openTask(task); e.stopPropagation(); });
+        if (task.mayEdit && !phone && !task.pending) dragBar(bar, task, DAY, Boolean(start));
+        body.appendChild(h('div', { class: 'g-row', dataset: { st: task.status } }, [label, h('div', { class: 'g-track' }, [bar])]));
+      });
+    });
+    grid.appendChild(body);
+    scroll.appendChild(grid);
+    wrap.appendChild(scroll);
+    if (undated) wrap.appendChild(h('p', { class: 'g-note', text: t('ganttUndated').replace('%n', String(undated)) }));
+
+    // Open on today, not on the first of three months ago.
+    requestAnimationFrame(function () {
+      if (S.ganttScroll !== undefined && S.ganttScrollFor === zoom) scroll.scrollLeft = S.ganttScroll;
+      else scroll.scrollLeft = Math.max(0, col(today) * DAY - (phone ? 40 : 160));
+    });
+    scroll.addEventListener('scroll', function () { S.ganttScroll = scroll.scrollLeft; S.ganttScrollFor = zoom; }, { passive: true });
+    return wrap;
+  }
+
+  /**
+   * Dragging a bar along the ruler moves both dates by whole days; dragging
+   * its grip moves only the deadline. Saved on release, through the same
+   * PATCH as the form, and put back if the server refuses.
+   */
+  function dragBar(bar, task, DAY, ranged) {
+    bar.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      var grip = e.target.classList.contains('g-grip');
+      var x0 = e.clientX;
+      var left0 = parseFloat(bar.style.left);
+      var width0 = bar.offsetWidth;
+      var moved = 0;
+      bar._dragged = false;
+      bar.setPointerCapture(e.pointerId);
+      bar.classList.add('dragging');
+      function move(ev) {
+        moved = Math.round((ev.clientX - x0) / DAY);
+        if (Math.abs(ev.clientX - x0) > 4) bar._dragged = true;
+        if (grip) bar.style.width = Math.max(DAY - 4, width0 + moved * DAY) + 'px';
+        else bar.style.left = (left0 + moved * DAY) + 'px';
+      }
+      function up() {
+        bar.removeEventListener('pointermove', move);
+        bar.removeEventListener('pointerup', up);
+        bar.classList.remove('dragging');
+        if (!moved) { setTimeout(function () { bar._dragged = false; }, 0); return; }
+        var change = {};
+        if (grip) {
+          var due = addDays(task.dueDate, moved);
+          if (ranged && task.startDate && due < task.startDate) due = task.startDate;
+          change.dueDate = due;
+        } else {
+          change.dueDate = addDays(task.dueDate, moved);
+          if (ranged && task.startDate) change.startDate = addDays(task.startDate, moved);
+        }
+        patchTask(task.id, change);
+        setTimeout(function () { bar._dragged = false; }, 0);
+      }
+      bar.addEventListener('pointermove', move);
+      bar.addEventListener('pointerup', up);
+    });
+  }
+
+  /** "This one" or "this and every one after" — asked of a meeting in a series. */
+  function askSeriesScope(title) {
+    return new Promise(function (resolve) {
+      actionSheet(title, [
+        { icon: 'meeting', label: t('seriesOne'), sub: t('seriesOneSub'), onclick: function () { resolve('one'); } },
+        { icon: 'repeat', label: t('seriesFollowing'), sub: t('seriesFollowingSub'), onclick: function () { resolve('following'); } },
+      ]);
+    });
+  }
+
+  /* ---------- home: a personal brief, as pictures ------------------------ */
+
+  /** A timestamp as a Bangkok calendar date. */
+  function localDay(stamp) {
+    if (!stamp) return null;
+    var d = new Date(stamp);
+    if (isNaN(d.getTime())) return null;
+    return new Date(d.getTime() + 7 * 3600000).toISOString().slice(0, 10);
+  }
+  function mondayOf(iso) {
+    var wd = (new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7;
+    return addDays(iso, -wd);
+  }
+  function greetingWord() {
+    var hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', hour12: false }).format(new Date()));
+    return hour < 12 ? t('helloMorning') : hour < 17 ? t('helloAfternoon') : t('helloEvening');
+  }
+  function firstName() {
+    var u = S.user || {};
+    if (u.nickname) return u.nickname;
+    return String(u.displayName || u.username || '').split(/[\s\-–]/)[0];
+  }
+
+  /**
+   * Everything the home page draws, worked out from what is already loaded.
+   * Kept apart from the drawing so the numbers can be read (and tested) on
+   * their own.
+   */
+  function homeStats() {
+    var me = S.user.username;
+    var today = todayIso();
+    var mine = S.tasks.filter(function (x) { return x.assignees.indexOf(me) !== -1; });
+    var open = mine.filter(function (x) { return x.status !== 'done'; });
+    var done = mine.filter(function (x) { return x.status === 'done'; });
+    var weekEnd = addDays(today, 6);
+    var dueSoon = open.filter(function (x) { return x.dueDate && x.dueDate >= today && x.dueDate <= weekEnd; });
+    var late = open.filter(isOverdue);
+    var doneDay = function (x) { return localDay(x.doneAt) || localDay(x.updatedAt); };
+    var doneMonth = done.filter(function (x) { var d = doneDay(x); return d && d >= addDays(today, -29); });
+    var doneWeek = done.filter(function (x) { var d = doneDay(x); return d && d >= mondayOf(today); });
+
+    // Finished per week, the last eight weeks.
+    var weeks = [];
+    var thisMonday = mondayOf(today);
+    for (var i = 7; i >= 0; i -= 1) weeks.push(addDays(thisMonday, -7 * i));
+    var perWeek = weeks.map(function (w) {
+      var end = addDays(w, 6);
+      return done.filter(function (x) { var d = doneDay(x); return d && d >= w && d <= end; }).length;
+    });
+
+    // On time: finished on or before the deadline.
+    var judged = done.filter(function (x) { return x.dueDate && doneDay(x); });
+    var onTime = judged.filter(function (x) { return doneDay(x) <= x.dueDate; });
+    var onTimePct = judged.length ? Math.round((onTime.length / judged.length) * 100) : null;
+    var recent = judged.slice().sort(function (a, b) { return doneDay(a) < doneDay(b) ? 1 : -1; }).slice(0, 5);
+    var streakOnTime = recent.length === 5 && recent.every(function (x) { return doneDay(x) <= x.dueDate; });
+
+    // Which weekday things get finished on.
+    var byWeekday = [0, 0, 0, 0, 0, 0, 0];
+    done.forEach(function (x) {
+      var d = doneDay(x);
+      if (d) byWeekday[(new Date(d + 'T12:00:00Z').getUTCDay() + 6) % 7] += 1;
+    });
+    var bestDay = byWeekday.indexOf(Math.max.apply(null, byWeekday));
+
+    // Days in a row with something finished, up to today (or yesterday).
+    var daysDone = {};
+    done.forEach(function (x) { var d = doneDay(x); if (d) daysDone[d] = true; });
+    var streak = 0;
+    var cursor = daysDone[today] ? today : addDays(today, -1);
+    while (daysDone[cursor] && streak < 365) { streak += 1; cursor = addDays(cursor, -1); }
+
+    // Who I work with most.
+    var withWhom = {};
+    mine.forEach(function (x) {
+      x.assignees.forEach(function (u) { if (u !== me) withWhom[u] = (withWhom[u] || 0) + 1; });
+    });
+    var team = Object.keys(withWhom).sort(function (a, b) { return withWhom[b] - withWhom[a]; })
+      .slice(0, 6).map(function (u) { return { username: u, n: withWhom[u] }; });
+
+    var statusCount = {};
+    STATUS_LIST.forEach(function (st) { statusCount[st] = mine.filter(function (x) { return x.status === st; }).length; });
+
+    var meetingsToday = (S.meetings || []).filter(function (m) {
+      return m.meetsOn === today && m.status !== 'cancelled' && (m.people || []).some(function (p) { return p.username === me && p.reply !== 'declined'; });
+    });
+    var accepted = (S.meetings || []).filter(function (m) {
+      return (m.people || []).some(function (p) { return p.username === me && p.reply === 'accepted'; });
+    }).length;
+    var eventsToday = (S.events || []).filter(function (e) {
+      return e.startsOn <= today && (e.endsOn || e.startsOn) >= today &&
+        (!(e.people || []).length || e.people.indexOf(me) !== -1);
+    });
+
+    return {
+      mine: mine, open: open, done: done, dueSoon: dueSoon, late: late, doneMonth: doneMonth, doneWeek: doneWeek,
+      weeks: weeks, perWeek: perWeek, judged: judged.length, onTime: onTime.length, onTimePct: onTimePct,
+      streakOnTime: streakOnTime, byWeekday: byWeekday, bestDay: bestDay, streak: streak, team: team,
+      statusCount: statusCount, meetingsToday: meetingsToday, eventsToday: eventsToday, accepted: accepted,
+      dueToday: open.filter(function (x) { return x.dueDate === today; }),
+    };
+  }
+
+  /** The achievements, each either earned or showing how far off it is. */
+  function badgesFor(st) {
+    return [
+      { key: 'first', icon: 'spark', label: t('badgeFirst'), have: Math.min(st.done.length, 1), need: 1, colour: '#e0457b' },
+      { key: 'ten', icon: 'trophy', label: t('badgeTen'), have: Math.min(st.done.length, 10), need: 10, colour: '#f59e0b' },
+      { key: 'ontime', icon: 'clock', label: t('badgeOnTime'), have: st.streakOnTime ? 5 : Math.min(st.onTime, 4), need: 5, colour: '#0fa5a0' },
+      { key: 'week', icon: 'flame', label: t('badgeWeek'), have: Math.min(st.doneWeek.length, 5), need: 5, colour: '#e5484d' },
+      { key: 'team', icon: 'people', label: t('badgeTeam'), have: Math.min(st.team.length, 5), need: 5, colour: '#5b5bd6' },
+      { key: 'meet', icon: 'meeting', label: t('badgeMeet'), have: Math.min(st.accepted, 5), need: 5, colour: '#8b5cf6' },
+      { key: 'clear', icon: 'check', label: t('badgeClear'), have: st.open.length && !st.late.length ? 1 : 0, need: 1, colour: '#12a36b' },
+    ];
+  }
+
+  function kpi(iconName, colour, value, label, sub, onclick) {
+    return h(onclick ? 'button' : 'div', { class: 'kpi', style: '--k:' + colour, onclick: onclick || null, type: onclick ? 'button' : null }, [
+      h('span', { class: 'kpi-ic' }, [icon(iconName)]),
+      h('span', { class: 'kpi-tx' }, [
+        h('b', { class: 'kpi-n', text: String(value) }),
+        h('span', { class: 'kpi-l', text: label }),
+        sub ? h('small', { class: 'kpi-s', text: sub }) : null,
+      ]),
+    ]);
+  }
+
+  function pageHome(main) {
+    main.classList.add('wide');
+    var st = homeStats();
+    var phone = isPhone();
+    var today = todayIso();
+
+    // The band: hello, and the day in one sentence.
+    var brief = [];
+    if (st.meetingsToday.length) brief.push(t('briefMeetings').replace('%n', String(st.meetingsToday.length)));
+    if (st.dueToday.length) brief.push(t('briefDueToday').replace('%n', String(st.dueToday.length)));
+    if (st.late.length) brief.push(t('briefLate').replace('%n', String(st.late.length)));
+    var weekGoal = Math.max(5, st.doneWeek.length);
+    main.appendChild(h('section', { class: 'hello' }, [
+      h('div', { class: 'hello-tx' }, [
+        h('small', { text: fmtDate(today, { weekday: 'long', day: 'numeric', month: 'long' }) }),
+        h('h2', { text: greetingWord() + ', ' + firstName() }),
+        h('p', { text: brief.length ? brief.join(' · ') : t('briefClear') }),
+        h('div', { class: 'hello-actions' }, [
+          h('a', { class: 'btn hello-btn', href: '#/schedule' }, [icon('clock'), t('navSchedule')]),
+          h('a', { class: 'btn hello-btn ghosty', href: '#/work' }, [icon('task'), t('homeMyWork')]),
+        ]),
+      ]),
+      h('div', { class: 'hello-art' }, [
+        h('div', { class: 'hello-ring' }, [donut([
+          { value: st.doneWeek.length, colour: '#ffffff' },
+          { value: Math.max(0, weekGoal - st.doneWeek.length), colour: 'rgba(255,255,255,.22)' },
+        ], { size: phone ? 92 : 124, stroke: phone ? 10 : 13, center: st.doneWeek.length, sub: t('homeThisWeek') })]),
+        st.streak ? h('div', { class: 'hello-streak' }, [icon('flame'), t('homeStreak').replace('%n', String(st.streak))]) : null,
+      ]),
+    ]));
+
+    // Four numbers.
+    main.appendChild(h('section', { class: 'kpis' }, [
+      kpi('task', '#5b5bd6', st.open.length, t('kpiOpen'), t('kpiOpenSub'), function () { S.scope = 'mine'; S.role = ''; S.filter = 'open'; location.hash = '#/work'; }),
+      kpi('clock', '#f59e0b', st.dueSoon.length, t('kpiWeek'), t('kpiWeekSub')),
+      kpi('alert', '#e5484d', st.late.length, t('kpiLate'), st.late.length ? t('kpiLateSub') : t('kpiLateNone')),
+      kpi('trophy', '#12a36b', st.doneMonth.length, t('kpiDone'), t('kpiDoneSub')),
+    ]));
+
+    var grid = h('div', { class: 'home-grid' });
+    main.appendChild(grid);
+
+    // Today, as a timeline.
+    var todayCard = h('section', { class: 'card hc-today' }, [
+      h('div', { class: 'card-head' }, [icon('sun'), h('h3', { text: t('homeToday') }), h('span', { class: 'grow' }),
+        h('a', { class: 'card-link', href: '#/schedule', text: t('homeOpenSchedule') })]),
+    ]);
+    var todayList = h('ul', { class: 'today-list' });
+    todayCard.appendChild(todayList);
+    function drawToday(appts) {
+      clear(todayList);
+      var items = [];
+      st.meetingsToday.forEach(function (m) { items.push({ at: m.meetsAt || '', to: m.endsAt || '', kind: 'meeting', title: m.title, sub: m.place, open: function () { openMeeting(m); } }); });
+      st.eventsToday.forEach(function (e) { items.push({ at: e.allDay ? '' : (e.startsAt || ''), to: e.allDay ? '' : (e.endsAt || ''), kind: 'event', title: e.title, sub: e.place, open: function () { openEvent(e); } }); });
+      st.dueToday.forEach(function (x) { items.push({ at: x.dueTime || '', kind: 'task', st: x.status, title: x.title, sub: t('dueWord'), open: function () { openTask(x); } }); });
+      (appts || []).forEach(function (a) { if (a.on === today) items.push({ at: a.at, to: a.to, kind: a.kind, title: a.title, sub: a.with ? nameOf(a.with) : a.place, open: function () { openAppointment(a); } }); });
+      items.sort(function (a, b) { return (a.at || '00') < (b.at || '00') ? -1 : 1; });
+      if (!items.length) {
+        todayList.appendChild(h('li', { class: 'today-empty' }, [icon('sun'), h('span', { text: t('homeTodayEmpty') })]));
+        return;
+      }
+      items.forEach(function (it) {
+        todayList.appendChild(h('li', { class: 'today-item k-' + it.kind, dataset: it.st ? { st: it.st } : {}, onclick: it.open }, [
+          h('span', { class: 'ti-time' }, [h('b', { text: it.at || t('allDayShort') }), it.to ? h('small', { text: it.to }) : null]),
+          h('span', { class: 'ti-bar' }),
+          h('span', { class: 'ti-tx' }, [h('b', { text: it.title }), h('small', { text: t('kind_' + it.kind) + (it.sub ? ' · ' + it.sub : '') })]),
+        ]));
+      });
+    }
+    drawToday([]);
+    api('/api/calendar?do=schedule&from=' + today + '&to=' + today)
+      .then(function (d) { if (S.page === 'home') drawToday(d.appointments || []); })
+      .catch(function () {});
+    grid.appendChild(todayCard);
+
+    // Finished per week.
+    var wkLabels = st.weeks.map(function (w, i) { return i === st.weeks.length - 1 ? t('thisWeekShort') : fmtDate(w, { day: 'numeric', month: 'short' }); });
+    grid.appendChild(h('section', { class: 'card hc-trend' }, [
+      h('div', { class: 'card-head' }, [icon('chart'), h('h3', { text: t('homeTrend') }), h('span', { class: 'grow' }),
+        h('small', { text: t('homeTrendTotal').replace('%n', String(st.done.length)) })]),
+      h('div', { class: 'chart-box' }, [barChart(st.perWeek, wkLabels, { width: 420, height: 160, highlight: st.perWeek.length - 1, label: t('homeTrend') })]),
+    ]));
+
+    // Where my work stands.
+    var stParts = STATUS_LIST.map(function (s) { return { value: st.statusCount[s], colour: STATUS_HEX[s], label: statusLabel(s) }; });
+    grid.appendChild(h('section', { class: 'card hc-status' }, [
+      h('div', { class: 'card-head' }, [icon('pie'), h('h3', { text: t('homeStatus') })]),
+      h('div', { class: 'donut-row' }, [
+        donut(stParts, { size: 132, stroke: 20, center: st.mine.length, sub: t('homeTasks') }),
+        h('ul', { class: 'legend' }, STATUS_LIST.map(function (s) {
+          return h('li', {}, [h('i', { style: 'background:' + STATUS_HEX[s] }), h('span', { text: statusLabel(s) }), h('b', { text: String(st.statusCount[s]) })]);
+        })),
+      ]),
+    ]));
+
+    // On time.
+    var pct = st.onTimePct;
+    grid.appendChild(h('section', { class: 'card hc-ontime' }, [
+      h('div', { class: 'card-head' }, [icon('target'), h('h3', { text: t('homeOnTime') })]),
+      h('div', { class: 'donut-row' }, [
+        donut([{ value: pct || 0, colour: pct === null ? 'var(--surface-3)' : (pct >= 80 ? '#12a36b' : pct >= 50 ? '#f59e0b' : '#e5484d') },
+          { value: 100 - (pct || 0), colour: 'transparent' }], { size: 132, stroke: 14, center: pct === null ? '—' : pct + '%', sub: t('homeOnTimeSub') }),
+        h('div', { class: 'ot-tx' }, [
+          h('b', { text: pct === null ? t('homeOnTimeNone') : t('homeOnTimeOf').replace('%a', String(st.onTime)).replace('%b', String(st.judged)) }),
+          h('small', { text: pct === null ? '' : pct >= 80 ? t('homeOnTimeGreat') : pct >= 50 ? t('homeOnTimeOk') : t('homeOnTimeLow') }),
+        ]),
+      ]),
+    ]));
+
+    // The day things get done.
+    var wdLabels = WEEK_KEYS.map(function (k) { return t('wd_' + k); });
+    var anyDone = st.byWeekday.some(function (v) { return v > 0; });
+    grid.appendChild(h('section', { class: 'card hc-days' }, [
+      h('div', { class: 'card-head' }, [icon('bolt'), h('h3', { text: t('homeBestDay') }), h('span', { class: 'grow' }),
+        anyDone ? h('span', { class: 'chip best-day', text: t('wdl_' + WEEK_KEYS[st.bestDay]) }) : null]),
+      h('div', { class: 'chart-box' }, [barChart(st.byWeekday, wdLabels, { width: 320, height: 140, highlight: anyDone ? st.bestDay : -1,
+        hiColour: '#8b5cf6', colour: 'color-mix(in srgb, #8b5cf6 30%, transparent)', label: t('homeBestDay') })]),
+    ]));
+
+    // Coming up.
+    var next = st.open.filter(function (x) { return x.dueDate; }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; }).slice(0, phone ? 4 : 6);
+    grid.appendChild(h('section', { class: 'card hc-next' }, [
+      h('div', { class: 'card-head' }, [icon('flag'), h('h3', { text: t('homeNext') }), h('span', { class: 'grow' }),
+        h('a', { class: 'card-link', href: '#/work', text: t('seeAll') })]),
+      next.length ? h('ul', { class: 'next-list' }, next.map(function (x) {
+        return h('li', { dataset: { st: x.status }, onclick: function () { openTask(x); } }, [
+          h('span', { class: 'st-dot', dataset: { st: x.status } }),
+          h('span', { class: 'nx-title', text: x.title }),
+          dueChip(x),
+        ]);
+      })) : h('p', { class: 'muted-line', text: t('homeNextNone') }),
+    ]));
+
+    // Badges.
+    var badges = badgesFor(st);
+    var earned = badges.filter(function (b) { return b.have >= b.need; }).length;
+    grid.appendChild(h('section', { class: 'card hc-badges' }, [
+      h('div', { class: 'card-head' }, [icon('trophy'), h('h3', { text: t('homeBadges') }), h('span', { class: 'grow' }),
+        h('small', { text: earned + '/' + badges.length })]),
+      h('div', { class: 'badges' }, badges.map(function (b) {
+        var got = b.have >= b.need;
+        return h('div', { class: 'badge-item' + (got ? ' got' : ''), style: '--b:' + b.colour, title: b.label },
+          [h('span', { class: 'bd-ic' }, [icon(b.icon)]), h('b', { text: b.label }),
+            h('small', { text: got ? t('badgeGot') : b.have + '/' + b.need }),
+            got ? null : h('span', { class: 'bd-bar' }, [h('i', { style: 'width:' + Math.round((b.have / b.need) * 100) + '%' })])]);
+      })),
+    ]));
+
+    // The people I work with.
+    grid.appendChild(h('section', { class: 'card hc-team' }, [
+      h('div', { class: 'card-head' }, [icon('people'), h('h3', { text: t('homeTeam') })]),
+      st.team.length ? h('ul', { class: 'team-list' }, st.team.map(function (p) {
+        var max = st.team[0].n;
+        return h('li', {}, [avatarNode(p.username, 'sm'), h('span', { class: 'tm-name', text: nameOf(p.username) }),
+          h('span', { class: 'tm-bar' }, [h('i', { style: 'width:' + Math.round((p.n / max) * 100) + '%' })]),
+          h('b', { text: String(p.n) })]);
+      })) : h('p', { class: 'muted-line', text: t('homeTeamNone') }),
+    ]));
+
+    // Spaces I am in.
+    var spaces = (S.spaces || []).filter(function (sp) { return sp.mine; });
+    grid.appendChild(h('section', { class: 'card hc-spaces' }, [
+      h('div', { class: 'card-head' }, [icon('grid'), h('h3', { text: t('spaces') }), h('span', { class: 'grow' }),
+        h('button', { class: 'btn sm', text: '+ ' + t('spaceNew'), onclick: function () { openSpace(null); } })]),
+      spaces.length ? h('div', { class: 'space-tiles' }, spaces.slice(0, 6).map(function (sp) {
+        var total = sp.openTasks + sp.doneTasks;
+        return h('a', { class: 'space-tile', href: '#/space/' + encodeURIComponent(sp.id), style: '--sp:' + spaceHex(sp) }, [
+          spaceBadge(sp, 'sp-ico'),
+          h('span', { class: 'sp-tx' }, [h('b', { text: sp.name }), h('small', { text: t('spaceOpenN').replace('%n', String(sp.openTasks)) })]),
+          h('span', { class: 'sp-bar' }, [h('i', { style: 'width:' + (total ? Math.round((sp.doneTasks / total) * 100) : 0) + '%' })]),
+        ]);
+      })) : h('p', { class: 'muted-line', text: t('spacesNone') }),
+    ]));
+  }
+
+  /* ---------- my schedule ------------------------------------------------ */
+
+  var KIND_COLOUR = {
+    meeting: '#5b5bd6', event: '#f59e0b', task: '#e0457b', personal: '#d9468f',
+    focus: '#8b5cf6', booking: '#12a36b', office: '#0fa5a0', google: '#2f7ff0',
+  };
+  function minutesOfClock(v) {
+    var m = String(v || '').match(/^(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+  function clockOfMinutes(n) {
+    n = Math.max(0, Math.min(24 * 60 - 1, Math.round(n)));
+    return String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0');
+  }
+
+  function schedRange() {
+    var phone = isPhone();
+    var view = S.schedView || (phone ? 'day' : 'week');
+    var anchor = S.schedAnchor || todayIso();
+    if (view === 'week') { var mon = mondayOf(anchor); return { view: view, from: mon, to: addDays(mon, 6) }; }
+    return { view: view, from: anchor, to: anchor };
+  }
+
+  function loadSchedule(from, to) {
+    var key = from + '|' + to;
+    S.schedKey = key;
+    return api('/api/calendar?do=schedule&from=' + from + '&to=' + to).then(function (d) {
+      if (S.schedKey !== key) return null;
+      S.sched = d;
+      S.schedLoaded = key;
+      return d;
+    });
+  }
+
+  /**
+   * Everything that has a place on my time between two dates, as one list:
+   * meetings I am asked to, events that concern me, my deadlines, my own
+   * appointments and bookings, my office hours, and my Google events.
+   */
+  function schedItems(from, to) {
+    var me = S.user.username;
+    var out = [];
+    var data = S.sched || {};
+    (S.meetings || []).forEach(function (m) {
+      if (m.meetsOn < from || m.meetsOn > to || m.status === 'cancelled') return;
+      var mine = (m.people || []).filter(function (p) { return p.username === me; })[0];
+      if (!mine) return;
+      out.push({ kind: 'meeting', on: m.meetsOn, at: m.meetsAt, to: m.endsAt, title: m.title, sub: m.place,
+        faded: mine.reply === 'declined', reply: mine.reply, open: function () { openMeeting(m); } });
+    });
+    (S.events || []).forEach(function (e) {
+      var a = e.startsOn; var b = e.endsOn || e.startsOn;
+      if (b < from || a > to) return;
+      if ((e.people || []).length && e.people.indexOf(me) === -1) return;
+      var span = a === b ? [a] : (function () { var d = []; for (var x = a > from ? a : from; x <= b && x <= to; x = addDays(x, 1)) d.push(x); return d; }());
+      span.forEach(function (on) {
+        out.push({ kind: 'event', on: on, at: e.allDay ? null : (on === a ? e.startsAt : null), to: e.allDay ? null : (on === b ? e.endsAt : null),
+          title: e.title, sub: e.place, colour: colourHex(e.colour), everyone: !(e.people || []).length, open: function () { openEvent(e); } });
+      });
+    });
+    S.tasks.forEach(function (x) {
+      if (!x.dueDate || x.dueDate < from || x.dueDate > to || x.assignees.indexOf(me) === -1) return;
+      out.push({ kind: 'task', on: x.dueDate, at: x.dueTime, to: x.dueTime ? clockOfMinutes(minutesOfClock(x.dueTime) + 30) : null,
+        title: x.title, sub: statusLabel(x.status), st: x.status, point: true, faded: x.status === 'done', open: function () { openTask(x); } });
+    });
+    (data.appointments || []).forEach(function (a) {
+      out.push({ kind: a.kind, on: a.on, at: a.at, to: a.toOn === a.on ? a.to : '23:59', title: a.title,
+        sub: a.with ? nameOf(a.with) : a.place, open: function () { openAppointment(a); } });
+    });
+    (data.officeDays || []).forEach(function (o) {
+      out.push({ kind: 'office', on: o.on, at: o.at, to: o.to, title: t('officeHours'), sub: o.place, background: true,
+        open: function () { openOfficeHours(); } });
+    });
+    (data.google || []).forEach(function (g) {
+      var a = g.on; var b = g.toOn || g.on;
+      for (var on = a < from ? from : a; on <= b && on <= to; on = addDays(on, 1)) {
+        out.push({ kind: 'google', on: on, at: g.at ? (on === a ? g.at : '00:00') : null, to: g.at ? (on === b ? g.to : '23:59') : null,
+          title: g.title, sub: g.place, link: g.link, open: g.link ? (function (link) { return function () { window.open(link, '_blank', 'noopener'); }; }(g.link)) : null });
+      }
+    });
+    return out;
+  }
+
+  /** Hours spent, by kind, in this range — and the free working hours left. */
+  function allocation(items, from, to) {
+    var mins = {};
+    items.forEach(function (it) {
+      if (it.background || it.faded || !it.at || it.point) return;
+      var a = minutesOfClock(it.at); var b = minutesOfClock(it.to) || a + 60;
+      if (b <= a) return;
+      mins[it.kind] = (mins[it.kind] || 0) + (b - a);
+    });
+    var days = 0;
+    for (var d = from; d <= to; d = addDays(d, 1)) { var wd = (new Date(d + 'T12:00:00Z').getUTCDay() + 6) % 7; if (wd < 5) days += 1; }
+    var busy = Object.keys(mins).reduce(function (a, k) { return a + mins[k]; }, 0);
+    return { mins: mins, busy: busy, free: Math.max(0, days * 9 * 60 - busy), tasks: items.filter(function (i) { return i.kind === 'task'; }).length };
+  }
+  var hoursText = function (m) { var hh = Math.floor(m / 60); var mm = m % 60; return (hh ? hh + t('hrsUnit') : '') + (mm ? ' ' + mm + t('minUnit') : (hh ? '' : '0' + t('hrsUnit'))); };
+
+  function pageSchedule(main) {
+    main.classList.add('wide');
+    var phone = isPhone();
+    var r = schedRange();
+    var key = r.from + '|' + r.to;
+
+    if (S.googleNotice) {
+      var gn = S.googleNotice;
+      S.googleNotice = null;
+      var good = gn === 'ok';
+      main.appendChild(h('div', { class: 'notice ' + (good ? 'ok' : 'warn') }, [t('google_' + gn) !== 'google_' + gn ? t('google_' + gn) : t('google_error')]));
+    }
+    if (S.bookHost) { var host = S.bookHost; S.bookHost = null; setTimeout(function () { openBooking(host); }, 50); }
+
+    // Toolbar.
+    var label = r.view === 'week'
+      ? fmtDate(r.from, { day: 'numeric', month: 'short' }) + ' – ' + fmtDate(r.to, { day: 'numeric', month: 'short', year: 'numeric' })
+      : fmtDate(r.from, { weekday: 'long', day: 'numeric', month: 'long' });
+    var step = r.view === 'week' ? 7 : 1;
+    main.appendChild(h('div', { class: 'sched-bar' }, [
+      h('div', { class: 'sched-nav' }, [
+        h('button', { class: 'btn sm icon-btn', 'aria-label': '‹', onclick: function () { S.schedAnchor = addDays(r.from, -step); renderPage(); } }, ['‹']),
+        h('button', { class: 'btn sm', text: t('today'), onclick: function () { S.schedAnchor = todayIso(); renderPage(); } }),
+        h('button', { class: 'btn sm icon-btn', 'aria-label': '›', onclick: function () { S.schedAnchor = addDays(r.from, step); renderPage(); } }, ['›']),
+      ]),
+      h('b', { class: 'sched-label', text: label }),
+      h('div', { class: 'seg' }, [['day', 'schedDay'], ['week', 'schedWeek']].map(function (v) {
+        return h('button', { class: r.view === v[0] ? 'on' : '', text: t(v[1]), onclick: function () { S.schedView = v[0]; if (v[0] === 'day' && r.view === 'week') S.schedAnchor = r.from <= todayIso() && todayIso() <= r.to ? todayIso() : r.from; renderPage(); } });
+      })),
+      h('span', { class: 'grow' }),
+      h('div', { class: 'sched-actions' }, [
+        h('button', { class: 'btn', onclick: function () { openFindTime(); } }, [icon('search'), h('span', { text: t('findTime') })]),
+        h('button', { class: 'btn', onclick: function () { openBooking(null); } }, [icon('calplus'), h('span', { text: t('bookSlot') })]),
+        h('button', { class: 'btn', onclick: function () { openOfficeHours(); } }, [icon('door'), h('span', { text: t('officeHours') })]),
+        h('button', { class: 'btn primary', onclick: function () { openAppointment(null, { on: r.view === 'day' ? r.from : todayIso() }); } }, [icon('plus'), h('span', { text: t('apptNew') })]),
+      ]),
+    ]));
+
+    var layout = h('div', { class: 'sched-layout' });
+    var side = h('aside', { class: 'sched-side' });
+    var body = h('div', { class: 'sched-main' });
+    layout.appendChild(body);
+    layout.appendChild(side);
+    main.appendChild(layout);
+
+    function draw() {
+      clear(body); clear(side);
+      var items = schedItems(r.from, r.to);
+      if (phone && r.view === 'week') {
+        // A week on a phone: each day that has something, as a short list.
+        for (var dd = r.from; dd <= r.to; dd = addDays(dd, 1)) {
+          var some = items.some(function (it) { return it.on === dd && !it.background; });
+          if (!some && dd !== todayIso()) continue;
+          body.appendChild(h('h4', { class: 'wk-day-head' + (dd === todayIso() ? ' today' : '') }, [fmtDate(dd, { weekday: 'long', day: 'numeric', month: 'short' })]));
+          body.appendChild(dayTimeline(items, dd));
+        }
+      } else if (phone || r.view === 'day') {
+        if (phone) body.appendChild(dayStrip(r));
+        body.appendChild(dayTimeline(items, r.from));
+      } else {
+        body.appendChild(weekGrid(items, r.from, r.to));
+      }
+      if (S.schedLoaded !== key) body.appendChild(h('div', { class: 'sched-loading', text: t('loading') }));
+      drawSide(side, items, r);
+    }
+    draw();
+    if (S.schedLoaded !== key) {
+      loadSchedule(r.from, r.to).then(function (d) { if (d && S.page === 'schedule') { draw(); maybeAutoSync(d.googleStatus); } })
+        .catch(function () { if (S.page === 'schedule') draw(); });
+    }
+  }
+
+  /** Seven day buttons across the top of the phone's day view. */
+  function dayStrip(r) {
+    var mon = mondayOf(r.from);
+    var strip = h('div', { class: 'day-strip' });
+    for (var i = 0; i < 7; i += 1) {
+      (function (iso) {
+        strip.appendChild(h('button', {
+          type: 'button', class: 'ds-day' + (iso === r.from ? ' on' : '') + (iso === todayIso() ? ' today' : ''),
+          onclick: function () { S.schedAnchor = iso; renderPage(); },
+        }, [h('small', { text: fmtDate(iso, { weekday: 'short' }) }), h('b', { text: String(Number(iso.slice(8))) })]));
+      }(addDays(mon, i)));
+    }
+    return strip;
+  }
+
+  /** Overlapping blocks share the width of their day, side by side. */
+  function lanes(timed) {
+    timed.sort(function (a, b) { return a._a - b._a || b._b - a._b; });
+    var groups = []; var cur = []; var end = -1;
+    timed.forEach(function (it) {
+      if (it._a >= end && cur.length) { groups.push(cur); cur = []; end = -1; }
+      cur.push(it); end = Math.max(end, it._b);
+    });
+    if (cur.length) groups.push(cur);
+    groups.forEach(function (g) {
+      var laneEnds = [];
+      g.forEach(function (it) {
+        var lane = laneEnds.findIndex(function (e) { return e <= it._a; });
+        if (lane === -1) { lane = laneEnds.length; laneEnds.push(it._b); } else laneEnds[lane] = it._b;
+        it._lane = lane;
+      });
+      g.forEach(function (it) { it._lanes = laneEnds.length; });
+    });
+  }
+
+  function blockFor(it, HOUR, startHour) {
+    var top = ((it._a - startHour * 60) / 60) * HOUR;
+    var height = Math.max(it.point ? 20 : 22, ((it._b - it._a) / 60) * HOUR - 2);
+    var w = 100 / (it._lanes || 1);
+    var el = h(it.open ? 'button' : 'div', {
+      type: it.open ? 'button' : null,
+      class: 'sb-block k-' + it.kind + (it.faded ? ' faded' : '') + (it.point ? ' point' : '') + (height < 34 ? ' short' : ''),
+      style: 'top:' + top + 'px;height:' + height + 'px;left:calc(' + (it._lane || 0) * w + '% + 2px);width:calc(' + w + '% - 4px);--c:' + (it.colour || KIND_COLOUR[it.kind]),
+      dataset: it.st ? { st: it.st } : {},
+      title: (it.at ? it.at + (it.to && !it.point ? '–' + it.to : '') + ' · ' : '') + it.title + (it.sub ? ' · ' + it.sub : ''),
+      onclick: it.open ? function (e) { e.stopPropagation(); it.open(); } : null,
+    }, [
+      h('b', { text: it.title }),
+      height >= 34 ? h('small', { text: (it.at || '') + (it.to && !it.point ? '–' + it.to : '') + (it.sub ? ' · ' + it.sub : '') }) : null,
+    ]);
+    return el;
+  }
+
+  function weekGrid(items, from, to) {
+    var HOUR = 46;
+    var days = []; for (var d = from; d <= to; d = addDays(d, 1)) days.push(d);
+    var startHour = 7; var endHour = 22;
+    items.forEach(function (it) {
+      if (!it.at) return;
+      var a = minutesOfClock(it.at); var b = minutesOfClock(it.to);
+      if (a !== null) startHour = Math.min(startHour, Math.floor(a / 60));
+      if (b !== null) endHour = Math.max(endHour, Math.ceil(b / 60));
+    });
+    endHour = Math.min(24, endHour);
+    var today = todayIso();
+
+    var grid = h('div', { class: 'wk', style: '--hour:' + HOUR + 'px;--cols:' + days.length });
+    grid.appendChild(h('div', { class: 'wk-head' }, [h('div', { class: 'wk-gutter' })].concat(days.map(function (iso) {
+      return h('div', { class: 'wk-dh' + (iso === today ? ' today' : '') }, [
+        h('small', { text: fmtDate(iso, { weekday: 'short' }) }), h('b', { text: String(Number(iso.slice(8))) }),
+      ]);
+    }))));
+    // Things with no time sit in a row of their own above the hours.
+    var allDay = h('div', { class: 'wk-allday' }, [h('div', { class: 'wk-gutter', text: t('allDayShort') })].concat(days.map(function (iso) {
+      var mine = items.filter(function (it) { return it.on === iso && !it.at && !it.background; });
+      return h('div', { class: 'wk-ad' }, mine.map(function (it) {
+        return h('button', { type: 'button', class: 'ad-chip k-' + it.kind + (it.faded ? ' faded' : ''), style: '--c:' + (it.colour || KIND_COLOUR[it.kind]),
+          dataset: it.st ? { st: it.st } : {}, title: it.title, onclick: it.open }, [it.title]);
+      }));
+    })));
+    grid.appendChild(allDay);
+
+    var scroller = h('div', { class: 'wk-scroll' });
+    var bodyRow = h('div', { class: 'wk-body', style: 'height:' + (endHour - startHour) * HOUR + 'px' });
+    var gutter = h('div', { class: 'wk-gutter wk-hours' });
+    for (var hr = startHour; hr < endHour; hr += 1) {
+      gutter.appendChild(h('span', { style: 'top:' + (hr - startHour) * HOUR + 'px', text: String(hr).padStart(2, '0') + ':00' }));
+    }
+    bodyRow.appendChild(gutter);
+    days.forEach(function (iso) {
+      var colEl = h('div', { class: 'wk-col' + (iso === today ? ' today' : ''), dataset: { on: iso } });
+      for (var hr2 = startHour; hr2 < endHour; hr2 += 1) colEl.appendChild(h('i', { class: 'wk-line', style: 'top:' + (hr2 - startHour) * HOUR + 'px' }));
+      var timed = items.filter(function (it) { return it.on === iso && it.at; }).map(function (it) {
+        var a = minutesOfClock(it.at); var b = minutesOfClock(it.to);
+        if (b === null || b <= a) b = a + (it.point ? 30 : 60);
+        return Object.assign({}, it, { _a: a, _b: b });
+      });
+      timed.filter(function (it) { return it.background; }).forEach(function (it) {
+        colEl.appendChild(h('div', { class: 'wk-office', style: 'top:' + ((it._a - startHour * 60) / 60) * HOUR + 'px;height:' + ((it._b - it._a) / 60) * HOUR + 'px',
+          title: t('officeHours') + (it.sub ? ' · ' + it.sub : '') }, [h('span', { text: t('officeHours') })]));
+      });
+      var fore = timed.filter(function (it) { return !it.background; });
+      lanes(fore);
+      fore.forEach(function (it) { colEl.appendChild(blockFor(it, HOUR, startHour)); });
+      if (iso === today) {
+        var now = nowMinutes();
+        if (now >= startHour * 60 && now <= endHour * 60) colEl.appendChild(h('i', { class: 'wk-now', style: 'top:' + ((now - startHour * 60) / 60) * HOUR + 'px' }));
+      }
+      // A click on an empty half hour starts an appointment there.
+      colEl.addEventListener('click', function (e) {
+        if (e.target !== colEl && !e.target.classList.contains('wk-line')) return;
+        var box = colEl.getBoundingClientRect();
+        var m = Math.floor((((e.clientY - box.top) / HOUR) * 60 + startHour * 60) / 30) * 30;
+        openAppointment(null, { on: iso, at: clockOfMinutes(m), to: clockOfMinutes(m + 60) });
+      });
+      bodyRow.appendChild(colEl);
+    });
+    scroller.appendChild(bodyRow);
+    grid.appendChild(scroller);
+    requestAnimationFrame(function () {
+      var target = Math.max(0, ((Math.max(8 * 60, nowMinutes() - 90) - startHour * 60) / 60) * HOUR);
+      scroller.scrollTop = target;
+    });
+    return grid;
+  }
+  function nowMinutes() {
+    var p = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+    return minutesOfClock(p);
+  }
+
+  /** One day, as a list down the page: all-day things first, then by the clock. */
+  function dayTimeline(items, iso) {
+    var mine = items.filter(function (it) { return it.on === iso; });
+    var box = h('div', { class: 'day-tl' });
+    var untimed = mine.filter(function (it) { return !it.at && !it.background; });
+    var timed = mine.filter(function (it) { return it.at; }).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
+    if (!untimed.length && !timed.length) {
+      box.appendChild(h('div', { class: 'empty sched-empty' }, [icon('sun'), h('strong', { text: t('schedEmptyDay') }),
+        h('button', { class: 'btn sm', text: '+ ' + t('apptNew'), onclick: function () { openAppointment(null, { on: iso }); } })]));
+      return box;
+    }
+    if (untimed.length) {
+      box.appendChild(h('div', { class: 'dtl-allday' }, untimed.map(function (it) {
+        return h('button', { type: 'button', class: 'ad-chip k-' + it.kind, style: '--c:' + (it.colour || KIND_COLOUR[it.kind]), dataset: it.st ? { st: it.st } : {}, onclick: it.open },
+          [h('small', { text: t('kind_' + it.kind) }), it.title]);
+      })));
+    }
+    var now = iso === todayIso() ? nowMinutes() : null;
+    var nowShown = false;
+    var list = h('ul', { class: 'dtl-list' });
+    timed.forEach(function (it) {
+      if (now !== null && !nowShown && minutesOfClock(it.at) > now) {
+        list.appendChild(h('li', { class: 'dtl-now' }, [h('span', { text: clockOfMinutes(now) })]));
+        nowShown = true;
+      }
+      list.appendChild(h('li', { class: 'dtl-item k-' + it.kind + (it.faded ? ' faded' : '') + (it.background ? ' bg' : ''), style: '--c:' + (it.colour || KIND_COLOUR[it.kind]),
+        dataset: it.st ? { st: it.st } : {}, onclick: it.open }, [
+        h('span', { class: 'dtl-time' }, [h('b', { text: it.at }), it.to && !it.point ? h('small', { text: it.to }) : null]),
+        h('span', { class: 'dtl-card' }, [
+          h('small', { class: 'dtl-kind', text: t('kind_' + it.kind) + (it.reply === 'invited' ? ' · ' + t('rsvpAsk') : '') }),
+          h('b', { text: it.title }),
+          it.sub ? h('small', { text: it.sub }) : null,
+        ]),
+      ]));
+    });
+    if (now !== null && !nowShown) list.appendChild(h('li', { class: 'dtl-now' }, [h('span', { text: clockOfMinutes(now) })]));
+    box.appendChild(list);
+    return box;
+  }
+
+  function drawSide(side, items, r) {
+    // Where the time goes.
+    var al = allocation(items, r.from, r.to);
+    var kinds = ['meeting', 'event', 'focus', 'personal', 'booking', 'google'];
+    var parts = kinds.map(function (k) { return { value: al.mins[k] || 0, colour: KIND_COLOUR[k] }; });
+    side.appendChild(h('section', { class: 'card alloc' }, [
+      h('div', { class: 'card-head' }, [icon('pie'), h('h3', { text: r.view === 'week' ? t('allocWeek') : t('allocDay') })]),
+      h('div', { class: 'donut-row' }, [
+        donut(parts, { size: 112, stroke: 16, center: hoursText(al.busy), sub: t('allocBooked') }),
+        h('ul', { class: 'legend' }, kinds.filter(function (k) { return al.mins[k]; }).map(function (k) {
+          return h('li', {}, [h('i', { style: 'background:' + KIND_COLOUR[k] }), h('span', { text: t('kind_' + k) }), h('b', { text: hoursText(al.mins[k]) })]);
+        }).concat([
+          h('li', { class: 'free' }, [h('i', { style: 'background:var(--surface-3)' }), h('span', { text: t('allocFree') }), h('b', { text: hoursText(al.free) })]),
+          al.tasks ? h('li', {}, [h('i', { style: 'background:' + KIND_COLOUR.task }), h('span', { text: t('allocDeadlines') }), h('b', { text: String(al.tasks) })]) : null,
+        ])),
+      ]),
+    ]));
+
+    // Google.
+    var g = (S.sched && S.sched.googleStatus) || null;
+    var gCard = h('section', { class: 'card gcard' }, [h('div', { class: 'card-head' }, [h('span', { class: 'g-logo', text: 'G' }), h('h3', { text: 'Google Calendar' })])]);
+    if (!g) gCard.appendChild(h('p', { class: 'muted-line', text: t('loading') }));
+    else if (!g.configured) gCard.appendChild(h('p', { class: 'muted-line', text: t('googleNotSetUp') }));
+    else if (!g.linked) {
+      gCard.appendChild(h('p', { class: 'muted-line', text: t('googleWhy') }));
+      gCard.appendChild(h('a', { class: 'btn primary', href: '/api/auth?do=google-start', text: t('googleConnect') }));
+    } else {
+      gCard.appendChild(h('div', { class: 'g-who' }, [h('span', { class: 'g-ok' + (g.broken ? ' bad' : ''), text: g.broken ? '!' : '✓' }),
+        h('span', {}, [h('b', { text: g.email || t('googleLinked') }), h('small', { text: g.broken ? t('googleBroken') : t('googleTwoWay') })])]));
+      if (g.broken) gCard.appendChild(h('a', { class: 'btn primary sm', href: '/api/auth?do=google-start', text: t('googleReconnect') }));
+      var pushBox = h('input', { type: 'checkbox', checked: g.pushEvents });
+      pushBox.addEventListener('change', function () {
+        api('/api/calendar?do=google', { method: 'PATCH', body: { pushEvents: pushBox.checked } })
+          .then(function (d) { S.sched.googleStatus = d; if (d.pushEvents) syncGoogleNow(); }).catch(function () {});
+      });
+      gCard.appendChild(h('label', { class: 'inline-check g-push' }, [pushBox, t('googlePushEvents')]));
+      gCard.appendChild(h('div', { class: 'g-actions' }, [
+        h('button', { class: 'btn sm', text: t('googleSyncNow'), onclick: function (e) { syncGoogleNow(e.currentTarget); } }),
+        h('button', { class: 'btn sm ghost', text: t('googleDisconnect'), onclick: function () {
+          if (!confirm(t('googleDisconnectSure'))) return;
+          api('/api/calendar?do=google', { method: 'DELETE' }).then(function () { S.schedLoaded = null; renderPage(); });
+        } }),
+      ]));
+    }
+    side.appendChild(gCard);
+
+    // My office hours.
+    var oh = (S.sched && S.sched.officeHours) || [];
+    side.appendChild(h('section', { class: 'card ohcard' }, [
+      h('div', { class: 'card-head' }, [icon('door'), h('h3', { text: t('officeHours') }), h('span', { class: 'grow' }),
+        h('button', { class: 'btn sm', text: oh.length ? t('edit') : t('officeSet'), onclick: function () { openOfficeHours(); } })]),
+      oh.length ? h('ul', { class: 'oh-list' }, oh.map(function (w) {
+        return h('li', {}, [h('b', { text: t('wdl_' + w.day) }), h('span', { text: w.from + '–' + w.to }), h('small', { text: w.slot + ' ' + t('minUnit') + (w.place ? ' · ' + w.place : '') })]);
+      })) : h('p', { class: 'muted-line', text: t('officeNone') }),
+      oh.length ? h('button', { class: 'btn sm ghost copy-book', text: t('officeCopyLink'), onclick: function (e) {
+        var link = location.origin + '/#/schedule?book=' + encodeURIComponent(S.user.username);
+        var btn = e.currentTarget;
+        (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject()).then(function () {
+          btn.textContent = t('codeCopied'); setTimeout(function () { btn.textContent = t('officeCopyLink'); }, 1400);
+        }).catch(function () { prompt(t('officeCopyLink'), link); });
+      } }) : null,
+    ]));
+
+    // Legend.
+    side.appendChild(h('section', { class: 'card legend-card' }, [
+      h('ul', { class: 'kind-legend' }, ['meeting', 'event', 'task', 'focus', 'personal', 'booking', 'office', 'google'].map(function (k) {
+        return h('li', {}, [h('i', { style: 'background:' + KIND_COLOUR[k] }), t('kind_' + k)]);
+      })),
+    ]));
+  }
+
+  function syncGoogleNow(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = t('googleSyncing'); }
+    return api('/api/calendar?do=google-sync', { method: 'POST' }).then(function (d) {
+      try { localStorage.setItem('fair-gsync', String(Date.now())); } catch (e) {}
+      if (btn) { btn.textContent = d.ok ? t('googleSynced').replace('%n', String(d.sent || 0)) : t('googleSyncFail'); setTimeout(function () { btn.disabled = false; btn.textContent = t('googleSyncNow'); }, 2200); }
+    }).catch(function () { if (btn) { btn.disabled = false; btn.textContent = t('googleSyncFail'); } });
+  }
+  /** With "send meetings too" on, opening the page keeps Google current — at most hourly. */
+  function maybeAutoSync(status) {
+    if (!status || !status.linked || !status.pushEvents) return;
+    var last = 0;
+    try { last = Number(localStorage.getItem('fair-gsync')) || 0; } catch (e) {}
+    if (Date.now() - last > 3600000) syncGoogleNow(null);
+  }
+
+  /* ---- appointments ---- */
+
+  function formModal(title, bodyNodes, buttons, opts) {
+    var veil = h('div', { class: 'veil' });
+    var footer = h('footer', {}, buttons.concat([h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } })]));
+    veil.appendChild(h('div', { class: 'modal' + (opts && opts.wide ? ' wide' : '') + (opts && opts.cls ? ' ' + opts.cls : '') }, [
+      h('header', {}, [h('h2', { text: title }), h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } })]),
+      h('div', { class: 'body' }, bodyNodes),
+      footer,
+    ]));
+    veil.addEventListener('click', function (e) { if (e.target === veil) veil.remove(); });
+    $('modal-root').appendChild(veil);
+    return veil;
+  }
+  function fieldOf(label, node, hint) {
+    return h('div', { class: 'field' }, [h('label', { text: label }), node, hint ? h('small', { class: 'field-hint', text: hint }) : null]);
+  }
+  function refreshSchedule() { S.schedLoaded = null; if (S.page === 'schedule' || S.page === 'home') renderPage(); }
+
+  function openAppointment(appt, preset) {
+    if (appt) {
+      var veil = formModal(appt.title, [
+        h('div', { class: 'view-rows' }, [
+          vRow(t('kind'), h('span', { class: 'kind-pill', style: '--c:' + KIND_COLOUR[appt.kind], text: t('kind_' + appt.kind) })),
+          vRow(t('when'), document.createTextNode(whenWording(appt.on, appt.at, appt.to))),
+          appt.with ? vRow(t('withWhom'), h('span', { class: 'chip who' }, [avatarNode(appt.with, 'sm'), nameOf(appt.with)])) : null,
+          appt.place ? vRow(t('mtgPlace'), document.createTextNode(appt.place)) : null,
+          appt.note ? vRow(t('note'), h('span', { style: 'white-space:pre-wrap', text: appt.note })) : null,
+        ].filter(Boolean)),
+      ], appt.mine ? [h('button', { class: 'btn danger', text: appt.bookingId ? t('bookingCancel') : t('apptDelete'), onclick: function () {
+        if (!confirm(appt.bookingId ? t('bookingCancelSure') : t('apptDeleteSure'))) return;
+        api('/api/calendar?do=appt&id=' + encodeURIComponent(appt.id), { method: 'DELETE' })
+          .then(function () { veil.remove(); refreshSchedule(); }).catch(function (err) { alert(errText(err.code)); });
+      } })] : []);
+      return;
+    }
+    preset = preset || {};
+    var kind = preset.kind || 'personal';
+    var kindSeg = h('div', { class: 'seg' }, [['personal', 'kind_personal'], ['focus', 'kind_focus']].map(function (k) {
+      return h('button', { type: 'button', class: kind === k[0] ? 'on' : '', text: t(k[1]), onclick: function (e) {
+        kind = k[0]; kindSeg.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === e.currentTarget); });
+      } });
+    }));
+    var title = h('input', { type: 'text', maxlength: '200', placeholder: t('apptTitleHint') });
+    var on = h('input', { type: 'date', value: preset.on || todayIso() });
+    var at = h('input', { type: 'time', value: preset.at || '10:00' });
+    var to = h('input', { type: 'time', value: preset.to || '11:00' });
+    var place = h('input', { type: 'text', maxlength: '200' });
+    var note = h('textarea', { rows: '2', maxlength: '2000' });
+    var err = h('div', { class: 'notice err', hidden: true });
+    at.addEventListener('change', function () {
+      var a = minutesOfClock(at.value); var b = minutesOfClock(to.value);
+      if (a !== null && (b === null || b <= a)) to.value = clockOfMinutes(a + 60);
+    });
+    var v = formModal(t('apptNew'), [err, fieldOf(t('kind'), kindSeg), fieldOf(t('apptTitle'), title),
+      fieldOf(t('when'), on), h('div', { class: 'two' }, [fieldOf(t('from'), at), fieldOf(t('to'), to)]),
+      fieldOf(t('mtgPlace'), place), fieldOf(t('note'), note),
+      h('p', { class: 'hint', text: t('apptPrivate') })],
+    [h('button', { class: 'btn primary', text: t('save'), onclick: function () {
+      api('/api/calendar?do=appt', { method: 'POST', body: { kind: kind, title: title.value, on: on.value, at: at.value, to: to.value, place: place.value, note: note.value } })
+        .then(function () { v.remove(); refreshSchedule(); })
+        .catch(function (e) { err.hidden = false; err.textContent = errText(e.code); });
+    } })]);
+    setTimeout(function () { title.focus(); }, 30);
+  }
+
+  /* ---- office hours ---- */
+
+  function openOfficeHours() {
+    var rows = [];
+    var list = h('div', { class: 'oh-edit' });
+    var err = h('div', { class: 'notice err', hidden: true });
+    function addRow(w) {
+      w = w || { day: 'mon', from: '13:00', to: '15:00', slot: 30, place: '' };
+      var day = h('select', {}, WEEK_KEYS.map(function (k) { return h('option', { value: k, text: t('wdl_' + k), selected: k === w.day }); }));
+      var from = h('input', { type: 'time', value: w.from });
+      var to = h('input', { type: 'time', value: w.to });
+      var slot = h('select', {}, [15, 20, 30, 45, 60, 90].map(function (n) { return h('option', { value: String(n), text: n + ' ' + t('minUnit'), selected: n === Number(w.slot) }); }));
+      var place = h('input', { type: 'text', value: w.place || '', placeholder: t('officePlaceHint'), maxlength: '200' });
+      var row = h('div', { class: 'oh-row' }, [day, from, h('span', { text: '–' }), to, slot, place,
+        h('button', { type: 'button', class: 'btn ghost sm', text: '✕', 'aria-label': t('remove'), onclick: function () {
+          rows = rows.filter(function (r) { return r.row !== row; }); row.remove();
+        } })]);
+      rows.push({ row: row, get: function () { return { day: day.value, from: from.value, to: to.value, slot: Number(slot.value), place: place.value }; } });
+      list.appendChild(row);
+    }
+    var v = formModal(t('officeHours'), [
+      h('p', { class: 'hint', text: t('officeHowTo') }), err, list,
+      h('button', { type: 'button', class: 'btn sm', text: '+ ' + t('officeAdd'), onclick: function () { addRow(); } }),
+    ], [h('button', { class: 'btn primary', text: t('save'), onclick: function () {
+      api('/api/calendar?do=office', { method: 'PUT', body: { windows: rows.map(function (r) { return r.get(); }) } })
+        .then(function () { v.remove(); refreshSchedule(); })
+        .catch(function (e) { err.hidden = false; err.textContent = errText(e.code); });
+    } })], { wide: true });
+    var mineNow = (S.sched && S.sched.officeHours) || null;
+    if (mineNow) { mineNow.forEach(addRow); if (!mineNow.length) addRow(); }
+    else api('/api/calendar?do=office').then(function (d) { (d.windows.length ? d.windows : [null]).forEach(addRow); }).catch(function () { addRow(); });
+  }
+
+  /* ---- booking someone's office hours ---- */
+
+  function openBooking(host) {
+    var body = h('div', { class: 'book' });
+    var v = formModal(t('bookSlot'), [body], [], { wide: true });
+    function chooseHost() {
+      clear(body);
+      body.appendChild(h('p', { class: 'hint', text: t('bookPickHost') }));
+      var box = h('div', { class: 'host-list' }, [h('p', { class: 'muted-line', text: t('loading') })]);
+      body.appendChild(box);
+      api('/api/calendar?do=hosts').then(function (d) {
+        clear(box);
+        var hosts = d.hosts.filter(function (x) { return x.username !== S.user.username; });
+        if (!hosts.length) { box.appendChild(h('p', { class: 'muted-line', text: t('bookNoHosts') })); return; }
+        hosts.forEach(function (x) {
+          var u = userBy(x.username);
+          box.appendChild(h('button', { type: 'button', class: 'host', onclick: function () { showSlots(x.username); } }, [
+            avatarNode(x.username), h('span', {}, [h('b', { text: nameOf(x.username) }), h('small', { text: (u && u.position) || '' })]), h('span', { class: 'grow' }), h('span', { text: '›' }),
+          ]));
+        });
+      }).catch(function () { clear(box); box.appendChild(h('p', { class: 'muted-line', text: t('errOffline') })); });
+    }
+    function showSlots(who) {
+      clear(body);
+      body.appendChild(h('div', { class: 'book-head' }, [
+        h('button', { type: 'button', class: 'btn ghost sm', text: '‹ ' + t('back'), onclick: chooseHost }),
+        avatarNode(who), h('b', { text: nameOf(who) }),
+      ]));
+      var slotsBox = h('div', { class: 'slot-days' }, [h('p', { class: 'muted-line', text: t('loading') })]);
+      body.appendChild(slotsBox);
+      var from = todayIso();
+      api('/api/calendar?do=slots&host=' + encodeURIComponent(who) + '&from=' + from + '&to=' + addDays(from, 20)).then(function (d) {
+        clear(slotsBox);
+        if (!d.slots.length) { slotsBox.appendChild(h('p', { class: 'muted-line', text: d.windows.length ? t('bookFull') : t('bookNoHours') })); return; }
+        var byDay = {};
+        d.slots.forEach(function (sl) { (byDay[sl.on] = byDay[sl.on] || []).push(sl); });
+        Object.keys(byDay).sort().forEach(function (on) {
+          slotsBox.appendChild(h('div', { class: 'slot-day' }, [
+            h('div', { class: 'sd-date' }, [h('b', { text: fmtDate(on, { weekday: 'short', day: 'numeric', month: 'short' }) }), byDay[on][0].place ? h('small', { text: byDay[on][0].place }) : null]),
+            h('div', { class: 'sd-times' }, byDay[on].map(function (sl) {
+              return h('button', { type: 'button', class: 'slot', text: sl.at, onclick: function () { confirmSlot(who, sl); } });
+            })),
+          ]));
+        });
+      }).catch(function () { clear(slotsBox); slotsBox.appendChild(h('p', { class: 'muted-line', text: t('errOffline') })); });
+    }
+    function confirmSlot(who, sl) {
+      clear(body);
+      var note = h('textarea', { rows: '3', maxlength: '1000', placeholder: t('bookNoteHint') });
+      var err = h('div', { class: 'notice err', hidden: true });
+      body.appendChild(h('div', { class: 'book-confirm' }, [
+        h('div', { class: 'bc-card' }, [avatarNode(who, 'lg'), h('div', {}, [
+          h('b', { text: nameOf(who) }),
+          h('span', { text: whenWording(sl.on, sl.at, sl.to) }),
+          sl.place ? h('small', { text: sl.place }) : null,
+        ])]),
+        err, fieldOf(t('bookNote'), note),
+        h('div', { class: 'bc-actions' }, [
+          h('button', { class: 'btn', text: '‹ ' + t('back'), onclick: function () { showSlots(who); } }),
+          h('button', { class: 'btn primary', text: t('bookConfirm'), onclick: function (e) {
+            e.currentTarget.disabled = true;
+            api('/api/calendar?do=book', { method: 'POST', body: { host: who, on: sl.on, at: sl.at, note: note.value } })
+              .then(function () {
+                clear(body);
+                body.appendChild(h('div', { class: 'book-done' }, [h('span', { class: 'bd-tick', text: '✓' }),
+                  h('b', { text: t('bookDone') }), h('span', { text: nameOf(who) + ' · ' + whenWording(sl.on, sl.at, sl.to) })]));
+                refreshSchedule();
+              })
+              .catch(function (x) {
+                err.hidden = false; err.textContent = errText(x.code);
+                if (x.code === 'SLOT_TAKEN') setTimeout(function () { showSlots(who); }, 1200);
+              });
+          } }),
+        ]),
+      ]));
+    }
+    if (host) showSlots(host); else chooseHost();
+    return v;
+  }
+
+  /* ---- finding a time for several people ---- */
+
+  /**
+   * Who is free when, Outlook-style: pick people, a length and a range; the
+   * answer is the times when nobody is busy, and a row per person showing
+   * their busy blocks on the day picked, so it is plain why a time is or is
+   * not on the list. Picking a time opens a new meeting already filled in.
+   */
+  function openFindTime(preset) {
+    preset = preset || {};
+    var draft = { assignees: (preset.people || []).slice() };
+    var pickBox = h('div', { class: 'picker' });
+    buildPeoplePicker(pickBox, draft, { compact: true });
+    var dur = h('select', {}, [30, 45, 60, 90, 120, 180].map(function (n) { return h('option', { value: String(n), text: hoursText(n), selected: n === 60 }); }));
+    var from = h('input', { type: 'date', value: preset.fromOn || todayIso() });
+    var span = h('select', {}, [[3, 'findNext3'], [7, 'findNext7'], [14, 'findNext14']].map(function (x) { return h('option', { value: String(x[0]), text: t(x[1]), selected: x[0] === 7 }); }));
+    var dayFrom = h('input', { type: 'time', value: '09:00' });
+    var dayTo = h('input', { type: 'time', value: '20:00' });
+    var weekends = h('input', { type: 'checkbox' });
+    var out = h('div', { class: 'find-out' });
+    var go = h('button', { class: 'btn primary', text: t('findGo') });
+    var v = formModal(t('findTime'), [
+      fieldOf(t('findWho'), pickBox, t('findWhoHint')),
+      h('div', { class: 'find-opts' }, [fieldOf(t('findLength'), dur), fieldOf(t('findFrom'), from), fieldOf(t('findSpan'), span),
+        fieldOf(t('findHours'), h('div', { class: 'two-inline' }, [dayFrom, h('span', { text: '–' }), dayTo]))]),
+      h('label', { class: 'inline-check' }, [weekends, t('findWeekends')]),
+      out,
+    ], [go], { wide: true, cls: 'find-modal' });
+
+    go.addEventListener('click', function () {
+      clear(out);
+      out.appendChild(h('p', { class: 'muted-line', text: t('findLooking') }));
+      var body = { people: draft.assignees, duration: Number(dur.value), fromOn: from.value, toOn: addDays(from.value, Number(span.value) - 1),
+        dayFrom: dayFrom.value, dayTo: dayTo.value, weekends: weekends.checked };
+      api('/api/calendar?do=find', { method: 'POST', body: body }).then(function (d) { drawFound(d); })
+        .catch(function (e) { clear(out); out.appendChild(h('div', { class: 'notice err', text: errText(e.code) })); });
+    });
+
+    function drawFound(d) {
+      clear(out);
+      out.appendChild(h('div', { class: 'notice ' + (d.allFree ? 'ok' : 'warn'), text: d.allFree ? t('findAllFree').replace('%n', String(d.people.length)) : t('findNoneFree') }));
+      if (d.google.length) out.appendChild(h('p', { class: 'hint', text: t('findGoogleCounted').replace('%n', String(d.google.length)) }));
+      var chosen = d.slots[0];
+      var listBox = h('div', { class: 'found' });
+      var assist = h('div', { class: 'assist' });
+      out.appendChild(listBox);
+      out.appendChild(assist);
+      function drawList() {
+        clear(listBox);
+        var byDay = {};
+        d.slots.forEach(function (sl) { (byDay[sl.on] = byDay[sl.on] || []).push(sl); });
+        Object.keys(byDay).sort().forEach(function (on) {
+          listBox.appendChild(h('div', { class: 'slot-day' }, [
+            h('div', { class: 'sd-date' }, [h('b', { text: fmtDate(on, { weekday: 'short', day: 'numeric', month: 'short' }) })]),
+            h('div', { class: 'sd-times' }, byDay[on].map(function (sl) {
+              var cls = 'slot' + (sl === chosen ? ' on' : '') + (sl.busy.length ? ' partial' : '');
+              return h('button', { type: 'button', class: cls, title: sl.busy.length ? t('findBusyNames') + ': ' + sl.busy.map(nameOf).join(', ') : '',
+                onclick: function () { chosen = sl; drawList(); drawAssist(); } }, [sl.at + '–' + sl.to, sl.busy.length ? h('small', { text: ' ' + sl.busy.length + ' ' + t('findBusyN') }) : null]);
+            })),
+          ]));
+        });
+      }
+      function drawAssist() {
+        clear(assist);
+        if (!chosen) return;
+        var a0 = minutesOfClock(dayFrom.value) || 480; var a1 = minutesOfClock(dayTo.value) || 1200;
+        var spanMin = a1 - a0;
+        var pos = function (m) { return Math.max(0, Math.min(100, ((m - a0) / spanMin) * 100)); };
+        var ruler = h('div', { class: 'as-ruler' });
+        for (var hr = Math.ceil(a0 / 60); hr <= Math.floor(a1 / 60); hr += 1) ruler.appendChild(h('span', { style: 'left:' + pos(hr * 60) + '%', text: String(hr) }));
+        assist.appendChild(h('div', { class: 'as-head' }, [h('b', { text: fmtDate(chosen.on, { weekday: 'long', day: 'numeric', month: 'long' }) }),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'btn primary sm', text: t('findMakeMeeting'), onclick: function () {
+            v.remove();
+            openMeeting(null, { meetsOn: chosen.on, meetsAt: chosen.at, endsAt: chosen.to, people: d.people });
+          } })]));
+        var rowsBox = h('div', { class: 'as-rows' }, [h('div', { class: 'as-row as-ruler-row' }, [h('span', { class: 'as-name' }), ruler])]);
+        var slotA = minutesOfClock(chosen.at); var slotB = minutesOfClock(chosen.to);
+        d.people.forEach(function (u) {
+          var track = h('div', { class: 'as-track' });
+          (d.busy[u] || []).filter(function (b) { return b.on === chosen.on; }).forEach(function (b) {
+            track.appendChild(h('i', { class: 'as-busy k-' + b.kind, style: 'left:' + pos(b.from) + '%;width:' + Math.max(0.6, pos(b.to) - pos(b.from)) + '%' }));
+          });
+          track.appendChild(h('i', { class: 'as-slot' + (chosen.busy.indexOf(u) !== -1 ? ' clash' : ''), style: 'left:' + pos(slotA) + '%;width:' + (pos(slotB) - pos(slotA)) + '%' }));
+          rowsBox.appendChild(h('div', { class: 'as-row' + (chosen.busy.indexOf(u) !== -1 ? ' busy' : '') }, [
+            h('span', { class: 'as-name' }, [avatarNode(u, 'sm'), h('span', { text: nameOf(u) }), d.google.indexOf(u) !== -1 ? h('small', { class: 'g-tag', text: 'G' }) : null]),
+            track,
+          ]));
+        });
+        assist.appendChild(rowsBox);
+        assist.appendChild(h('div', { class: 'as-key' }, [h('i', { class: 'as-busy' }), t('findKeyBusy'), h('i', { class: 'as-slot' }), t('findKeySlot')]));
+      }
+      drawList();
+      drawAssist();
+    }
+    if (preset.people && preset.people.length) go.click();
+  }
+
+  /* ---------- spaces ----------------------------------------------------- */
+
+  function reloadSpaces() {
+    return api('/api/tasks?do=spaces').then(function (d) { S.spaces = d.spaces || []; renderShell(); return S.spaces; });
+  }
+
+  /** People in a space, as usernames: by name, and through their department. */
+  function spaceMembers(sp) {
+    var names = {};
+    names[sp.createdBy] = true;
+    (sp.members || []).forEach(function (m) { names[m.username] = true; });
+    S.users.forEach(function (u) {
+      if (!u.active) return;
+      if ((sp.departments || []).some(function (d) { return d.key === u.department && (!d.unit || d.unit === (u.unit || '')); })) names[u.username] = true;
+    });
+    return Object.keys(names);
+  }
+
+  function pageSpace(main) {
+    var sp = spaceBy(S.spaceId);
+    if (!sp) {
+      main.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('spaceGone') }),
+        h('a', { class: 'btn', href: '#/home', text: t('navHome') })]));
+      return;
+    }
+    var phone = isPhone();
+    var view = S.spaceView || 'list';
+    main.classList.toggle('board-wide', (view === 'board' || view === 'gantt') && !phone);
+    var rows = S.tasks.filter(function (x) { return x.spaceId === sp.id && matchesQuery(x); });
+    var open = rows.filter(function (x) { return x.status !== 'done'; }).length;
+    var done = rows.length - open;
+    var people = spaceMembers(sp);
+
+    // The band, in the space's colour.
+    main.appendChild(h('section', { class: 'space-band', style: '--sp:' + spaceHex(sp) }, [
+      spaceBadge(sp, 'sp-big'),
+      h('div', { class: 'sp-band-tx' }, [
+        h('h2', { text: sp.name }),
+        sp.description ? h('p', { text: sp.description }) : null,
+        h('div', { class: 'sp-meta' }, [
+          h('span', { class: 'stack' }, people.slice(0, 7).map(function (u) { return avatarNode(u, 'sm'); })),
+          h('small', { text: t('spacePeopleN').replace('%n', String(people.length)) }),
+          (sp.departments || []).length ? h('small', { text: '· ' + sp.departments.map(function (d) { return deptLabel(d.key) + (d.unit ? ' / ' + d.unit : ''); }).join(', ') }) : null,
+        ]),
+      ]),
+      h('div', { class: 'sp-band-stats' }, [
+        donut([{ value: done, colour: '#ffffff' }, { value: open, colour: 'rgba(255,255,255,.25)' }],
+          { size: phone ? 64 : 84, stroke: phone ? 8 : 10, center: rows.length ? Math.round((done / rows.length) * 100) + '%' : '—' }),
+      ]),
+    ]));
+
+    // What can be done here.
+    main.appendChild(h('div', { class: 'page-head space-head' }, [
+      h('div', { class: 'seg view-seg' }, [['list', 'viewList', 'list'], ['board', 'viewBoard', 'board'], ['gantt', 'viewGantt', 'gantt']].map(function (x) {
+        return h('button', { class: view === x[0] ? 'on' : '', title: t(x[1]), onclick: function () { S.spaceView = x[0]; renderPage(); } },
+          [icon(x[2]), phone ? null : h('span', { text: t(x[1]) })]);
+      })),
+      h('span', { class: 'grow' }),
+      sp.mayManage ? h('button', { class: 'btn', onclick: function () { openSpace(sp); } }, [icon('gear'), phone ? null : h('span', { text: t('spaceManage') })]) : null,
+      !sp.mayManage && sp.mine && sp.createdBy !== S.user.username ? h('button', { class: 'btn ghost', text: t('spaceLeave'), onclick: function () {
+        if (!confirm(t('spaceLeaveSure'))) return;
+        api('/api/tasks?do=space-leave', { method: 'POST', body: { id: sp.id } }).then(function (d) { S.spaces = d.spaces; location.hash = '#/home'; })
+          .catch(function (e) { alert(errText(e.code)); });
+      } }) : null,
+      mayCreate() ? h('button', { class: 'btn', onclick: function () { openMeeting(null, { spaceId: sp.id, people: people.slice(0, 40) }); } }, [icon('meeting'), phone ? null : h('span', { text: t('mtgNew') })]) : null,
+      mayCreate() ? h('button', { class: 'btn primary', onclick: function () { S.newTaskSpace = sp.id; openTask(null); } }, [icon('plus'), h('span', { text: t('newTask') })]) : null,
+    ]));
+
+    // Meetings in this space that are still ahead.
+    var meetings = (S.meetings || []).filter(function (m) { return m.spaceId === sp.id && m.meetsOn >= todayIso() && m.status !== 'cancelled'; })
+      .sort(function (a, b) { return a.meetsOn < b.meetsOn ? -1 : 1; }).slice(0, 4);
+    if (meetings.length) {
+      main.appendChild(h('div', { class: 'sp-meetings' }, meetings.map(function (m) {
+        return h('button', { type: 'button', class: 'sp-mtg', onclick: function () { openMeeting(m); } }, [
+          icon('meeting'), h('span', {}, [h('b', { text: m.title }), h('small', { text: fmtDate(m.meetsOn, { weekday: 'short', day: 'numeric', month: 'short' }) + (m.meetsAt ? ' · ' + m.meetsAt : '') })]),
+        ]);
+      })));
+    }
+
+    if (!rows.length) {
+      main.appendChild(h('div', { class: 'empty' }, [h('strong', { text: t('spaceEmpty') }), t('spaceEmptySub')]));
+      return;
+    }
+    if (view === 'board') main.appendChild(kanbanBoard(rows, phone));
+    else if (view === 'gantt') main.appendChild(ganttChart(rows, { phone: phone }));
+    else main.appendChild(groupedList(rows));
+  }
+
+  /** Starting a space, or changing one: name, colour, a letter or emoji, who is in it. */
+  function openSpace(sp) {
+    var isNew = !sp;
+    var draft = {
+      name: sp ? sp.name : '',
+      description: sp ? sp.description : '',
+      colour: sp ? sp.colour : 'pink',
+      icon: sp ? sp.icon : '',
+      members: sp ? (sp.members || []).map(function (m) { return m.username; }).filter(function (u) { return u !== sp.createdBy; }) : [],
+      departments: sp ? (sp.departments || []).map(function (d) { return d.key; }) : [],
+    };
+    var err = h('div', { class: 'notice err', hidden: true });
+    var name = h('input', { type: 'text', maxlength: '80', value: draft.name, placeholder: t('spaceNameHint') });
+    var desc = h('textarea', { rows: '2', maxlength: '500', placeholder: t('spaceDescHint') });
+    desc.value = draft.description;
+    var iconIn = h('input', { type: 'text', maxlength: '4', value: draft.icon, placeholder: 'A', class: 'icon-in' });
+    var preview = h('span', { class: 'sp-preview' });
+    function paintPreview() {
+      clear(preview);
+      preview.appendChild(spaceBadge({ name: name.value || '?', icon: iconIn.value, colour: draft.colour }, 'sp-big'));
+    }
+    var swatches = h('div', { class: 'swatches sp-swatches' }, Object.keys(SPACE_HEX).map(function (c) {
+      return h('button', { type: 'button', class: 'swatch' + (draft.colour === c ? ' on' : ''), style: 'background:' + SPACE_HEX[c], 'aria-label': c,
+        onclick: function (e) {
+          draft.colour = c;
+          swatches.querySelectorAll('.swatch').forEach(function (b) { b.classList.toggle('on', b === e.currentTarget); });
+          paintPreview();
+        } });
+    }));
+    name.addEventListener('input', paintPreview);
+    iconIn.addEventListener('input', paintPreview);
+    paintPreview();
+
+    var pickBox = h('div', { class: 'picker' });
+    var owner = sp ? sp.createdBy : S.user.username;
+    buildPeoplePicker(pickBox, draft, { field: 'members', skip: function (u) { return u === owner; }, compact: true });
+    var deptBox = h('div', { class: 'checks sp-depts' }, (S.departments || []).map(function (d) {
+      var cb = h('input', { type: 'checkbox', checked: draft.departments.indexOf(d.key) !== -1 });
+      cb.addEventListener('change', function () {
+        draft.departments = draft.departments.filter(function (k) { return k !== d.key; });
+        if (cb.checked) draft.departments.push(d.key);
+      });
+      return h('label', {}, [cb, deptLabel(d.key)]);
+    }));
+
+    var buttons = [h('button', { class: 'btn primary', text: isNew ? t('spaceCreate') : t('save'), onclick: function () {
+      var body = { name: name.value, description: desc.value, colour: draft.colour, icon: iconIn.value.trim(),
+        members: draft.members, departments: draft.departments.map(function (k) { return { key: k }; }) };
+      if (!isNew) body.id = sp.id;
+      api('/api/tasks?do=space', { method: isNew ? 'POST' : 'PATCH', body: body }).then(function (d) {
+        S.spaces = d.spaces || S.spaces;
+        v.remove();
+        if (isNew && d.id) location.hash = '#/space/' + encodeURIComponent(d.id);
+        renderShell(); renderPage();
+      }).catch(function (e) { err.hidden = false; err.textContent = errText(e.code); });
+    } })];
+    if (!isNew && sp.mayManage) {
+      buttons.push(h('button', { class: 'btn danger', text: t('spaceArchive'), onclick: function () {
+        if (!confirm(t('spaceArchiveSure'))) return;
+        api('/api/tasks?do=space&id=' + encodeURIComponent(sp.id), { method: 'DELETE' }).then(function (d) {
+          S.spaces = d.spaces || [];
+          v.remove();
+          api('/api/tasks').then(function (x) { S.tasks = x.tasks; location.hash = '#/home'; renderShell(); renderPage(); });
+        }).catch(function (e) { alert(errText(e.code)); });
+      } }));
+    }
+    var v = formModal(isNew ? t('spaceNew') : t('spaceManage'), [
+      h('p', { class: 'hint', text: t('spaceWhat') }), err,
+      h('div', { class: 'sp-ident' }, [preview, h('div', { class: 'grow' }, [fieldOf(t('spaceName'), name)]), fieldOf(t('spaceIcon'), iconIn)]),
+      fieldOf(t('spaceColour'), swatches),
+      fieldOf(t('spaceDesc'), desc),
+      fieldOf(t('spaceMembers'), pickBox, t('spaceMembersHint')),
+      fieldOf(t('spaceDepts'), deptBox, t('spaceDeptsHint')),
+    ], buttons, { wide: true });
+    setTimeout(function () { name.focus(); }, 30);
+  }
+
   function boot() {
     return Promise.all([
       api('/api/meta'),
@@ -8893,7 +11077,10 @@
       api('/api/notifications'),
       api('/api/events'),
       api('/api/events?do=meetings').catch(function () { return { meetings: [] }; }),
+      api('/api/tasks?do=spaces').catch(function () { return { spaces: [] }; }),
     ]).then(function (res) {
+      S.spaces = (res[6] && res[6].spaces) || [];
+      S.serverVersion = res[0].version || null;
       S.departments = res[0].departments;
       S.circles = res[0].circles || [];
       S.accessOrder = res[0].accessOrder || [];

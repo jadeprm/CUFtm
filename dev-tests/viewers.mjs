@@ -23,7 +23,7 @@ async function as(user, pass, opts) {
   pg.on('pageerror', (e) => errs.push(`${user}: ${e.message}`));
   pg.on('dialog', async (d) => { await d.accept(); });
   await pg.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
-  await pg.evaluate(() => { try { localStorage.setItem('fair-work-view', 'list'); } catch (e) {} });
+  await pg.evaluate(() => { try { localStorage.setItem('fair-work-view2', 'list'); } catch (e) {} });
   await pg.fill('#in-username', user); await pg.click('#auth-submit'); await pg.waitForTimeout(2300);
   await pg.fill('#in-password', pass);
   if (await pg.locator('#field-confirm:not([hidden])').count()) await pg.fill('#in-confirm', pass);
@@ -94,7 +94,7 @@ ok('the creator\'s card shows how many are following',
 console.log('\nThe viewer, on a phone');
 const ph = await as('Ploy_StaffCon', 'memberPw11',
   { viewport: { width: 393, height: 852 }, isMobile: true, hasTouch: true });
-await ph.evaluate(() => { location.hash = '#/'; }); await ph.waitForTimeout(1500);
+await ph.evaluate(() => { location.hash = '#/work'; }); await ph.waitForTimeout(1500);
 const card = ph.locator('li.task', { hasText: TITLE });
 ok('it is in her own list', (await card.count()) === 1);
 ok('...marked as one she follows', (await card.locator('.role-badge.role-watch').count()) === 1);
@@ -111,11 +111,11 @@ await ph.screenshot({ path: '/tmp/claude-0/viewers-open.png' });
 
 // The board, too: her followed card is there and cannot be moved.
 await ph.locator('#modal-root .modal header button').last().click().catch(() => {});
-await ph.evaluate(() => { localStorage.setItem('fair-work-view', 'board'); });
+await ph.evaluate(() => { localStorage.setItem('fair-work-view2', 'board'); });
 await ph.reload({ waitUntil: 'networkidle' }); await ph.waitForTimeout(2200);
 ok('on the board it sits in its column with the rest of her work',
   (await ph.locator('.kanban li.task', { hasText: TITLE }).count()) === 1);
-await ph.evaluate(() => { localStorage.setItem('fair-work-view', 'list'); });
+await ph.evaluate(() => { localStorage.setItem('fair-work-view2', 'list'); });
 
 await pg.evaluate(async (id) => { await fetch('/api/tasks?id=' + id, { method: 'DELETE' }); }, saved && saved.id);
 

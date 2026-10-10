@@ -1,4 +1,5 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
+import { googleConfigured, originOf, startLink, finishLink } from '../lib/googlecal.js';
 import {
   currentUser, departmentsOf, hashPassword, verifyPassword, passwordProblem,
   newToken, sessionCookie, sessionExpiry,
@@ -55,6 +56,28 @@ async function handler(request) {
     } catch (error) {
       return json({ error: 'SHEET_UNREADABLE', message: error.message }, 503);
     }
+  }
+
+  /**
+   * Connecting a person's own Google Calendar — see lib/googlecal.js.
+   *
+   * Both halves are plain page loads, because Google sends the person back
+   * with a redirect: start sends them to Google's consent screen, callback
+   * is where Google returns them, and either way they end up on the
+   * Schedule page with a word in the address saying how it went.
+   */
+  if (request.method === 'GET' && (action === 'google-start' || action === 'google-callback')) {
+    const go = (where) => new Response(null, { status: 302, headers: { location: where, 'cache-control': 'no-store' } });
+    const user = await currentUser(request, sql);
+    if (!user) return go('/#/schedule?google=signin');
+    if (!googleConfigured()) return go('/#/schedule?google=off');
+    const origin = originOf(request);
+    if (action === 'google-start') return go(await startLink(sql, user.username, origin));
+    if (url.searchParams.get('error')) return go('/#/schedule?google=cancelled');
+    const done = await finishLink(sql, user, {
+      code: url.searchParams.get('code'), state: url.searchParams.get('state'), origin,
+    });
+    return go('/#/schedule?google=' + (done.ok ? 'ok' : encodeURIComponent(done.error)));
   }
 
   if (request.method === 'GET') {

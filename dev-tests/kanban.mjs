@@ -25,8 +25,8 @@ async function as(user, pass, opts) {
   pg.on('pageerror', (e) => errs.push(`${user}: ${e.message}`));
   pg.on('dialog', async (d) => { await d.accept(); });
   await pg.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
-  // Start from the default, whatever an earlier run left on this origin.
-  await pg.evaluate(() => { try { localStorage.removeItem('fair-work-view'); } catch (e) {} });
+  // The list is the default since the redesign; this suite is about the board.
+  await pg.evaluate(() => { try { localStorage.setItem('fair-work-view2', 'board'); } catch (e) {} });
   await pg.fill('#in-username', user); await pg.click('#auth-submit'); await pg.waitForTimeout(2300);
   await pg.fill('#in-password', pass);
   if (await pg.locator('#field-confirm:not([hidden])').count()) await pg.fill('#in-confirm', pass);
@@ -60,7 +60,7 @@ const ids = await pg.evaluate(async () => {
 await pg.evaluate(() => { location.hash = '#/all'; });
 await pg.reload({ waitUntil: 'networkidle' }); await pg.waitForTimeout(2400);
 
-ok('the work page opens as a board', (await pg.locator('.kanban').count()) === 1);
+ok('the work page opens as a board when that is the view picked', (await pg.locator('.kanban').count()) === 1);
 const heads = await pg.locator('.kb-col .kb-head').allInnerTexts();
 ok('...with a column for every status, in the order work moves', heads.length === 5,
   heads.map((x) => x.replace(/\s+/g, ' ')).join(' | '));

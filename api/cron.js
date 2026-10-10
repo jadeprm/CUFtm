@@ -7,7 +7,7 @@ import { withNode } from '../lib/http.js';
 import { lineConfigured, push, pageLink } from '../lib/line.js';
 import { flex, listBubble } from '../lib/lineflex.js';
 import { sayDate, MARK, PRIORITY_TH, MENU as LINE_MENU } from '../lib/linecmd.js';
-import { driveConfigured, archivePdf, archiveHolds } from '../lib/drive.js';
+import { driveConfigured, archivePdf, archiveFile, archiveHolds } from '../lib/drive.js';
 import { updateStatus as updateRegisterStatus, REGISTER_STATUS } from '../lib/docregister.js';
 
 
@@ -379,7 +379,8 @@ async function archiveDocuments(sql) {
   for (const doc of waiting) {
     const [file] = await sql`
       SELECT kind, bytes, byte_size FROM doc_files
-      WHERE doc_id = ${doc.id} ORDER BY (kind = 'signed') DESC LIMIT 1`;
+      WHERE doc_id = ${doc.id} AND kind IN ('signed', 'original')
+      ORDER BY (kind = 'signed') DESC LIMIT 1`;
     if (!file) { failed.push({ id: doc.id, reason: 'NO_FILE' }); continue; }
 
     // The driver hands this back as a Date or as a string depending on where
@@ -393,6 +394,27 @@ async function archiveDocuments(sql) {
     });
 
     if (!result.ok) { failed.push({ id: doc.id, reason: result.reason }); continue; }
+
+    /**
+     * The editable original goes to Drive beside the PDF.
+     *
+     * The database copy is deleted a few days after archiving, so a Word file
+     * left behind here would simply vanish — and it is the one file anybody
+     * reusing this letter next year actually wants. A failure to file it is
+     * not a reason to leave the PDF unarchived: the letter itself is safe,
+     * and the attempt comes round again only if the PDF failed too.
+     */
+    const [src] = await sql`
+      SELECT bytes, file_name, mime FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source'`;
+    if (src) {
+      const ext = String(src.file_name || '').split('.').pop() || 'docx';
+      const kept = await archiveFile(toBuffer(src.bytes), {
+        name: `${when} ${doc.title} (ต้นฉบับ).${ext}`,
+        mime: src.mime || 'application/octet-stream',
+        description: `ไฟล์ต้นฉบับของ ${doc.title}`,
+      });
+      if (!kept.ok) failed.push({ id: doc.id, reason: 'SOURCE_' + kept.reason });
+    }
 
     await sql`
       UPDATE documents

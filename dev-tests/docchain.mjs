@@ -44,6 +44,13 @@ const field = (pg, label) =>
 await sql`UPDATE users SET is_head = true, position = 'ประธานฝ่ายเนื้อหา' WHERE username = 'Fah_StaffCon'`;
 await sql`UPDATE users SET department = 'operations', is_head = true,
                            position = 'ประธานฝ่ายอำนวยการใหญ่' WHERE username = 'Totti_HeadOp'`;
+// A deputy whose name sorts first, so "which one does the form suggest" has
+// a wrong answer available to it.
+await sql`INSERT INTO users (username, display_name, nickname, position, access, department, is_head, active)
+          VALUES ('Beam_OpDeputy', 'Beam - Deputy Head Operation', 'บีมบีม',
+                  'รองประธานฝ่ายอำนวยการใหญ่', 'editor', 'operations', true, true)
+          ON CONFLICT (username) DO UPDATE SET position = EXCLUDED.position,
+            department = EXCLUDED.department, is_head = EXCLUDED.is_head, active = true`;
 
 const { PDFDocument } = await import('pdf-lib');
 const made = await PDFDocument.create();
@@ -69,7 +76,7 @@ await sendField.locator('.seg button', { hasText: 'เลขานุการ' 
 
 await field(pg, 'ผู้รับผิดชอบ').fill('พลอย ใจงาม');
 await field(pg, 'ชื่อเอกสาร').fill('ลำดับ: หนังสือทดสอบ');
-await pg.locator('.veil .modal input[type="file"]').setInputFiles('/tmp/claude-0/chain-letter.pdf');
+await pg.locator('.veil .modal #doc-pdf').setInputFiles('/tmp/claude-0/chain-letter.pdf');
 await pg.waitForTimeout(900);
 
 await pg.locator('.veil footer button.primary').click(); await pg.waitForTimeout(600);
@@ -117,8 +124,33 @@ ok('...before whoever posts the letter, never after', (await roleAt(before)).inc
 await added.locator('select.chain-role').selectOption('divisionHead'); await pg.waitForTimeout(300);
 ok('...and its role can be set to ประธานฝ่ายอำนวยการใหญ่',
   (await roleAt(before - 1)).includes('อำนวยการใหญ่'), await lineUp());
-await rows().nth(before - 1).locator('select:not(.chain-role)').selectOption('Totti_HeadOp');
-await pg.waitForTimeout(200);
+
+/**
+ * Changing a row's role changes who it offers. It used to offer the whole
+ * roster, which is how ต๊อดติ came to be sitting under ประธานโครงการ.
+ */
+const personSel = rows().nth(before - 1).locator('select:not(.chain-role)');
+const shortlist = async () => personSel.evaluate((el) => {
+  const g = el.querySelector('optgroup');
+  return { label: g ? g.label : null, people: g ? [...g.querySelectorAll('option')].map((o) => o.value) : [] };
+});
+let list = await shortlist();
+ok('...and the people it offers are the ones who hold that post',
+  list.people.join() === 'Totti_HeadOp,Beam_OpDeputy', JSON.stringify(list));
+ok('...under the name of the post, so it is obvious why they are listed',
+  (list.label || '').includes('อำนวยการใหญ่'), list.label);
+ok('...with ต๊อดติ chosen, not his deputy', (await personSel.inputValue()) === 'Totti_HeadOp',
+  await personSel.inputValue());
+
+await added.locator('select.chain-role').selectOption('director'); await pg.waitForTimeout(300);
+list = await shortlist();
+ok('ประธานโครงการ offers only the three who hold it',
+  list.people.join() === 'Jade_Pres,Gorn_VP,Kaew_VP', JSON.stringify(list.people));
+ok('...and ต๊อดติ is not one of them', !list.people.includes('Totti_HeadOp'));
+ok('...though anybody else is still reachable further down the list, by ฝ่าย',
+  (await personSel.locator('optgroup').count()) > 1,
+  String(await personSel.locator('optgroup').count()));
+await added.locator('select.chain-role').selectOption('divisionHead'); await pg.waitForTimeout(300);
 
 // Moving and removing.
 await rows().nth(before - 1).locator('.chain-head button', { hasText: '↑' }).click();
@@ -203,7 +235,7 @@ await north.locator('.veil .modal .field', { hasText: 'ใครเป็นค�
   .locator('.seg button', { hasText: 'ส่งเอง' }).click();
 await field(north, 'ผู้รับผิดชอบ').fill('นอร์ท ใจกว้าง');
 await field(north, 'ชื่อเอกสาร').fill('ลำดับ: จากอำนวยการ 2');
-await north.locator('.veil .modal input[type="file"]').setInputFiles('/tmp/claude-0/chain-letter.pdf');
+await north.locator('.veil .modal #doc-pdf').setInputFiles('/tmp/claude-0/chain-letter.pdf');
 await north.waitForTimeout(900);
 await north.locator('.veil footer button.primary').click(); await north.waitForTimeout(2500);
 const northRows = north.locator('.veil .chain-row');
@@ -218,8 +250,72 @@ ok('...and the last row says she posts it herself',
   (await northRows.last().innerText()).includes('คุณจะเป็นผู้ส่งเอกสารนี้เอง'));
 await north.screenshot({ path: '/tmp/claude-0/chain-oper2.png' });
 
+// ---------------------------------------------------------------------------
+console.log('\nA letter from ประธานโครงการ herself');
+/**
+ * Her own letters have nobody above them to approve, so the chain is just her
+ * signature and whoever posts it — and with the old form that meant there was
+ * no way to put anybody else on one at all.
+ */
+const boss = await as('Jade_Pres', 'fairAdmin1', { viewport: { width: 1440, height: 950 } });
+await boss.locator('#tabs a[data-page="docs"]').click(); await boss.waitForTimeout(1200);
+await boss.locator('#main .page-head button.primary').click(); await boss.waitForTimeout(700);
+await boss.locator('.veil .modal .field', { hasText: 'ใครเป็นคนส่งเอกสาร' }).first()
+  .locator('.seg button', { hasText: 'เลขานุการ' }).click();
+await boss.locator('.veil .modal input[placeholder*="@"]').fill('registrar@chula.ac.th');
+await field(boss, 'ผู้รับผิดชอบ').fill('เจด ใจดี');
+await field(boss, 'ชื่อเอกสาร').fill('ลำดับ: จากประธานโครงการ');
+await boss.locator('.veil .modal #doc-pdf').setInputFiles('/tmp/claude-0/chain-letter.pdf');
+await boss.waitForTimeout(900);
+await boss.locator('.veil footer button.primary').click(); await boss.waitForTimeout(2500);
+
+const bossRows = boss.locator('.veil .chain-row');
+const bossRoles = async () => (await bossRows.evaluateAll((els) => els.map((el) => {
+  const sel = el.querySelector('select.chain-role');
+  return (sel ? sel.options[sel.selectedIndex].textContent : el.querySelector('label').textContent).trim();
+}))).join(' → ');
+ok('her own letter starts as just her signature and เลขานุการ',
+  (await bossRoles()) === 'ผู้จัดทำ → เลขานุการ', await bossRoles());
+ok('...and there is still a way to put somebody on it', (await boss.locator('.veil .add-signer').count()) === 1);
+await boss.locator('.veil .add-signer').click(); await boss.waitForTimeout(300);
+ok('+ เพิ่มผู้ลงนาม adds a row to her letter too',
+  (await bossRoles()) === 'ผู้จัดทำ → ประธานฝ่าย → เลขานุการ', await bossRoles());
+const added2 = bossRows.nth(1).locator('select:not(.chain-role)');
+const everyone = await added2.locator('option').count();
+ok('...offering the whole committee, not a shortlist of two', everyone > 10, String(everyone));
+await added2.selectOption('Kungking_HeadCon'); await boss.waitForTimeout(200);
+await boss.screenshot({ path: '/tmp/claude-0/chain-director.png' });
+await boss.locator('.veil footer button.primary').click();
+await boss.waitForFunction(() => {
+  const c = document.querySelector('.veil .pdf-canvas');
+  return c && c.width > 400;
+}, null, { timeout: 30000 });
+const bossSigners = boss.locator('.veil .seg.wrap button');
+const bossMarks = await bossSigners.count();
+ok('...and the person she added gets a signature box of their own', bossMarks === 2, String(bossMarks));
+for (let i = 0; i < bossMarks; i++) {
+  await bossSigners.nth(i).click();
+  await boss.waitForFunction(() => {
+    const c = document.querySelector('.veil .pdf-canvas');
+    return c && c.width > 400;
+  }, null, { timeout: 30000 });
+  await boss.waitForTimeout(300);
+  const sheet = boss.locator('.veil .pdf-sheet');
+  const box = await sheet.boundingBox();
+  await sheet.click({ position: { x: box.width * (0.3 + i * 0.2), y: box.height * 0.7 } });
+  await boss.waitForTimeout(350);
+}
+await boss.locator('.veil footer button.primary').click();
+await boss.waitForSelector('.veil .doc-done', { timeout: 20000 });
+ok('...and the letter goes through with both of them on it', true);
+await boss.locator('.veil footer button.primary').click(); await boss.waitForTimeout(2000);
+const bossChain = await boss.locator('#modal-root .doc-steps').innerText();
+ok('the saved letter has her, the head she added, and เลขานุการ, in that order',
+  /ผู้จัดทำ[\s\S]*ประธานฝ่าย[\s\S]*เลขานุการ/.test(bossChain), bossChain.replace(/\s+/g, ' ').slice(0, 140));
+
 // Tidy up the roster changes.
 await sql`UPDATE users SET is_head = false, position = 'ฝ่ายเนื้อหา' WHERE username = 'Fah_StaffCon'`;
+await sql`DELETE FROM users WHERE username = 'Beam_OpDeputy'`;
 await pg.evaluate(async () => {
   const d = await fetch('/api/documents').then((r) => r.json());
   for (const doc of d.documents || []) {

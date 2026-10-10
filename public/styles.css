@@ -1704,3 +1704,19 @@ li.task:has(.role-watch) { border-style: dashed; }
 .doc-number small { display: block; width: 100%; font-size: 12px; color: var(--ink-soft); }
 .doc-number strong { font-size: 1.15rem; font-weight: 700; letter-spacing: .01em; }
 .doc-no { font-weight: 700; font-variant-numeric: tabular-nums; }
+.version-box code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-radius: 5px; }
+.version-box .hint { margin: 0; font-size: 12.5px; }
+
+/* ---- user access: search + compact rows ---------------------------------- */
+.user-find {
+  width: 100%; max-width: 360px; margin: 4px 0 10px; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; font-size: 14px;
+}
+.users-table .u-sum, .users-table .u-caret { display: none; }
+.users-table td { padding-top: 6px; padding-bottom: 6px; }
+.users-table .who-cell .avatar { width: 28px; height: 28px; font-size: 11px; }
+.users-table .u-name { font-weight: 600; line-height: 1.25; }
+.users-table .chip.dept { font-size: 12px; padding: 2px 8px; }
+.users-table .add-dept { font-size: 12.5px; padding: 3px 6px; height: auto; }
+.users-table .btn.sm { font-size: 12px; padding: 4px 9px; }
+tr.urow[hidden] { display: none !important; }

@@ -2,25 +2,32 @@
 <html lang="th">
 <head>
 <meta charset="utf-8">
+<meta name="app-version" content="2026-10-11b">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>งานจุฬาฯแฟร์ · Chula Fair Tasks</title>
 <meta name="description" content="Task tracker for the Chulalongkorn University Fair committee.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="./styles.css?v=2026-10-11b">
 <!--
   The phone interface. A stylesheet of its own rather than more media queries
   scattered through styles.css: on a phone this app is laid out differently,
   not just narrower, and keeping that in one place is what stops a desktop fix
   quietly breaking it. The media attribute means a computer never applies it.
 -->
-<link rel="stylesheet" href="./phone.css" media="(max-width: 720px)">
+<link rel="stylesheet" href="./phone.css?v=2026-10-11b" media="(max-width: 720px)">
+<!--
+  The 2026-10 redesign: palette, sidebar, colour-coded status, the new pages.
+  Last, so it wins over both sheets above; its phone rules sit in its own
+  media queries.
+-->
+<link rel="stylesheet" href="./theme.css?v=2026-10-11b">
 
 <!-- Installable app: the manifest is what lets iOS put this on a Home Screen,
      which Apple requires before it will deliver a single push notification. -->
 <link rel="manifest" href="./manifest.json">
-<meta name="theme-color" content="#b51e64">
+<meta name="theme-color" content="#2a1530">
 <link rel="icon" href="./favicon.png" sizes="64x64">
 <link rel="icon" href="./icon-192.png" sizes="192x192">
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
@@ -196,100 +203,128 @@
 
 <!-- Signed in -------------------------------------------------------------->
 <div id="app-view" hidden>
-  <header class="topbar">
-    <div class="topbar-in">
-      <div class="brand">
-        <img src="./icon-192.png" alt="" class="brand-mark">
-        <div><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span><b id="bar-title" class="bar-title"></b></div>
+  <!--
+    The sidebar. On a computer it is the navigation, down the left, and it
+    can be narrowed to icons or detached to float over the page. On a phone
+    the same element is the drawer behind the "more" tab, and the nav inside
+    it moves to the bar along the bottom (see placeNav in app.js).
+  -->
+  <aside id="sidebar" class="sidebar" aria-label="Menu">
+    <div class="sb-head">
+      <img src="./icon-192.png" alt="" class="sb-mark brand-mark">
+      <div class="sb-name"><b id="brand-name">งานจุฬาฯแฟร์</b><span id="brand-sub">ระบบติดตามงาน</span></div>
+      <button type="button" class="sb-btn" id="sb-collapse" aria-label="Collapse">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6"/></svg></button>
+      <button type="button" class="sb-btn" id="sb-detach" aria-label="Detach">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="M9 5v14"/></svg></button>
+    </div>
+
+    <!--
+      Two labels per tab, one glyph: the long one in the sidebar, the short one
+      in the phone's bottom bar, where five long Thai labels will not fit.
+    -->
+    <nav class="tabs" id="tabs">
+      <a href="#/home" data-page="home">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-6.5 8 6.5"/><path d="M6 9.8V19.5h12V9.8"/><path d="M10 19.5v-5h4v5"/></svg>
+        <span class="tl" data-t="navHome">หน้าแรก</span>
+        <span class="ts" data-t="navHomeShort">หน้าแรก</span></a>
+      <a href="#/schedule" data-page="schedule">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+        <span class="tl" data-t="navSchedule">ตารางของฉัน</span>
+        <span class="ts" data-t="navScheduleShort">ตาราง</span></a>
+      <a href="#/work" data-page="work">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11.5l2.2 2.2L15.5 9"/><rect x="3.5" y="3.5" width="17" height="17" rx="4"/></svg>
+        <span class="tl" data-t="navWork">งานและกิจกรรม</span>
+        <span class="ts" data-t="navWorkShort">งาน</span></a>
+      <a href="#/calendar" data-page="calendar" class="ph-drawer">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>
+        <span class="tl" data-t="navCalendar">ปฏิทิน</span>
+        <span class="ts" data-t="navCalendarShort">ปฏิทิน</span></a>
+      <a href="#/docs" data-page="docs">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4M9 12.5h6M9 16h6"/></svg>
+        <span class="tl" data-t="navDocs">เอกสาร</span>
+        <span class="ts" data-t="navDocsShort">เอกสาร</span></a>
+      <a href="#/announce" data-page="announce" id="tab-announce" class="ph-drawer" hidden>
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6L7 10z"/><path d="M16.5 9.5a3.5 3.5 0 010 5"/></svg>
+        <span class="tl" data-t="navAnnounce">ส่งประกาศ</span>
+        <span class="ts" data-t="navAnnounceShort">ประกาศ</span></a>
+      <a href="#/admin" data-page="admin" id="tab-admin" class="ph-drawer" hidden>
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="16.8" cy="9.5" r="2.4"/><path d="M15.5 14.6c2.5-.2 4.4 1.4 5 4.4"/></svg>
+        <span class="tl" data-t="navAdmin">จัดการผู้ใช้</span>
+        <span class="ts" data-t="navAdminShort">ผู้ใช้</span></a>
+      <a href="#/more" data-page="more" id="tab-more" class="ph-only">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15"/></svg>
+        <span class="tl" data-t="navMore">เมนู</span>
+        <span class="ts" data-t="navMoreShort">เมนู</span></a>
+    </nav>
+
+    <!-- Spaces and departments, drawn by app.js (renderSidebar). -->
+    <div id="sb-extra" class="sb-extra"></div>
+
+    <div class="sb-foot">
+      <div class="lang-toggle theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-theme="system" title="System">◐</button>
+        <button type="button" data-theme="light" title="Light">☀</button>
+        <button type="button" data-theme="dark" title="Dark">☾</button>
       </div>
+      <div class="lang-toggle">
+        <button type="button" data-lang="th">ไทย</button>
+        <button type="button" data-lang="en">EN</button>
+      </div>
+    </div>
+  </aside>
+  <div class="sb-scrim" id="sb-scrim" hidden></div>
 
-      <!--
-        Two labels per tab, one glyph.
-
-        On a computer these read as words across the top. On a phone the same
-        nav becomes the bar along the bottom, where a thumb reaches, and the
-        long Thai labels will not fit five across — so each tab carries a
-        short form as well and the stylesheet picks. Both are translated; the
-        short one is never an abbreviation of a word nobody chose.
-      -->
-      <nav class="tabs" id="tabs">
-        <a href="#/work" data-page="work">
-          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11.5l2.2 2.2L15.5 9"/><rect x="3.5" y="3.5" width="17" height="17" rx="4"/></svg>
-          <span class="tl" data-t="navWork">งานและกิจกรรม</span>
-          <span class="ts" data-t="navWorkShort">งาน</span></a>
-        <a href="#/calendar" data-page="calendar">
-          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>
-          <span class="tl" data-t="navCalendar">ปฏิทิน</span>
-          <span class="ts" data-t="navCalendarShort">ปฏิทิน</span></a>
-        <a href="#/docs" data-page="docs">
-          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4M9 12.5h6M9 16h6"/></svg>
-          <span class="tl" data-t="navDocs">เอกสาร</span>
-          <span class="ts" data-t="navDocsShort">เอกสาร</span></a>
-        <a href="#/announce" data-page="announce" id="tab-announce" hidden>
-          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6L7 10z"/><path d="M16.5 9.5a3.5 3.5 0 010 5"/></svg>
-          <span class="tl" data-t="navAnnounce">ส่งประกาศ</span>
-          <span class="ts" data-t="navAnnounceShort">ประกาศ</span></a>
-        <a href="#/admin" data-page="admin" id="tab-admin" hidden>
-          <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="16.8" cy="9.5" r="2.4"/><path d="M15.5 14.6c2.5-.2 4.4 1.4 5 4.4"/></svg>
-          <span class="tl" data-t="navAdmin">จัดการผู้ใช้</span>
-          <span class="ts" data-t="navAdminShort">ผู้ใช้</span></a>
-      </nav>
-
-      <div class="topbar-right">
-        <div class="lang-toggle theme-toggle" role="group" aria-label="Theme">
-          <button type="button" data-theme="system" title="System">◐</button>
-          <button type="button" data-theme="light" title="Light">☀</button>
-          <button type="button" data-theme="dark" title="Dark">☾</button>
-        </div>
-        <div class="lang-toggle">
-          <button type="button" data-lang="th">ไทย</button>
-          <button type="button" data-lang="en">EN</button>
+  <div class="app-col">
+    <header class="topbar">
+      <div class="topbar-in">
+        <button type="button" class="tb-burger" id="sb-open" aria-label="Menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15"/></svg></button>
+        <div class="brand">
+          <img src="./icon-192.png" alt="" class="brand-mark">
+          <div><b id="bar-title" class="bar-title"></b><span id="bar-sub" class="bar-sub"></span></div>
         </div>
 
-        <div class="bell" style="position:relative">
-          <button class="btn ghost" id="bell-btn" aria-label="Notifications">🔔<span class="count" id="bell-count" hidden>0</span></button>
-          <div class="pop" id="bell-pop" hidden>
-            <header>
-              <b data-t="notifications">การแจ้งเตือน</b>
-              <button class="btn ghost sm" id="mark-read" data-t="markAllRead">อ่านทั้งหมดแล้ว</button>
-            </header>
-            <div class="items" id="bell-items"></div>
+        <div class="topbar-right">
+          <div class="bell" style="position:relative">
+            <button class="btn ghost" id="bell-btn" aria-label="Notifications">
+              <svg class="tb-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/></svg><span class="count" id="bell-count" hidden>0</span></button>
+            <div class="pop" id="bell-pop" hidden>
+              <header>
+                <b data-t="notifications">การแจ้งเตือน</b>
+                <button class="btn ghost sm" id="mark-read" data-t="markAllRead">อ่านทั้งหมดแล้ว</button>
+              </header>
+              <div class="items" id="bell-items"></div>
+            </div>
           </div>
-        </div>
 
-        <!--
-          The profile picture IS the profile menu.
-
-          It used to be one more tab in a row of six, which on a phone left no
-          room for the ones people use every day. Everything about "me" now
-          hangs off the face in the corner, which is where people look for it.
-        -->
-        <div class="me" style="position:relative">
-          <button class="avatar" id="me-avatar" aria-haspopup="menu" aria-expanded="false"
-                  title="Profile"></button>
-          <div class="pop menu" id="me-pop" hidden>
-            <header>
-              <b id="me-name">—</b>
-            </header>
-            <div class="items">
-              <a href="#/profile" class="item" data-t="navProfile">โปรไฟล์</a>
-              <a href="#/links" class="item" data-t="navLinks">ลิงก์สั้น</a>
-              <button class="item" id="me-guide" data-t="guideMenu">คู่มือเริ่มต้นใช้งาน</button>
-              <button class="item" id="me-theme">ธีม</button>
-              <button class="item" id="me-lang">ภาษา</button>
-              <button class="item danger" id="sign-out" data-t="signOut">ออกจากระบบ</button>
+          <!-- The profile picture IS the profile menu. -->
+          <div class="me" style="position:relative">
+            <button class="avatar" id="me-avatar" aria-haspopup="menu" aria-expanded="false"
+                    title="Profile"></button>
+            <div class="pop menu" id="me-pop" hidden>
+              <header>
+                <b id="me-name">—</b>
+              </header>
+              <div class="items">
+                <a href="#/profile" class="item" data-t="navProfile">โปรไฟล์</a>
+                <a href="#/links" class="item" data-t="navLinks">ลิงก์สั้น</a>
+                <button class="item" id="me-guide" data-t="guideMenu">คู่มือเริ่มต้นใช้งาน</button>
+                <button class="item" id="me-theme">ธีม</button>
+                <button class="item" id="me-lang">ภาษา</button>
+                <button class="item danger" id="sign-out" data-t="signOut">ออกจากระบบ</button>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
-  </header>
+    </header>
 
-  <main id="main"></main>
+    <main id="main"></main>
+  </div>
   <!--
-    Make something new. On a phone this replaces the row of four buttons that
-    used to open the work page — it sits where a thumb is, above the bar, and
-    opens a short list of what can be made from the page you are on.
+    Make something new. On a phone it sits where a thumb is, above the bar,
+    and opens a short list of what can be made from the page you are on.
   -->
   <button type="button" id="fab" class="fab" hidden aria-label="+">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -302,8 +337,8 @@
      for the same reason pdf.js is: a university network that blocks the CDN
      would otherwise leave the one feature that exists to be printed unable to
      draw anything. MIT, © 2009 Kazuhiko Arase. -->
-<script src="./vendor/qrcode.js"></script>
-<script src="./i18n.js"></script>
-<script src="./app.js"></script>
+<script src="./vendor/qrcode.js?v=2026-10-11b"></script>
+<script src="./i18n.js?v=2026-10-11b"></script>
+<script src="./app.js?v=2026-10-11b"></script>
 </body>
 </html>

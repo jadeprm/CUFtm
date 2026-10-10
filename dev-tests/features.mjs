@@ -23,7 +23,7 @@ async function as(user, pass, opts) {
   pg.on('pageerror', (e) => errs.push(`${user}: ${e.message}`));
   pg.on('dialog', async (d) => { await d.accept(); });
   await pg.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
-  await pg.evaluate(() => { try { localStorage.setItem('fair-work-view', 'list'); } catch (e) {} });
+  await pg.evaluate(() => { try { localStorage.setItem('fair-work-view2', 'list'); } catch (e) {} });
   await pg.fill('#in-username', user); await pg.click('#auth-submit'); await pg.waitForTimeout(2300);
   await pg.fill('#in-password', pass);
   if (await pg.locator('#field-confirm:not([hidden])').count()) await pg.fill('#in-confirm', pass);
@@ -57,7 +57,7 @@ await jade.context().close();
 // ===========================================================================
 console.log('\n1. What each task is to me — on a computer');
 const kk = await as('Kungking_HeadCon', 'brandNew22', DESK);
-await kk.evaluate(() => { location.hash = '#/'; }); await kk.waitForTimeout(1200);
+await kk.evaluate(() => { location.hash = '#/work'; }); await kk.waitForTimeout(1200);
 const badge = async (title) => {
   const li = kk.locator('li.task', { hasText: title }).first();
   if (!(await li.count())) return null;
@@ -149,7 +149,7 @@ await kk.screenshot({ path: `${SHOTS}/upcoming-desk.png`, clip: { x: 0, y: 0, wi
 // ===========================================================================
 console.log('\nOn a phone');
 const ph = await as('Kungking_HeadCon', 'brandNew22', PHONE);
-await ph.evaluate(() => { location.hash = '#/'; }); await ph.waitForTimeout(1500);
+await ph.evaluate(() => { location.hash = '#/work'; }); await ph.waitForTimeout(1500);
 ok('the role tabs are there on a phone', (await ph.locator('.ph-roles button').count()) === 4);
 ok('cards carry the badge on a phone too',
   (await ph.locator('li.task', { hasText: 'บท: แค่ติดตาม' }).first().locator('.role-badge.role-watch').count()) === 1);

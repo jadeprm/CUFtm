@@ -34,6 +34,10 @@ const lineSent = [];
 // Set to make LINE refuse the next reply that carries a card, as it does a card it dislikes.
 let lineRefuseFlex = false;
 let lineFails = null;         // set to a status code to make LINE refuse
+/** Each test person's Google Calendar: name -> Map(eventId -> event). */
+const googleCals = new Map();
+const googleWrites = [];
+const googleRevoked = [];
 
 /**
  * The Sheets API, stubbed.
@@ -152,8 +156,45 @@ globalThis.fetch = async (url, init) => {
     if (sheetCsv === null) return new Response('<html>sign in</html>', { status: 200 });
     return new Response(sheetCsv, { status: 200 });
   }
+  if (String(url).includes('oauth2.googleapis.com/revoke')) {
+    googleRevoked.push(String(init.body));
+    return new Response('{}', { status: 200 });
+  }
   if (String(url).includes('oauth2.googleapis.com')) {
+    /**
+     * Signing in to Google, stubbed: the code is the name of the calendar to
+     * use, the refresh token carries it, and the access token carries it on to
+     * the Calendar API below — so each test person has a calendar of their own.
+     */
+    const form = new URLSearchParams(String(init?.body || ''));
+    if (form.get('grant_type') === 'authorization_code') {
+      const code = form.get('code');
+      if (code === 'refuse') return new Response('{"error":"invalid_grant"}', { status: 400 });
+      const idt = 'x.' + Buffer.from(JSON.stringify({ email: code.toLowerCase() + '@gmail.test' })).toString('base64url') + '.y';
+      return new Response(JSON.stringify({
+        access_token: 'at-' + code, refresh_token: 'rt-' + code, expires_in: 3600, id_token: idt,
+        scope: code === 'nocal' ? 'openid email' : 'openid email https://www.googleapis.com/auth/calendar.events',
+      }), { status: 200 });
+    }
+    if (form.get('grant_type') === 'refresh_token' && String(form.get('refresh_token')).startsWith('rt-')) {
+      return new Response(JSON.stringify({ access_token: 'at-' + form.get('refresh_token').slice(3), expires_in: 3600 }), { status: 200 });
+    }
     return new Response(JSON.stringify({ access_token: 'ya29.test', expires_in: 3600 }), { status: 200 });
+  }
+  if (String(url).includes('www.googleapis.com/calendar/v3/calendars/primary/events')) {
+    const auth = String((init?.headers || {}).authorization || '');
+    const who = auth.replace('Bearer at-', '');
+    const cal = googleCals.get(who) || new Map();
+    googleCals.set(who, cal);
+    const method = (init && init.method) || 'GET';
+    const tail = String(url).split('/events')[1].split('?')[0].replace(/^\//, '');
+    if (method === 'GET') return new Response(JSON.stringify({ items: [...cal.values()] }), { status: 200 });
+    if (method === 'DELETE') { const had = cal.delete(tail); return new Response(had ? '' : '{}', { status: had ? 204 : 404 }); }
+    const body = JSON.parse(init.body);
+    if (method === 'PUT' && !cal.has(tail)) return new Response('{"error":"notFound"}', { status: 404 });
+    cal.set(body.id, body);
+    googleWrites.push({ who, method, id: body.id, summary: body.summary });
+    return new Response(JSON.stringify(body), { status: 200 });
   }
   /**
    * Google Drive, stubbed. `driveFiles` is the archive itself, so a test can
@@ -372,6 +413,7 @@ await sql`DELETE FROM meta`;
  */
 await sql`DELETE FROM meetings`;
 await sql`DELETE FROM precedence`;
+await sql`DELETE FROM spaces`;
 await sql`DELETE FROM users`;
 
 // ===========================================================================
@@ -1017,6 +1059,69 @@ const merchOnly = await sql`SELECT username FROM notifications WHERE announcemen
 const merchNames = merchOnly.map((x) => x.username);
 ok('sending to one department reaches its head', merchNames.includes('Kluayhom_HeadMerchant'), merchNames.join(','));
 ok('...and not a head of an unrelated department', !merchNames.includes('Yam_HeadSpon'), merchNames.join(','));
+
+/**
+ * An announcement to a ฝ่าย goes to the people IN it, not to everyone who can
+ * SEE it.
+ *
+ * ต๊อดติ sent one to อำนวยการ 1–3 and it reached the project director, both
+ * deputies, two assistants and the secretaries — everybody whose roster row
+ * says "All". Access is permission to read, not a subscription, and the board
+ * was being spammed by every sub-department's notices.
+ */
+// The real roster gives the secretaries "All" as well; the fixture does not.
+await sql`UPDATE users SET all_departments = true WHERE username = 'Sunday_Sec'`;
+r = await call(pushApi, '/api/push?do=announce', {
+  method: 'POST', as: 'admin',
+  body: { title: 'เฉพาะอำนวยการ', audience: { kind: 'departments', departments: ['oper1', 'oper2', 'oper3'] } },
+});
+const operNames = (await sql`SELECT username FROM notifications WHERE announcement_id = ${r.data.id}`)
+  .map((x) => x.username);
+ok('an announcement to อำนวยการ 1–3 reaches อำนวยการ', operNames.includes('Totti_HeadOp') &&
+  operNames.includes('Ikkew_HeadOper1'), operNames.join(','));
+ok('...and NOT the board, who merely have access to every ฝ่าย',
+  !['Jade_Pres', 'Kaew_VP', 'Gorn_VP', 'Sunday_Sec'].some((u) => operNames.includes(u)), operNames.join(','));
+ok('...nor a head whose own ฝ่าย was not picked', !operNames.includes('Kluayhom_HeadMerchant'), operNames.join(','));
+
+// Ticking the umbrella still covers the three divisions under it.
+r = await call(pushApi, '/api/push?do=announce', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ถึงอำนวยการใหญ่', audience: { kind: 'departments', departments: ['operations'] } },
+});
+const umbrella = (await sql`SELECT username FROM notifications WHERE announcement_id = ${r.data.id}`)
+  .map((x) => x.username);
+ok('ticking ฝ่ายอำนวยการใหญ่ still covers อำนวยการ 1–3', umbrella.includes('Ikkew_HeadOper1'), umbrella.join(','));
+ok('...and still leaves the board out', !umbrella.includes('Jade_Pres'), umbrella.join(','));
+
+// …unless whoever is sending says so.
+r = await call(pushApi, '/api/push?do=announce', {
+  method: 'POST', as: 'admin',
+  body: { title: 'อำนวยการ + บอร์ด',
+          audience: { kind: 'departments', departments: ['oper1'], includeAll: true } },
+});
+const withBoard = (await sql`SELECT username FROM notifications WHERE announcement_id = ${r.data.id}`)
+  .map((x) => x.username);
+ok('ticking "ส่งถึงบอร์ดด้วย" does reach them', withBoard.includes('Kaew_VP') &&
+  withBoard.includes('Ikkew_HeadOper1'), withBoard.join(','));
+
+/**
+ * And the board can be addressed on its own, which is the only way to reach
+ * them by group: "All" in the roster means no ฝ่าย at all, so no amount of
+ * ticking departments finds them.
+ */
+r = await call(pushApi, '/api/push?do=announce', {
+  method: 'POST', as: 'admin', body: { title: 'ถึงบอร์ด', audience: { kind: 'board' } },
+});
+const boardOnly = (await sql`SELECT username FROM notifications WHERE announcement_id = ${r.data.id}`)
+  .map((x) => x.username);
+ok('"บอร์ด" reaches everyone whose access is every ฝ่าย',
+  ['Kaew_VP', 'Gorn_VP', 'Sunday_Sec'].every((u) => boardOnly.includes(u)), boardOnly.join(','));
+ok('...and nobody who belongs to one ฝ่าย', !boardOnly.includes('Ikkew_HeadOper1'), boardOnly.join(','));
+ok('...and the sender is still left out of their own announcement',
+  !boardOnly.includes('Jade_Pres'), boardOnly.join(','));
+ok('what was sent is recorded with who it was aimed at',
+  (await sql`SELECT audience FROM announcements WHERE id = ${r.data.id}`)[0].audience === 'board');
+await sql`UPDATE users SET all_departments = false WHERE username = 'Sunday_Sec'`;
 
 // Specific people
 r = await call(pushApi, '/api/push?do=announce', {
@@ -2582,6 +2687,7 @@ const told = await sql`SELECT title, body FROM notifications
 ok('the uploader is told, and the reason travels with it',
   told[0] && told[0].body.includes('วันที่ในเอกสารผิด'), JSON.stringify(told[0]));
 
+// ===========================================================================
 head('47. Documents: a higher-up can fix the file instead of sending it back');
 
 const chain3 = (await call(docsApi, '/api/documents?do=propose',
@@ -5965,6 +6071,497 @@ await sql`UPDATE users SET is_head = false WHERE username = 'Fah_StaffCon'`;
 await sql`INSERT INTO user_departments (username, department) VALUES
             ('Totti_HeadOp', 'oper1'), ('Totti_HeadOp', 'oper2'), ('Totti_HeadOp', 'oper3')
           ON CONFLICT DO NOTHING`;
+
+// ===========================================================================
+head('77. The page and the server say which version they are');
+/**
+ * Two half-finished deployments in a week, each of which looked like a bug in
+ * a feature rather than a missing file. Both sides now carry the same string
+ * and the profile page compares them.
+ */
+const { APP_VERSION } = await import('../lib/version.js');
+r = await call(metaApi, '/api/meta', {});
+ok('the server says which version it is running', r.data.version === APP_VERSION, r.data.version);
+const pageSays = (await import('node:fs')).readFileSync('public/app.js', 'utf8')
+  .match(/var APP_VERSION = '([^']+)'/);
+ok('...and the page carries the same one, so a half-deployed site is visible',
+  pageSays && pageSays[1] === APP_VERSION, `${pageSays && pageSays[1]} vs ${APP_VERSION}`);
+/**
+ * The ?v= on every script and stylesheet is what makes a phone fetch the new
+ * file instead of the one it already has. It sat at an old date through two
+ * releases; now it has to match.
+ */
+const shell = (await import('node:fs')).readFileSync('public/index.html', 'utf8');
+const stamps = [...new Set([...shell.matchAll(/\?v=([0-9a-z-]+)/g)].map((m) => m[1]))];
+ok('index.html asks for this version of every file', stamps.length === 1 && stamps[0] === APP_VERSION, stamps.join(', '));
+
+// ===========================================================================
+head('78. Who may sign as ประธานโครงการ, and who the form suggests first');
+
+/**
+ * ต๊อดติ runs ฝ่ายอำนวยการใหญ่ and is a Co-Admin because he manages people.
+ * The form was reading that as "director" and offering him as ประธานโครงการ,
+ * a post he does not hold. Who holds a post is the roster's ตำแหน่ง column.
+ *
+ * And nothing used to sort the candidates at all — the roster came back in
+ * whatever order the database felt like — so which ประธานฝ่ายอำนวยการใหญ่ was
+ * suggested could change between two uploads on the same afternoon.
+ */
+await sql`UPDATE users SET department = 'operations', is_head = true,
+                           position = 'ประธานฝ่ายอำนวยการใหญ่' WHERE username = 'Totti_HeadOp'`;
+await sql`INSERT INTO users (username, display_name, nickname, position, access, department, is_head, active)
+          VALUES ('Beam_OpDeputy', 'Beam - Deputy Head Operation', 'บีมบีม',
+                  'รองประธานฝ่ายอำนวยการใหญ่', 'editor', 'operations', true, true)
+          ON CONFLICT (username) DO UPDATE SET position = EXCLUDED.position,
+            department = EXCLUDED.department, is_head = EXCLUDED.is_head, active = true`;
+await sql`UPDATE users SET department = 'oper2', unit = 'สถานที่', is_head = true,
+                           position = 'ประธานฝ่ายอำนวยการ 2' WHERE username = 'Ikkew_HeadOper1'`;
+
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'content', body: { department: 'content' },
+});
+const roleOptions = Object.fromEntries((r.data.roles || []).map((x) => [x.role, x.options]));
+ok('the form is told who may fill every role, not just the ones it proposed',
+  Array.isArray(roleOptions.director) && Array.isArray(roleOptions.divisionHead),
+  JSON.stringify(Object.keys(roleOptions)));
+ok('ประธานโครงการ is the three at the top of the chart and nobody else',
+  roleOptions.director.join() === 'Jade_Pres,Gorn_VP,Kaew_VP', JSON.stringify(roleOptions.director));
+ok('...with เจตน์ first, the deputies after',
+  roleOptions.director[0] === 'Jade_Pres', roleOptions.director[0]);
+ok('...and ต๊อดติ is not among them, Co-Admin or not',
+  !roleOptions.director.includes('Totti_HeadOp'));
+
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'oper2head', body: { department: 'oper2' },
+});
+const opRoles = Object.fromEntries(r.data.roles.map((x) => [x.role, x.options]));
+ok('ประธานฝ่ายอำนวยการใหญ่ offers ต๊อดติ before his deputy',
+  opRoles.divisionHead.join() === 'Totti_HeadOp,Beam_OpDeputy', JSON.stringify(opRoles.divisionHead));
+ok('...and the step the form proposes is ต๊อดติ, every time',
+  r.data.steps.find((st) => st.role === 'divisionHead').username === 'Totti_HeadOp');
+/**
+ * The same answer twice. The rows are physically reordered in between, which
+ * is what an edit to any of them does and what made this unpredictable.
+ */
+await sql`UPDATE users SET updated_at = now() WHERE username = 'Totti_HeadOp'`;
+r = await call(docsApi, '/api/documents?do=propose', {
+  method: 'POST', as: 'oper2head', body: { department: 'oper2' },
+});
+ok('...and still ต๊อดติ after the roster rows have moved about',
+  r.data.steps.find((st) => st.role === 'divisionHead').username === 'Totti_HeadOp');
+
+// A รองประธาน may sign as ประธานโครงการ, but their own letter still climbs.
+await call(authApi, '/api/auth?do=login', { method: 'POST', remember: 'deputy',
+  body: { username: 'Kaew_VP', password: 'coadminPw1' } });
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'deputy', body: {} });
+let deputyChain = r.data.steps.map((st) => `${st.role}:${st.username}`).join(' → ');
+ok('a รองประธาน’s own letter still goes up to ประธานโครงการ',
+  /director:Jade_Pres/.test(deputyChain), deputyChain);
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'admin', body: {} });
+deputyChain = r.data.steps.map((st) => st.role).join(' → ');
+ok('...and ประธานโครงการ’s own letter has nobody above it', deputyChain === 'author → secretary', deputyChain);
+
+await sql`DELETE FROM users WHERE username = 'Beam_OpDeputy'`;
+
+
+// ===========================================================================
+head('79. Spaces — working groups anyone can start');
+for (const [u, pw, as] of [['New_UnitCon', 'unitLead11', 'unitlead'], ['Ploy_StaffCon', 'memberPw11', 'member'],
+  ['Kluayhom_HeadMerchant', 'merchPw123', 'merch'], ['Kungking_HeadCon', 'brandNew22', 'content']]) {
+  const got = await call(authApi, '/api/auth?do=login', { method: 'POST', remember: as, body: { username: u, password: pw } });
+  if (got.status !== 200) console.log('  (login', u, got.status, JSON.stringify(got.data), ')');
+}
+/**
+ * A space cuts across the chart: Kluayhom (ร้านค้า) starts one with Ploy
+ * (เนื้อหา) and the whole of อำนวยการ 2. A task filed into it is visible to
+ * all of them, on top of what their departments already show.
+ */
+r = await call(tasksApi, '/api/tasks?do=space', { method: 'POST', as: 'merch', body: {
+  name: 'ทีมเวทีกลาง', colour: 'teal', icon: '🎪', members: ['Ploy_StaffCon'],
+  departments: [{ key: 'oper2' }, { key: 'nonsense' }],
+} });
+ok('anybody may start a space — a ร้านค้า head starts one', r.status === 201 && r.data.id, JSON.stringify(r.data).slice(0, 100));
+const spaceId = r.data.id;
+ok('...its starter is its owner, the named member is in it', r.data.space.members.some((m) => m.username === 'Kluayhom_HeadMerchant' && m.role === 'owner') &&
+  r.data.space.members.some((m) => m.username === 'Ploy_StaffCon'), JSON.stringify(r.data.space.members));
+ok('...and a department the chart does not have is dropped, not stored',
+  r.data.space.departments.map((d) => d.key).join() === 'oper2', JSON.stringify(r.data.space.departments));
+r = await call(tasksApi, '/api/tasks?do=space', { method: 'POST', as: 'merch', body: { name: '   ' } });
+ok('a space needs a name', r.status === 400 && r.data.error === 'NAME_REQUIRED');
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'merch', body: {
+  title: 'ติดตั้งไฟเวทีกลาง', spaceId, assignees: ['Kluayhom_HeadMerchant'], startDate: '2026-11-10', dueDate: '2026-11-14',
+} });
+ok('a task can be filed into the space, with a start date for the Gantt bar',
+  r.status === 201 && r.data.task.spaceId === spaceId && r.data.task.startDate === '2026-11-10', JSON.stringify(r.data.task || r.data).slice(0, 120));
+const spaceTask = r.data.task.id;
+
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+ok('a named member of the space sees its task though ร้านค้า is not her department',
+  r.data.tasks.some((t) => t.id === spaceTask));
+r = await call(tasksApi, '/api/tasks', { as: 'oper2head' });
+ok('...so does somebody whose home department was added to the space',
+  r.data.tasks.some((t) => t.id === spaceTask));
+r = await call(tasksApi, '/api/tasks', { as: 'unitlead' });
+ok('...and somebody in neither does not', !r.data.tasks.some((t) => t.id === spaceTask));
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead', body: { title: 'x', spaceId } });
+ok('filing into a space you are not in is refused', r.status === 403, String(r.status));
+r = await call(tasksApi, '/api/tasks?do=spaces', { as: 'unitlead' });
+ok('...and the space is not listed for her', !r.data.spaces.some((sp) => sp.id === spaceId));
+r = await call(tasksApi, '/api/tasks?do=spaces', { as: 'member' });
+const seenSpace = r.data.spaces.find((sp) => sp.id === spaceId);
+ok('a member sees the space, with how much is open in it', seenSpace && seenSpace.openTasks === 1 && seenSpace.mine === true,
+  JSON.stringify(seenSpace || {}).slice(0, 100));
+ok('...but may not manage it', seenSpace && seenSpace.mayManage === false);
+r = await call(tasksApi, '/api/tasks?do=space', { method: 'PATCH', as: 'member', body: { id: spaceId, name: 'ของฉัน' } });
+ok('a plain member cannot rename it', r.status === 403);
+r = await call(tasksApi, '/api/tasks?do=space', { method: 'PATCH', as: 'merch', body: { id: spaceId, name: 'ทีมเวทีกลาง 2026', members: ['Ploy_StaffCon', 'New_UnitCon'] } });
+ok('its owner renames it and adds somebody', r.status === 200 && r.data.space.name === 'ทีมเวทีกลาง 2026' &&
+  r.data.space.members.length === 3, JSON.stringify(r.data.space && r.data.space.members));
+r = await call(tasksApi, '/api/tasks', { as: 'unitlead' });
+ok('...and the new member can now see its task', r.data.tasks.some((t) => t.id === spaceTask));
+r = await call(tasksApi, '/api/tasks?do=space-leave', { method: 'POST', as: 'unitlead', body: { id: spaceId } });
+ok('anyone may take themselves off a space', r.status === 200 && !r.data.spaces.some((sp) => sp.id === spaceId));
+r = await call(tasksApi, '/api/tasks?do=space-leave', { method: 'POST', as: 'merch', body: { id: spaceId } });
+ok('...except the person who started it', r.status === 400 && r.data.error === 'OWNER_CANNOT_LEAVE');
+r = await call(tasksApi, '/api/tasks?do=spaces', { as: 'admin' });
+ok('an admin sees every space', r.data.spaces.some((sp) => sp.id === spaceId));
+
+// ===========================================================================
+head('80. When work started and when it was finished');
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: spaceTask, status: 'done' } });
+ok('reaching เสร็จแล้ว stamps the finish time', Boolean(r.data.task.doneAt), String(r.data.task.doneAt));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: spaceTask, status: 'doing' } });
+ok('...and reopening it clears it again', r.data.task.doneAt === null, String(r.data.task.doneAt));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: spaceTask, startDate: '2026-11-11', spaceId: null } });
+ok('the start date moves, and a task can be taken out of its space',
+  r.data.task.startDate === '2026-11-11' && r.data.task.spaceId === null, JSON.stringify([r.data.task.startDate, r.data.task.spaceId]));
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'merch', body: { title: 'เริ่มหลังส่ง', startDate: '2026-12-20', dueDate: '2026-12-01' } });
+ok('a start after the deadline is dropped rather than drawn backwards', r.data.task.startDate === null, String(r.data.task.startDate));
+await sql`DELETE FROM tasks WHERE title = 'เริ่มหลังส่ง'`;
+
+r = await call(tasksApi, `/api/tasks?do=space&id=${spaceId}`, { method: 'DELETE', as: 'merch' });
+ok('archiving a space keeps its work', r.status === 200 && (await sql`SELECT count(*)::int AS n FROM tasks WHERE id = ${spaceTask}`)[0].n === 1);
+
+// ===========================================================================
+head('81. Meetings that repeat');
+const nextMonday = (() => { const d = new Date(todayIsoForTest() + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + ((8 - d.getUTCDay()) % 7 || 7)); return d.toISOString().slice(0, 10); })();
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin', body: {
+  title: 'ประชุมประจำสัปดาห์', meetsOn: nextMonday, meetsAt: '18:00', endsAt: '19:00',
+  people: ['Kungking_HeadCon', 'Ploy_StaffCon'], template: 'standard',
+  repeat: { freq: 'weekly', count: 6 },
+} });
+ok('a weekly meeting six times makes six meetings in one series', r.status === 201 && r.data.ids.length === 6 && r.data.seriesId,
+  JSON.stringify(r.data).slice(0, 120));
+const seriesId = r.data.seriesId;
+const series = await sql`SELECT id, meets_on, code FROM meetings WHERE series_id = ${seriesId} ORDER BY meets_on`;
+const isoOf = (d) => (typeof d === 'string' ? d.slice(0, 10) : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+ok('...a week apart, starting on the day asked', isoOf(series[0].meets_on) === nextMonday &&
+  series.every((m, i) => i === 0 || (new Date(isoOf(m.meets_on)) - new Date(isoOf(series[i - 1].meets_on))) === 7 * 86400000),
+  series.map((m) => isoOf(m.meets_on)).join(' '));
+ok('...each with its own code', new Set(series.map((m) => m.code)).size === 6);
+const copied = await sql`SELECT meeting_id, count(*)::int AS n FROM meeting_agenda WHERE meeting_id = ANY(${series.map((m) => m.id)}) GROUP BY meeting_id`;
+ok('...each with its own copy of the agenda', copied.length === 6 && copied.every((c) => c.n === copied[0].n && c.n >= 5), JSON.stringify(copied.map((c) => c.n)));
+const invitedEach = await sql`SELECT meeting_id, count(*)::int AS n FROM meeting_people WHERE meeting_id = ANY(${series.map((m) => m.id)}) GROUP BY meeting_id`;
+ok('...and its own invitations', invitedEach.length === 6 && invitedEach.every((c) => c.n === 3), JSON.stringify(invitedEach.map((c) => c.n)));
+r = await call(eventsApi, '/api/events?do=reply', { method: 'POST', as: 'member', body: { kind: 'meeting', id: series[1].id, reply: 'declined' } });
+const replies = await sql`SELECT meeting_id, reply FROM meeting_people WHERE username = 'Ploy_StaffCon' AND meeting_id = ANY(${series.map((m) => m.id)})`;
+ok('answering one occurrence answers that one only', replies.filter((x) => x.reply === 'declined').length === 1, JSON.stringify(replies.map((x) => x.reply)));
+
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'PATCH', as: 'admin', body: { id: series[2].id, meetsAt: '17:00', scope: 'one' } });
+let times = await sql`SELECT meets_at FROM meetings WHERE series_id = ${seriesId} ORDER BY meets_on`;
+ok('moving one occurrence moves that one', times.map((x) => x.meets_at).join() === '18:00,18:00,17:00,18:00,18:00,18:00', times.map((x) => x.meets_at).join());
+const wed = (() => { const d = new Date(isoOf(series[3].meets_on) + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 2); return d.toISOString().slice(0, 10); })();
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'PATCH', as: 'admin', body: { id: series[3].id, meetsOn: wed, title: 'ประชุมประจำสัปดาห์ (ย้ายวันพุธ)', scope: 'following' } });
+ok('"this and following" changes the rest of the series', r.status === 200 && r.data.updated === 3, JSON.stringify(r.data));
+const afterSeries = await sql`SELECT meets_on, title FROM meetings WHERE series_id = ${seriesId} ORDER BY meets_on`;
+ok('...moving each by the same two days, not all to one date',
+  isoOf(afterSeries[3].meets_on) === wed && (new Date(isoOf(afterSeries[5].meets_on)) - new Date(isoOf(afterSeries[3].meets_on))) === 14 * 86400000,
+  afterSeries.map((m) => isoOf(m.meets_on)).join(' '));
+ok('...and leaving the earlier ones alone', afterSeries[0].title === 'ประชุมประจำสัปดาห์' && afterSeries[4].title.includes('พุธ'));
+r = await call(eventsApi, `/api/events?do=meeting&id=${series[4].id}&scope=following`, { method: 'DELETE', as: 'admin' });
+ok('cancelling "this and following" removes them and keeps the rest', r.data.removed.length === 2 &&
+  (await sql`SELECT count(*)::int AS n FROM meetings WHERE series_id = ${seriesId}`)[0].n === 4, JSON.stringify(r.data.removed));
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin', body: {
+  title: 'x', meetsOn: nextMonday, repeat: { freq: 'weekly' } } });
+ok('a repeat needs an end — a count or a last date', r.status === 400 && r.data.error === 'REPEAT_NEEDS_END');
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin', body: {
+  title: 'ทุกวัน', meetsOn: nextMonday, repeat: { freq: 'daily', count: 500 } } });
+ok('...and never more than 52 of them', r.data.ids.length === 52, String(r.data.ids && r.data.ids.length));
+await sql`DELETE FROM meetings WHERE title = 'ทุกวัน'`;
+const { readRepeat } = await import('../lib/meetingstore.js');
+ok('monthly on the 31st lands on each month’s last day', readRepeat({ freq: 'monthly', count: 3 }, '2027-01-31').dates.join() === '2027-01-31,2027-02-28,2027-03-31');
+ok('weekdays skip Saturday and Sunday', readRepeat({ freq: 'weekdays', count: 3 }, '2026-10-09').dates.join() === '2026-10-09,2026-10-12,2026-10-13');
+
+// ===========================================================================
+head('82. My schedule: appointments, office hours, bookings, finding a time');
+const sched = (path, opts) => call(calApi, path, opts);
+r = await sched('/api/calendar?do=schedule', {});
+ok('the schedule needs a signed-in person (it is not the token feed)', r.status === 401);
+const day1 = (() => { const d = new Date(nextMonday + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 7); return d.toISOString().slice(0, 10); })(); // a Monday
+r = await sched('/api/calendar?do=appt', { method: 'POST', as: 'content', body: { kind: 'focus', title: 'เขียนสคริปต์', on: day1, at: '09:00', to: '11:00' } });
+ok('a focus block is added to my own schedule', r.status === 201);
+r = await sched('/api/calendar?do=appt', { method: 'POST', as: 'content', body: { title: 'x', on: day1, at: '11:00', to: '10:00' } });
+ok('an appointment that ends before it starts is refused', r.status === 400 && r.data.error === 'ENDS_BEFORE_IT_STARTS');
+r = await sched(`/api/calendar?do=schedule&from=${day1}&to=${day1}`, { as: 'content' });
+ok('it comes back on my schedule', r.data.appointments.length === 1 && r.data.appointments[0].kind === 'focus' && r.data.appointments[0].at === '09:00',
+  JSON.stringify(r.data.appointments));
+
+r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'content', body: { windows: [
+  { day: 'mon', from: '09:00', to: '12:00', slot: 30, place: 'ห้องชมรม' },
+] } });
+ok('office hours are set as weekly windows', r.status === 200 && r.data.windows.length === 1, JSON.stringify(r.data).slice(0, 100));
+r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'content', body: { windows: [{ day: 'mon', from: '09:00', to: '09:10', slot: 30 }] } });
+ok('a window shorter than one slot is refused', r.status === 400 && r.data.error === 'WINDOW_TOO_SHORT');
+r = await sched('/api/calendar?do=hosts', { as: 'member' });
+ok('people can see who keeps office hours', r.data.hosts.some((x) => x.username === 'Kungking_HeadCon'));
+r = await sched(`/api/calendar?do=slots&host=Kungking_HeadCon&from=${day1}&to=${day1}`, { as: 'member' });
+ok('her open slots leave out the time her focus block covers',
+  r.data.slots.map((x) => x.at).join() === '11:00,11:30', r.data.slots.map((x) => x.at).join());
+ok('...and say nothing about what the block is', !JSON.stringify(r.data).includes('สคริปต์'));
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'member', body: { host: 'Kungking_HeadCon', on: day1, at: '11:00', note: 'ถามเรื่องคิวเวที' } });
+ok('somebody books a slot', r.status === 201 && r.data.slot.to === '11:30', JSON.stringify(r.data));
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'unitlead', body: { host: 'Kungking_HeadCon', on: day1, at: '11:00' } });
+ok('the same slot cannot be booked twice', r.status === 409 && r.data.error === 'SLOT_TAKEN');
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'member', body: { host: 'Kungking_HeadCon', on: day1, at: '10:00' } });
+ok('nor a time outside her office hours or inside her block', r.status === 409);
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'content', body: { host: 'Kungking_HeadCon', on: day1, at: '11:30' } });
+ok('nobody books their own office hours', r.status === 400 && r.data.error === 'CANNOT_BOOK_YOURSELF');
+const bellRow = await sql`SELECT title, body FROM notifications WHERE username = 'Kungking_HeadCon' AND kind = 'booking' ORDER BY created_at DESC LIMIT 1`;
+ok('the host is told who booked and why', bellRow.length && bellRow[0].body.includes('Ploy') && bellRow[0].body.includes('คิวเวที'), JSON.stringify(bellRow[0] || {}));
+r = await sched(`/api/calendar?do=schedule&from=${day1}&to=${day1}`, { as: 'member' });
+const guestBooking = r.data.appointments.find((a) => a.kind === 'booking');
+ok('the booking is on the guest’s schedule too, with whom', guestBooking && guestBooking.with === 'Kungking_HeadCon', JSON.stringify(guestBooking || {}));
+
+// Stated weekly hours from earlier sections would make every slot "outside hours".
+await sql`DELETE FROM user_availability WHERE username IN ('Ploy_StaffCon', 'New_UnitCon', 'Kungking_HeadCon')`;
+r = await sched('/api/calendar?do=find', { method: 'POST', as: 'content', body: {
+  people: ['Ploy_StaffCon', 'New_UnitCon'], fromOn: day1, toOn: day1, duration: 60, dayFrom: '09:00', dayTo: '13:00' } });
+ok('finding a time for three people skips everything any of them has on',
+  r.data.allFree && r.data.slots[0].at === '11:30' && !r.data.slots.some((x) => x.at === '11:00' || x.at === '09:30'),
+  r.data.slots.map((x) => x.at).join());
+ok('...and gives each person’s busy times to draw, without titles',
+  r.data.busy.Kungking_HeadCon.length >= 2 && !JSON.stringify(r.data.busy).includes('สคริปต์'), JSON.stringify(r.data.busy.Kungking_HeadCon));
+r = await sched('/api/calendar?do=find', { method: 'POST', as: 'content', body: {
+  people: ['Ploy_StaffCon'], fromOn: day1, toOn: day1, duration: 120, dayFrom: '09:00', dayTo: '11:30' } });
+ok('when nobody is free together, the least-bad times come back marked', r.data.allFree === false && r.data.slots.length > 0 && r.data.slots[0].busy.length >= 1,
+  JSON.stringify(r.data.slots[0]));
+
+r = await sched(`/api/calendar?do=appt&id=${guestBooking.id}`, { method: 'DELETE', as: 'member' });
+ok('cancelling a booking cancels it for both people', r.data.removed.length === 2);
+const cancelBell = await sql`SELECT title FROM notifications WHERE username = 'Kungking_HeadCon' AND title LIKE 'ยกเลิก%'`;
+ok('...and tells the host', cancelBell.length === 1);
+r = await sched(`/api/calendar?do=appt&id=nope`, { method: 'DELETE', as: 'member' });
+ok('somebody else’s appointment cannot be cancelled', r.status === 404);
+
+// ===========================================================================
+head('83. Google Calendar, connected by each person');
+process.env.GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || 'test-client.apps.googleusercontent.com';
+process.env.GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || 'test-secret';
+const authRaw = (path, as) => authApi(makeRequest(path, { as }));
+let gres = await authRaw('/api/auth?do=google-start', 'content');
+const consent = gres.headers.get('location') || '';
+ok('connecting sends the person to Google’s consent screen', gres.status === 302 && consent.startsWith('https://accounts.google.com/'), consent.slice(0, 60));
+const consentQ = new URL(consent).searchParams;
+ok('...asking for calendar events and nothing wider', consentQ.get('scope') === 'openid email https://www.googleapis.com/auth/calendar.events', consentQ.get('scope'));
+ok('...offline, so the calendar can be read later', consentQ.get('access_type') === 'offline' && consentQ.get('prompt') === 'consent');
+ok('...and coming back to this app', consentQ.get('redirect_uri') === 'https://app.test/api/auth?do=google-callback', consentQ.get('redirect_uri'));
+const gState = consentQ.get('state');
+gres = await authRaw(`/api/auth?do=google-callback&code=Kungking&state=${gState}`, 'member');
+ok('Google’s answer is refused when it comes back to somebody else', (gres.headers.get('location') || '').includes('google=GOOGLE_STATE'), gres.headers.get('location'));
+gres = await authRaw('/api/auth?do=google-start', 'content');
+const state2 = new URL(gres.headers.get('location')).searchParams.get('state');
+gres = await authRaw(`/api/auth?do=google-callback&code=Kungking&state=${state2}`, 'content');
+ok('the right person coming back is connected', (gres.headers.get('location') || '').endsWith('google=ok'), gres.headers.get('location'));
+const linkRow = await sql`SELECT email, refresh_enc FROM google_links WHERE username = 'Kungking_HeadCon'`;
+ok('...with the Google address remembered', linkRow[0].email === 'kungking@gmail.test', linkRow[0].email);
+ok('...and the refresh token stored encrypted, never as given', !linkRow[0].refresh_enc.includes('rt-Kungking') && linkRow[0].refresh_enc.startsWith('v1.'));
+gres = await authRaw(`/api/auth?do=google-callback&code=Kungking&state=${state2}`, 'content');
+ok('a state is good for one use', (gres.headers.get('location') || '').includes('GOOGLE_STATE'));
+gres = await authRaw('/api/auth?do=google-start', 'member');
+const state3 = new URL(gres.headers.get('location')).searchParams.get('state');
+gres = await authRaw(`/api/auth?do=google-callback&code=nocal&state=${state3}`, 'member');
+ok('signing in without ticking the calendar box is caught', (gres.headers.get('location') || '').includes('GOOGLE_NO_CALENDAR'), gres.headers.get('location'));
+
+r = await sched('/api/calendar?do=google', { as: 'content' });
+ok('the page is told it is connected, and to which address — nothing more',
+  r.data.linked && r.data.email === 'kungking@gmail.test' && !JSON.stringify(r.data).includes('rt-'), JSON.stringify(r.data));
+
+// Something already in her Google Calendar, at 11:00 on day1.
+googleCals.set('Kungking', new Map([['g1', { id: 'g1', summary: 'นัดหมอฟัน', start: { dateTime: `${day1}T11:00:00+07:00` }, end: { dateTime: `${day1}T12:00:00+07:00` } }],
+  ['g2', { id: 'g2', summary: 'ว่าง', transparency: 'transparent', start: { dateTime: `${day1}T09:00:00+07:00` }, end: { dateTime: `${day1}T10:00:00+07:00` } }]]));
+r = await sched(`/api/calendar?do=schedule&from=${day1}&to=${day1}`, { as: 'content' });
+ok('her Google events show on her own schedule, with titles', r.data.google.some((e) => e.title === 'นัดหมอฟัน' && e.at === '11:00'), JSON.stringify(r.data.google));
+ok('...but a "free" Google event is not counted', !r.data.google.some((e) => e.title === 'ว่าง'));
+r = await sched(`/api/calendar?do=slots&host=Kungking_HeadCon&from=${day1}&to=${day1}`, { as: 'member' });
+ok('her Google appointment takes her office-hour slots away', r.data.slots.length === 0, r.data.slots.map((x) => x.at).join());
+r = await sched('/api/calendar?do=find', { method: 'POST', as: 'member', body: { people: ['Kungking_HeadCon'], fromOn: day1, toOn: day1, duration: 30, dayFrom: '11:00', dayTo: '12:00' } });
+ok('...and counts when somebody looks for a time with her, shown only as busy',
+  !r.data.allFree && r.data.busy.Kungking_HeadCon.some((b) => b.kind === 'google') && !JSON.stringify(r.data).includes('หมอฟัน'),
+  JSON.stringify(r.data.busy.Kungking_HeadCon));
+
+googleWrites.length = 0;
+r = await sched('/api/calendar?do=appt', { method: 'POST', as: 'content', body: { title: 'คุยสปอนเซอร์', on: day1, at: '14:00', to: '15:00' } });
+const apptId = r.data.id;
+ok('an appointment made here is written into her Google Calendar', googleWrites.some((w) => w.who === 'Kungking' && w.summary === 'คุยสปอนเซอร์'), JSON.stringify(googleWrites));
+r = await sched(`/api/calendar?do=schedule&from=${day1}&to=${day1}`, { as: 'content' });
+ok('...and is not shown twice when Google is read back', r.data.google.filter((e) => e.title === 'คุยสปอนเซอร์').length === 0 &&
+  r.data.appointments.filter((a) => a.title === 'คุยสปอนเซอร์').length === 1);
+await sched(`/api/calendar?do=appt&id=${apptId}`, { method: 'DELETE', as: 'content' });
+ok('cancelling it here removes it from Google too', ![...googleCals.get('Kungking').values()].some((e) => e.summary === 'คุยสปอนเซอร์'));
+
+r = await sched('/api/calendar?do=google-sync', { method: 'POST', as: 'content' });
+ok('her meetings can be sent to Google on request', r.data.ok && r.data.sent >= 1, JSON.stringify(r.data));
+const gBefore = googleCals.get('Kungking').size;
+r = await sched('/api/calendar?do=google-sync', { method: 'POST', as: 'content' });
+ok('...and sending them again updates rather than duplicates', googleCals.get('Kungking').size === gBefore, `${gBefore} → ${googleCals.get('Kungking').size}`);
+r = await sched('/api/calendar?do=google-sync', { method: 'POST', as: 'unitlead' });
+ok('somebody without a connected calendar is told so', r.data.error === 'GOOGLE_NOT_LINKED');
+
+r = await sched('/api/calendar?do=google', { method: 'DELETE', as: 'content' });
+ok('disconnecting forgets the token and tells Google', !r.data.linked && googleRevoked.some((b) => b.includes('rt-Kungking')) &&
+  (await sql`SELECT count(*)::int AS n FROM google_links WHERE username = 'Kungking_HeadCon'`)[0].n === 0);
+const { seal, unseal } = await import('../lib/googlecal.js');
+ok('the token box opens with the right key and not a tampered one', unseal(seal('abc')) === 'abc' && unseal(seal('abc').slice(0, -3) + 'AAA') === null);
+delete process.env.GOOGLE_OAUTH_CLIENT_ID;
+delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+gres = await authRaw('/api/auth?do=google-start', 'content');
+ok('with no Google client set up, the button says so instead of failing', (gres.headers.get('location') || '').includes('google=off'));
+await sql`DELETE FROM appointments`;
+await sql`DELETE FROM office_hours`;
+await sql`DELETE FROM meetings WHERE series_id IS NOT NULL`;
+
+// ===========================================================================
+head('84. เลขานุการ can send a letter back, and the Word original rides along');
+
+/**
+ * Two things the secretaries asked for together, because they are the same
+ * problem: a letter reaches เลขานุการ to be posted, they are the ones who
+ * spot that something is wrong, and until now they could only post it anyway
+ * or ring the writer — and even once it was sent back, the only copy in the
+ * system was a PDF nobody can edit.
+ */
+const WORD_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+// A .docx is a zip; the bytes do not matter here, only that they come back intact.
+const wordBytes = Buffer.from('PK\u0003\u0004 pretend this is a .docx', 'binary');
+const wordB64 = wordBytes.toString('base64');
+
+const chainS = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+const makeLetter = async (title, source) => (await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title, pdf: await makePdf(1), department: 'content',
+          source,
+          steps: chainS.map((st) => ({ role: st.role, username: st.username,
+            mark: st.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
+})).data;
+
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'x', pdf: await makePdf(1), department: 'content',
+          source: { name: 'virus.exe', data: wordB64 },
+          steps: chainS.map((st) => ({ role: st.role, username: st.username,
+            mark: st.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.2, h: 0.06 } : null })) },
+});
+ok('an attachment that is not a document is refused', r.status === 400 && r.data.error === 'NOT_A_DOC', JSON.stringify(r.data));
+ok('...and nothing is written for a letter that was refused',
+  (await sql`SELECT count(*)::int AS n FROM documents WHERE title = 'x' AND created_by = 'Kungking_HeadCon'`)[0].n === 0);
+
+const wordDoc = await makeLetter('หนังสือที่มีไฟล์ Word', { name: 'ขอใช้สถานที่.docx', data: wordB64 });
+r = await call(docsApi, `/api/documents?id=${wordDoc.id}`, { as: 'content' });
+const srcFile = r.data.files.find((f) => f.kind === 'source');
+ok('the Word original is kept beside the PDF', Boolean(srcFile) && srcFile.name === 'ขอใช้สถานที่.docx',
+  JSON.stringify(r.data.files.map((f) => f.kind)));
+ok('...and the PDF is still the one with the pages, which is what gets signed',
+  r.data.files.find((f) => f.kind === 'original').pages === 1 && srcFile.pages === 0);
+
+const dl = await docsApi(makeRequest(`/api/documents?id=${wordDoc.id}&file=source`, { as: 'sunday' }));
+ok('a secretary can download it', dl.status === 200 && dl.headers.get('content-type') === WORD_MIME,
+  `${dl.status} ${dl.headers.get('content-type')}`);
+ok('...under the name it was uploaded with, as a download not a preview',
+  /attachment/.test(dl.headers.get('content-disposition')) &&
+  decodeURIComponent(dl.headers.get('content-disposition').split("''")[1]) === 'ขอใช้สถานที่.docx',
+  dl.headers.get('content-disposition'));
+ok('...with the bytes intact', Buffer.from(await dl.arrayBuffer()).equals(wordBytes));
+
+const outsider = await docsApi(makeRequest(`/api/documents?id=${wordDoc.id}&file=source`, { as: 'merch' }));
+ok('somebody the letter has nothing to do with cannot', outsider.status === 403, String(outsider.status));
+
+/**
+ * Up the chain until it is sitting with เลขานุการ to be posted. Driven by
+ * whoever the document says is next rather than by a fixed list, because the
+ * chain this department proposes changes as earlier sections move people
+ * about.
+ */
+const sessionOf = { Jade_Pres: 'admin', Kungking_HeadCon: 'content', Kluayhom_HeadMerchant: 'merch',
+  Ikkew_HeadOper1: 'oper2head', Yam_HeadSpon: 'seesall', Totti_HeadOp: 'opall', Kaew_VP: 'deputy',
+  Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' };
+for (let hop = 0; hop < 8; hop += 1) {
+  r = await call(docsApi, `/api/documents?id=${wordDoc.id}`, { as: 'admin' });
+  const next = (r.data.steps || []).find((st) => st.state === 'waiting');
+  if (!next || next.role === 'secretary' || next.role === 'sender') break;
+  await call(docsApi, '/api/documents?do=approve',
+    { method: 'POST', as: sessionOf[next.username] || 'admin', body: { id: wordDoc.id } });
+}
+r = await call(docsApi, `/api/documents?id=${wordDoc.id}`, { as: 'sunday' });
+ok('it reaches เลขานุการ to be posted', r.data.maySend === true && r.data.myTurn === false,
+  `${r.data.document.stage} / ${r.data.maySend}`);
+ok('...and they are now offered the way to send it back', r.data.mayBounce === true);
+r = await call(docsApi, `/api/documents?id=${wordDoc.id}`, { as: 'content' });
+ok('...which the writer, watching their own letter, is not', r.data.mayBounce === false,
+  JSON.stringify({ bounce: r.data.mayBounce, send: r.data.maySend }));
+
+r = await call(docsApi, '/api/documents?do=reject', {
+  method: 'POST', as: 'merch', body: { id: wordDoc.id, comment: 'ไม่ใช่เรื่องของฉัน' },
+});
+ok('and cannot do', r.status === 403 && r.data.error === 'NOT_YOUR_TURN', String(r.status));
+
+r = await call(docsApi, '/api/documents?do=reject', {
+  method: 'POST', as: 'sunday', body: { id: wordDoc.id, comment: 'เลขที่หนังสือยังไม่ได้เติมในเอกสาร' },
+});
+ok('...whichever of them it landed on, because their work is shared', r.status === 200, String(r.status));
+ok('เลขานุการ sends it back', r.status === 200 && r.data.stage === 'rejected', JSON.stringify(r.data).slice(0, 80));
+const bounceTold = await sql`SELECT body FROM notifications WHERE username = 'Kungking_HeadCon'
+                             AND task_id = ${wordDoc.id} ORDER BY created_at DESC LIMIT 1`;
+ok('...and the writer is told why', bounceTold[0] && bounceTold[0].body.includes('เลขที่หนังสือ'),
+  JSON.stringify(bounceTold[0] || {}));
+
+/**
+ * The PDFs go, the editable original stays — the writer is about to need it.
+ */
+const left = (await sql`SELECT kind FROM doc_files WHERE doc_id = ${wordDoc.id}`).map((f) => f.kind);
+ok('the PDFs are cleared but the Word file is kept', left.join() === 'source', left.join() || '(none)');
+const srcAfterBounce = await docsApi(makeRequest(`/api/documents?id=${wordDoc.id}&file=source`, { as: 'content' }));
+ok('...and the writer can still download it to fix it', srcAfterBounce.status === 200, String(srcAfterBounce.status));
+const gonePdf = await docsApi(makeRequest(`/api/documents?id=${wordDoc.id}&file=original`, { as: 'content' }));
+ok('...while the PDF says plainly that it was removed',
+  gonePdf.status === 410 && (await gonePdf.json()).error === 'REJECTED_FILE_REMOVED', String(gonePdf.status));
+
+// A letter with no Word file behaves exactly as it always did.
+const plain = await makeLetter('หนังสือไม่มี Word');
+await call(docsApi, '/api/documents?do=reject', {
+  method: 'POST', as: 'admin', body: { id: plain.id, comment: 'แก้ชื่อผู้รับ' },
+});
+ok('a letter with nothing attached still loses every file',
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${plain.id}`)[0].n === 0);
+
+// Attaching one afterwards, which is when people realise they forgot.
+r = await call(docsApi, '/api/documents?do=source', {
+  method: 'POST', as: 'content', body: { id: plain.id, source: { name: 'แก้แล้ว.docx', data: wordB64 } },
+});
+ok('the writer can attach the Word original to a letter that came back',
+  r.status === 200 && r.data.source.name === 'แก้แล้ว.docx', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=source', {
+  method: 'POST', as: 'merch', body: { id: plain.id, source: { name: 'ของฉัน.docx', data: wordB64 } },
+});
+ok('...and nobody else can', r.status === 403, String(r.status));
+r = await call(docsApi, '/api/documents?do=source', { method: 'POST', as: 'content', body: { id: plain.id, remove: true } });
+ok('...and can take it off again', r.status === 200 &&
+  (await sql`SELECT count(*)::int AS n FROM doc_files WHERE doc_id = ${plain.id}`)[0].n === 0);
+
+await sql`DELETE FROM documents WHERE title IN ('หนังสือที่มีไฟล์ Word', 'หนังสือไม่มี Word')`;
+
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

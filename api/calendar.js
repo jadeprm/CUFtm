@@ -6,6 +6,8 @@ import { assembleMeetings } from '../lib/meetingstore.js';
 import { canSeeMeeting } from '../lib/meeting.js';
 import { isSecretary } from '../lib/approval.js';
 import { accessSet } from '../lib/scope.js';
+import { currentUser } from '../lib/auth.js';
+import { handleSchedule } from '../lib/schedule.js';
 
 /**
  * The calendar feed: GET /api/calendar?token=…
@@ -26,6 +28,23 @@ async function handler(request) {
   await ready;
 
   const url = requestUrl(request);
+
+  /**
+   * The personal schedule, office hours and Google link — signed-in, cookie
+   * authenticated, and nothing to do with the token feed below. They share
+   * this function because the Hobby plan's twelve are all spoken for.
+   */
+  if (url.searchParams.get('do')) {
+    const me = await currentUser(request, sql);
+    if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+    try {
+      return await handleSchedule(sql, me, request, url, json);
+    } catch (error) {
+      console.error('[schedule]', error);
+      return json({ error: 'SERVER' }, 500);
+    }
+  }
+
   const token = String(url.searchParams.get('token') || '').trim();
 
   /**

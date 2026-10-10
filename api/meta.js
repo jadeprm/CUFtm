@@ -1,3 +1,4 @@
+import { APP_VERSION } from '../lib/version.js';
 import { json, hasDatabase, getSql, requestUrl } from '../lib/db.js';
 import { DEPARTMENTS } from '../lib/departments.js';
 import { STATUSES, PRIORITIES } from '../lib/scope.js';
@@ -65,6 +66,8 @@ async function handler(request) {
 
   return json({
     hasDatabase,
+    // What the SERVER is running — see lib/version.js.
+    version: APP_VERSION,
     /**
      * Whether the committee has opened the system yet.
      *
