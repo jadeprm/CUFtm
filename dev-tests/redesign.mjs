@@ -158,6 +158,19 @@ ok('...but no settings button', await kk.locator('.space-head .btn', { hasText: 
 
 // ===========================================================================
 console.log('\n5. ตารางของฉัน');
+/**
+ * A run that crashed before its cleanup leaves his appointments and the
+ * bookings people made behind, and a stale booking on 10:30 made the slot
+ * list below look wrong when it was the fixture that was wrong.
+ */
+await kk.evaluate(async () => {
+  const from = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+  const to = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+  const d = await (await fetch('/api/calendar?do=schedule&from=' + from + '&to=' + to)).json();
+  for (const a of d.appointments || []) {
+    await fetch('/api/calendar?do=appt&id=' + encodeURIComponent(a.id), { method: 'DELETE' });
+  }
+});
 await go(kk, '#/schedule', 1800);
 ok('a week of columns', await kk.locator('.wk-col').count() === 7);
 await kk.locator('.sched-actions .btn', { hasText: 'Office hours' }).click(); await kk.waitForTimeout(700);
@@ -165,7 +178,9 @@ const rowSel = kk.locator('.oh-row').first();
 // The coming Monday, in Bangkok — what the app calls "next Monday".
 const bkkDow = new Date(iso(0) + 'T12:00:00Z').getUTCDay();
 const nextMonday = iso(((8 - bkkDow) % 7) || 7);
-await rowSel.locator('select').first().selectOption('mon');
+// Days are chips now; Monday is ticked by default on a fresh row.
+const ohMon = rowSel.locator('.day-chip').first();
+if (!/ on/.test((await ohMon.getAttribute('class')) || '')) await ohMon.click();
 await rowSel.locator('input[type=time]').first().fill('10:00');
 await rowSel.locator('input[type=time]').nth(1).fill('11:00');
 await kk.locator('.modal footer .btn.primary').click(); await kk.waitForTimeout(1500);
@@ -182,7 +197,14 @@ await go(jade, '#/schedule', 1500);
 await jade.locator('.sched-actions .btn', { hasText: /จองเวลา|Book/ }).click(); await jade.waitForTimeout(900);
 await jade.locator('.host', { hasText: 'Kungking' }).click(); await jade.waitForTimeout(1200);
 const times = await jade.locator('.slot-day', { hasText: /12|13|14|15|16|17|18|19/ }).first().locator('.slot').allInnerTexts().catch(() => []);
-ok('his slots leave out the half hour his appointment covers', times.length >= 1 && !times.includes('10:00') && times.includes('10:30'), times.join(','));
+/**
+ * Busy slots are shown now rather than hidden — the guest may invite anyway —
+ * so the half hour his own appointment covers is on the list, marked.
+ */
+ok('the half hour his appointment covers is shown as not free, not hidden',
+  times.length >= 1 && times.some((x) => /^10:00/.test(x) && /\u0e44\u0e21\u0e48\u0e27\u0e48\u0e32\u0e07/.test(x)) &&
+  times.some((x) => /^10:30/.test(x) && !/\u0e44\u0e21\u0e48\u0e27\u0e48\u0e32\u0e07/.test(x)),
+  times.join(' | ').replace(/\n/g, ' '));
 await jade.locator('.slot', { hasText: '10:30' }).first().click(); await jade.waitForTimeout(300);
 await jade.locator('.book-confirm textarea').fill('คุยเรื่องคิว');
 await jade.locator('.book-confirm .btn.primary').click(); await jade.waitForTimeout(1500);
@@ -220,6 +242,12 @@ await jade.locator('.modal input[type=text]').first().fill('RD: ประชุ�
 await jade.locator('.repeat-box select').first().selectOption('weekly');
 await jade.locator('.repeat-box input[type=number]').fill('4');
 await jade.locator('.modal footer .btn.primary').click(); await jade.waitForTimeout(2500);
+/**
+ * Her own earlier fixtures can sit on this hour, and the app now warns rather
+ * than refuses — so if the heads-up is in the way, say yes to it.
+ */
+const warnOn = jade.locator('.veil footer button', { hasText: /บันทึกต่อไป/ });
+if (await warnOn.count()) { await warnOn.first().click(); await jade.waitForTimeout(2500); }
 const series = await jade.evaluate(async () => (await (await fetch('/api/events?do=meetings')).json()).meetings
   .filter((m) => m.title === 'RD: ประชุมประจำสัปดาห์'));
 ok('four meetings, a week apart, in one series', series.length === 4 && new Set(series.map((m) => m.seriesId)).size === 1, String(series.length));

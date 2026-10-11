@@ -87,7 +87,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-11b';
+  var APP_VERSION = '2026-10-11c';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -308,6 +308,51 @@
     var s = String(name || '?').trim();
     return s.slice(0, 2).toUpperCase();
   }
+  /**
+   * Somebody's real signature, as an <img>, fetched once per person.
+   *
+   * The placement boxes used to be pink rectangles, which told nobody
+   * anything about how big the signature inside them would come out — a box
+   * twice the size of the handwriting looks identical to one that fits. The
+   * image is drawn with object-fit: contain, which is exactly what
+   * stampSignatures does to the PDF (see fit() in lib/pdfsign.js), so what is
+   * on screen is what lands on the letter.
+   */
+  var SIG_URLS = {};
+  function signatureUrl(username) {
+    if (!SIG_URLS[username]) {
+      SIG_URLS[username] = '/api/documents?do=sigimg&user=' + encodeURIComponent(username) +
+        '&t=' + Date.now();
+    }
+    return SIG_URLS[username];
+  }
+  function signatureImg(username, cls) {
+    return h('img', { class: cls || 'sig-real', src: signatureUrl(username), alt: '' });
+  }
+
+  /**
+   * The box that fits a signature exactly, as fractions of the page.
+   *
+   * A signature is wide and short; a box of fixed proportions leaves it
+   * floating in empty space and makes it look smaller than it was drawn. The
+   * height follows from the width, the image's own proportions, and the
+   * page's — so the picture fills its box and the box IS the signature.
+   */
+  function sigBoxSize(sig, pageAspect, width) {
+    var w = width || 0.26;
+    var ratio = (sig && sig.sigW && sig.sigH) ? (sig.sigW / sig.sigH) : 3.5;
+    /**
+     * In page fractions, not pixels. The box is w×h of a page that is itself
+     * `pageAspect` wide for every 1 tall, so on screen it measures
+     * (w · pageW) by (h · pageH) — and that is what has to match the image's
+     * own proportions:  (w · pageW) / (h · pageH) = ratio.
+     */
+    var hh = (w * (pageAspect || 0.707)) / ratio;
+    // Never taller than a quarter of the page, nor too small to see.
+    hh = Math.max(0.012, Math.min(0.25, hh));
+    return { w: w, h: hh };
+  }
+
   function avatarNode(username, size) {
     var u = userBy(username);
     var cls = 'avatar' + (size ? ' ' + size : '');
@@ -2170,12 +2215,25 @@
       var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
       var pager = h('div', { class: 'pdf-pager' });
 
+      /** What we know about each signer's saved signature. */
+      var sigOf = function (username) {
+        var p = people.filter(function (x) { return x.username === username; })[0];
+        return p && p.hasSignature ? p : null;
+      };
+      /** The page's own proportions, so a box is sized against the real sheet. */
+      var pageAspect = function () {
+        return (canvas.width && canvas.height) ? (canvas.width / canvas.height) : 0.707;
+      };
+
       var who = h('div', { class: 'seg wrap' }, needMarks.map(function (step) {
         return h('button', {
           type: 'button', class: marking === step ? 'on' : '',
-          text: (step.marks.length ? '✓' + step.marks.length + ' ' : '') + nameOf(step.username),
           onclick: function () { marking = step; drawMarks(); },
-        });
+        }, [
+          step.marks.length ? h('span', { class: 'who-n', text: '\u2713' + step.marks.length }) : null,
+          nameOf(step.username),
+          sigOf(step.username) ? null : h('span', { class: 'no-sig-dot', title: t('docNoSignatureYet'), text: '!' }),
+        ]);
       }));
 
       function paintOverlay() {
@@ -2183,14 +2241,56 @@
         chain.forEach(function (s) {
           (s.marks || []).forEach(function (m) {
             if (m.page !== pageShown) return;
+            var sig = sigOf(s.username);
             overlay.appendChild(h('div', {
-              class: 'sig-box' + (s === marking ? ' on' : ''),
+              class: 'sig-box' + (s === marking ? ' on' : '') + (sig ? ' real' : ' empty'),
               style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
                      'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
-            }, [h('span', { text: nameOf(s.username) })]));
+              title: nameOf(s.username),
+            }, [
+              // The real thing, fitted exactly as the stamp will fit it.
+              sig ? signatureImg(s.username) : null,
+              h('span', { class: 'sig-name', text: nameOf(s.username) }),
+            ]));
           });
         });
       }
+
+      /**
+       * How big this person's signature should be, in one slider.
+       *
+       * Seeing the real signature is only half of it — the other half is
+       * being able to do something about it. The slider is the width of the
+       * box as a fraction of the page; the height follows the signature's own
+       * proportions, so it never stretches. It moves every box this person
+       * has, because somebody signing in three places wants them the same.
+       */
+      var sizePct = h('span', { class: 'sig-size-n' });
+      var sizeIn = h('input', {
+        type: 'range', min: '8', max: '45', step: '1', class: 'sig-size',
+        value: String(Math.round((marking.marks[0] ? marking.marks[0].w : 0.26) * 100)),
+      });
+      function paintSize() {
+        var pct = Number(sizeIn.value);
+        sizePct.textContent = pct + '%';
+        sizeIn.disabled = !marking.marks.length;
+      }
+      sizeIn.addEventListener('input', function () {
+        var want = Number(sizeIn.value) / 100;
+        var box = sigBoxSize(sigOf(marking.username), pageAspect(), want);
+        marking.marks.forEach(function (m) {
+          // Grown about its own centre, so it does not crawl across the page.
+          m.x = Math.max(0, Math.min(1 - box.w, m.x + (m.w - box.w) / 2));
+          m.y = Math.max(0, Math.min(1 - box.h, m.y + (m.h - box.h) / 2));
+          m.w = box.w; m.h = box.h;
+        });
+        paintSize();
+        paintOverlay();
+      });
+
+      var sizeRow = h('div', { class: 'sig-size-row' }, [
+        h('label', { text: t('docSigSize') }), sizeIn, sizePct,
+      ]);
 
       /**
        * A tap puts the box's CENTRE where the finger went.
@@ -2203,8 +2303,12 @@
         var rect = canvas.getBoundingClientRect();
         if (!rect.width) return;
         var point = e.touches && e.touches[0] ? e.touches[0] : e;
-        var w = 0.26;
-        var hh = 0.075;
+        // The box is the signature's own shape at the width the slider says,
+        // so what is drawn on screen is the size it will be stamped.
+        var want = Number(sizeIn.value) / 100;
+        var size = sigBoxSize(sigOf(marking.username), pageAspect(), want);
+        var w = size.w;
+        var hh = size.h;
         var fx = (point.clientX - rect.left) / rect.width;
         var fy = (point.clientY - rect.top) / rect.height;
 
@@ -2232,6 +2336,7 @@
           });
         }
         paintOverlay();
+        paintSize();
         drawFooter();
       }
       sheet.addEventListener('click', place);
@@ -2241,9 +2346,13 @@
         h('p', { class: 'hint', text: t('docMarkHelp') }),
         h('p', { class: 'hint', text: t('docMarkAdd') }),
         who,
+        // Said plainly rather than left as an empty box they cannot explain.
+        sigOf(marking.username) ? null : h('div', { class: 'notice warn', text: t('docNoSignatureFor').replace('%s', nameOf(marking.username)) }),
+        sizeRow,
         pager,
         sheet,
       ]));
+      paintSize();
 
       function drawPager() {
         clear(pager);
@@ -2482,6 +2591,23 @@
         vRow(t('notifyThis'), notifyControl('doc', doc.id, 'document')),
       ]));
 
+      /**
+       * Where my signature will land, and how big.
+       *
+       * Asked for by the people doing the signing: until now the first sight
+       * anybody had of their own signature on a letter was the finished PDF,
+       * by which point a box drawn too big or too small is somebody else's
+       * problem to fix. This draws the page with the real signature in the
+       * real place, before แก้ไข or อนุมัติ is pressed. Offered to whoever has
+       * a box on this letter — the writer who placed them included, since
+       * they are usually the one who has to put it right.
+       */
+      var mySteps = (data.steps || []).filter(function (st) {
+        return st.username === S.user.username && (st.marks || []).length;
+      });
+      if (mySteps.length && doc.stage !== 'rejected') {
+        bodyBox.appendChild(signaturePreview(doc, data, mySteps));
+      }
       bodyBox.appendChild(pane);
 
       /* ---- what this person can do ---- */
@@ -3790,6 +3916,111 @@
         document.removeEventListener('click', close);
       }, { once: true });
     }, 0);
+  }
+
+  /**
+   * A fold-out preview of one page with this person's signature on it.
+   *
+   * Closed to start with: most people open a document to read it, and
+   * fetching and rendering a PDF for everybody who does would be a wasted
+   * download. The signature is drawn with the same object-fit: contain that
+   * the server stamps with, so the preview and the letter agree.
+   */
+  function signaturePreview(doc, data, mySteps) {
+    var marks = [];
+    mySteps.forEach(function (st) {
+      (st.marks || []).forEach(function (m) { marks.push(Object.assign({}, m, { step: st })); });
+    });
+    marks.sort(function (a, b) { return a.page - b.page; });
+
+    var box = h('div', { class: 'sig-check' });
+    var body = h('div', { class: 'sig-check-body', hidden: true });
+    var open = false;
+    var shown = marks[0] ? marks[0].page : 1;
+    var loaded = null;
+
+    var head = h('button', {
+      type: 'button', class: 'sig-check-head',
+      onclick: function () {
+        open = !open;
+        body.hidden = !open;
+        head.classList.toggle('on', open);
+        if (open && !loaded) draw();
+      },
+    }, [
+      icon('eye'),
+      h('b', { text: t('docCheckMySignature') }),
+      h('small', { text: t('docCheckMySignatureN').replace('%n', String(marks.length)) }),
+      h('span', { class: 'grow' }),
+      h('span', { class: 'sc-caret', text: '\u25be' }),
+    ]);
+    box.appendChild(head);
+    box.appendChild(body);
+
+    function draw() {
+      clear(body);
+      var canvas = h('canvas', { class: 'pdf-canvas' });
+      var overlay = h('div', { class: 'pdf-overlay' });
+      var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
+      var note = h('p', { class: 'hint', text: t('loading') });
+      var pager = h('div', { class: 'pdf-pager' });
+      body.appendChild(note);
+      body.appendChild(pager);
+      body.appendChild(sheet);
+
+      var step = mySteps[0];
+      if (!step.hasSignature) {
+        note.className = 'notice warn';
+        note.textContent = t('docNoSignatureMine');
+      }
+
+      /**
+       * The unsigned original, because that is what the box was placed on.
+       * Once a letter has been archived the file is gone from here; the
+       * preview says so rather than spinning.
+       */
+      loaded = fetch('/api/documents?id=' + encodeURIComponent(doc.id) + '&file=original', { credentials: 'same-origin' })
+        .then(function (res) {
+          if (!res.ok) throw new Error(String(res.status));
+          return res.arrayBuffer();
+        })
+        .then(function (buf) {
+          var bytes = new Uint8Array(buf);
+          return withPdfJs().then(function (lib) {
+            function show() {
+              return renderPdfPage(lib, bytes, shown, canvas, 760).then(function (info) {
+                if (note.className === 'hint') note.textContent = t('docCheckHint');
+                clear(pager);
+                if (info.pages > 1) {
+                  pager.appendChild(h('button', { class: 'btn sm', text: '\u2039', disabled: shown <= 1,
+                    onclick: function () { shown -= 1; show(); } }));
+                  pager.appendChild(h('span', { text: t('docPage') + ' ' + shown + ' / ' + info.pages }));
+                  pager.appendChild(h('button', { class: 'btn sm', text: '\u203a', disabled: shown >= info.pages,
+                    onclick: function () { shown += 1; show(); } }));
+                }
+                clear(overlay);
+                marks.forEach(function (m) {
+                  if (m.page !== shown) return;
+                  overlay.appendChild(h('div', {
+                    class: 'sig-box real mine on',
+                    style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
+                           'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
+                  }, [
+                    m.step.hasSignature ? signatureImg(m.step.username) : null,
+                    h('span', { class: 'sig-name', text: nameOf(m.step.username) }),
+                  ]));
+                });
+              });
+            }
+            return show();
+          });
+        })
+        .catch(function () {
+          clear(body);
+          body.appendChild(h('p', { class: 'hint', text: t('docCheckUnavailable') }));
+        });
+    }
+    return box;
   }
 
   function patchTask(id, changes) {
@@ -5884,6 +6115,37 @@
    * four hundred people is most of them, and a system that nagged all of them
    * would be switched off in a week.
    */
+  /**
+   * Monday to Sunday as chips you can tick several of.
+   *
+   * "Tuesday and Thursday, 15:00–17:00" was three trips through the form —
+   * pick a day, pick the times, save, start again — and people gave up after
+   * the first one. One row, several days, same hours.
+   */
+  function dayPicker(picked, onChange) {
+    var chosen = (picked || []).slice();
+    var row = h('div', { class: 'day-pick' });
+    WEEK_KEYS.forEach(function (d) {
+      var on = chosen.indexOf(d) !== -1;
+      var btn = h('button', {
+        type: 'button', class: 'day-chip' + (on ? ' on' : ''), text: t('dayShort_' + d),
+        title: t('day_' + d),
+        onclick: function () {
+          var at = chosen.indexOf(d);
+          if (at === -1) chosen.push(d); else chosen.splice(at, 1);
+          btn.classList.toggle('on', at === -1);
+          if (onChange) onChange(chosen.slice());
+        },
+      });
+      row.appendChild(btn);
+    });
+    row.chosen = function () {
+      // Monday first, so "ศ, จ" reads back as "จ, ศ".
+      return chosen.slice().sort(function (a, b) { return WEEK_KEYS.indexOf(a) - WEEK_KEYS.indexOf(b); });
+    };
+    return row;
+  }
+
   function availabilityBox() {
     var box = h('div', { class: 'push-box' });
     var state = { windows: [], blocks: [] };
@@ -5932,20 +6194,28 @@
       });
       box.appendChild(list);
 
-      var daySel = h('select', {}, WEEK_KEYS.map(function (d) {
-        return h('option', { value: d, text: t('day_' + d) });
-      }));
+      var dayRow = dayPicker(['mon']);
       var fromIn = h('input', { type: 'time', value: '17:00' });
       var toIn = h('input', { type: 'time', value: '22:00' });
-      box.appendChild(h('div', { class: 'free-add' }, [
-        daySel, fromIn, h('span', { class: 'free-dash', text: '–' }), toIn,
+      box.appendChild(h('div', { class: 'free-add multi' }, [
+        dayRow,
+        h('span', { class: 'free-times' }, [fromIn, h('span', { class: 'free-dash', text: '–' }), toIn]),
         h('button', {
           class: 'btn sm', text: t('freeAdd'),
           onclick: function () {
+            var days = dayRow.chosen();
+            if (!days.length) { fail('BAD_DAY'); return; }
             if (!fromIn.value || !toIn.value) { fail('BAD_TIME'); return; }
             if (toIn.value <= fromIn.value) { fail('ENDS_BEFORE_IT_STARTS'); return; }
-            state.windows = state.windows.concat([
-              { day: daySel.value, from: fromIn.value, to: toIn.value }]);
+            // The same hours on every day ticked, and a day already covered
+            // by an identical window is not added twice.
+            var added = days.filter(function (d) {
+              return !state.windows.some(function (w) {
+                return w.day === d && w.from === fromIn.value && w.to === toIn.value;
+              });
+            }).map(function (d) { return { day: d, from: fromIn.value, to: toIn.value }; });
+            if (!added.length) return;
+            state.windows = state.windows.concat(added);
             saveWindows();
           },
         }),
@@ -10699,31 +10969,99 @@
     var rows = [];
     var list = h('div', { class: 'oh-edit' });
     var err = h('div', { class: 'notice err', hidden: true });
+
+    /**
+     * One row can be several days at the same hours.
+     *
+     * Office hours are nearly always "Tuesday and Thursday afternoon", and
+     * setting that up a day at a time — four fields each — is why most people
+     * never set any up at all. A row saves one window per day ticked.
+     */
     function addRow(w) {
-      w = w || { day: 'mon', from: '13:00', to: '15:00', slot: 30, place: '' };
-      var day = h('select', {}, WEEK_KEYS.map(function (k) { return h('option', { value: k, text: t('wdl_' + k), selected: k === w.day }); }));
+      w = w || { days: ['mon'], from: '13:00', to: '15:00', slot: 30, place: '' };
+      var days = dayPicker(w.days || [w.day || 'mon']);
       var from = h('input', { type: 'time', value: w.from });
       var to = h('input', { type: 'time', value: w.to });
       var slot = h('select', {}, [15, 20, 30, 45, 60, 90].map(function (n) { return h('option', { value: String(n), text: n + ' ' + t('minUnit'), selected: n === Number(w.slot) }); }));
       var place = h('input', { type: 'text', value: w.place || '', placeholder: t('officePlaceHint'), maxlength: '200' });
-      var row = h('div', { class: 'oh-row' }, [day, from, h('span', { text: '–' }), to, slot, place,
+      var row = h('div', { class: 'oh-row' }, [
+        days,
+        h('span', { class: 'oh-times' }, [from, h('span', { text: '–' }), to]),
+        slot, place,
         h('button', { type: 'button', class: 'btn ghost sm', text: '✕', 'aria-label': t('remove'), onclick: function () {
           rows = rows.filter(function (r) { return r.row !== row; }); row.remove();
-        } })]);
-      rows.push({ row: row, get: function () { return { day: day.value, from: from.value, to: to.value, slot: Number(slot.value), place: place.value }; } });
+        } }),
+      ]);
+      rows.push({
+        row: row,
+        get: function () {
+          return days.chosen().map(function (d) {
+            return { day: d, from: from.value, to: to.value, slot: Number(slot.value), place: place.value };
+          });
+        },
+      });
       list.appendChild(row);
     }
+
+    /**
+     * Rows gathered back up: the same hours on several days arrive from the
+     * server as one window each, and showing seven identical rows for
+     * "every weekday 15:00–17:00" would undo the point of the day chips.
+     */
+    function fill(windows) {
+      var groups = [];
+      (windows || []).forEach(function (w) {
+        var same = groups.filter(function (g) {
+          return g.from === w.from && g.to === w.to && Number(g.slot) === Number(w.slot) && (g.place || '') === (w.place || '');
+        })[0];
+        if (same) same.days.push(w.day);
+        else groups.push({ days: [w.day], from: w.from, to: w.to, slot: w.slot, place: w.place });
+      });
+      if (!groups.length) addRow();
+      else groups.forEach(addRow);
+    }
+
+    /**
+     * "Use the hours I already said I am free."
+     *
+     * Most people have filled in ว่างประจำสัปดาห์ on their profile for the
+     * clash warnings, and then been asked the same question again here. This
+     * copies it across; they can then trim it, because being free is not
+     * quite the same as inviting people to turn up.
+     */
+    var useFree = h('button', {
+      type: 'button', class: 'btn sm',
+      onclick: function () {
+        useFree.disabled = true;
+        api('/api/users?do=free').then(function (d) {
+          var got = (d && d.windows) || [];
+          if (!got.length) { err.hidden = false; err.textContent = t('officeNoAvailability'); useFree.disabled = false; return; }
+          err.hidden = true;
+          rows = [];
+          clear(list);
+          fill(got.map(function (w) { return { day: w.day, from: w.from, to: w.to, slot: 30, place: '' }; }));
+          useFree.disabled = false;
+        }).catch(function () { useFree.disabled = false; });
+      },
+    }, [icon('clock'), h('span', { text: t('officeFromAvailability') })]);
+
     var v = formModal(t('officeHours'), [
       h('p', { class: 'hint', text: t('officeHowTo') }), err, list,
-      h('button', { type: 'button', class: 'btn sm', text: '+ ' + t('officeAdd'), onclick: function () { addRow(); } }),
+      h('div', { class: 'oh-actions' }, [
+        h('button', { type: 'button', class: 'btn sm', text: '+ ' + t('officeAdd'), onclick: function () { addRow(); } }),
+        useFree,
+      ]),
+      h('p', { class: 'hint', text: t('officeFromAvailabilityWhy') }),
     ], [h('button', { class: 'btn primary', text: t('save'), onclick: function () {
-      api('/api/calendar?do=office', { method: 'PUT', body: { windows: rows.map(function (r) { return r.get(); }) } })
+      var windows = rows.reduce(function (all, r) { return all.concat(r.get()); }, []);
+      api('/api/calendar?do=office', { method: 'PUT', body: { windows: windows } })
         .then(function () { v.remove(); refreshSchedule(); })
         .catch(function (e) { err.hidden = false; err.textContent = errText(e.code); });
     } })], { wide: true });
+
     var mineNow = (S.sched && S.sched.officeHours) || null;
-    if (mineNow) { mineNow.forEach(addRow); if (!mineNow.length) addRow(); }
-    else api('/api/calendar?do=office').then(function (d) { (d.windows.length ? d.windows : [null]).forEach(addRow); }).catch(function () { addRow(); });
+    if (mineNow) fill(mineNow);
+    else api('/api/calendar?do=office').then(function (d) { fill(d.windows); }).catch(function () { addRow(); });
   }
 
   /* ---- booking someone's office hours ---- */
@@ -10760,13 +11098,25 @@
       api('/api/calendar?do=slots&host=' + encodeURIComponent(who) + '&from=' + from + '&to=' + addDays(from, 20)).then(function (d) {
         clear(slotsBox);
         if (!d.slots.length) { slotsBox.appendChild(h('p', { class: 'muted-line', text: d.windows.length ? t('bookFull') : t('bookNoHours') })); return; }
+        if (d.slots.some(function (sl) { return sl.taken; })) {
+          slotsBox.appendChild(h('p', { class: 'hint', text: t('bookTakenHint') }));
+        }
         var byDay = {};
         d.slots.forEach(function (sl) { (byDay[sl.on] = byDay[sl.on] || []).push(sl); });
         Object.keys(byDay).sort().forEach(function (on) {
           slotsBox.appendChild(h('div', { class: 'slot-day' }, [
             h('div', { class: 'sd-date' }, [h('b', { text: fmtDate(on, { weekday: 'short', day: 'numeric', month: 'short' }) }), byDay[on][0].place ? h('small', { text: byDay[on][0].place }) : null]),
             h('div', { class: 'sd-times' }, byDay[on].map(function (sl) {
-              return h('button', { type: 'button', class: 'slot', text: sl.at, onclick: function () { confirmSlot(who, sl); } });
+              /**
+               * A busy slot is shown, not hidden. Hiding it read as "she is
+               * closed then", so nobody asked; now it says the host has
+               * something — never what — and the ask is still possible.
+               */
+              return h('button', {
+                type: 'button', class: 'slot' + (sl.taken ? ' taken' : ''),
+                title: sl.taken ? t(sl.reason === 'booking' ? 'bookTakenBooked' : 'bookTakenBusy') : '',
+                onclick: function () { confirmSlot(who, sl); },
+              }, [sl.at, sl.taken ? h('small', { text: t('bookBusyShort') }) : null]);
             })),
           ]));
         });
@@ -10777,26 +11127,31 @@
       var note = h('textarea', { rows: '3', maxlength: '1000', placeholder: t('bookNoteHint') });
       var err = h('div', { class: 'notice err', hidden: true });
       body.appendChild(h('div', { class: 'book-confirm' }, [
-        h('div', { class: 'bc-card' }, [avatarNode(who, 'lg'), h('div', {}, [
+        h('div', { class: 'bc-card' + (sl.taken ? ' busy' : '') }, [avatarNode(who, 'lg'), h('div', {}, [
           h('b', { text: nameOf(who) }),
           h('span', { text: whenWording(sl.on, sl.at, sl.to) }),
           sl.place ? h('small', { text: sl.place }) : null,
         ])]),
+        // Said before they press, rather than refused after.
+        sl.taken ? h('div', { class: 'notice warn', text: t(sl.reason === 'booking' ? 'bookTakenBooked' : 'bookTakenBusy') }) : null,
         err, fieldOf(t('bookNote'), note),
         h('div', { class: 'bc-actions' }, [
           h('button', { class: 'btn', text: '‹ ' + t('back'), onclick: function () { showSlots(who); } }),
           h('button', { class: 'btn primary', text: t('bookConfirm'), onclick: function (e) {
             e.currentTarget.disabled = true;
-            api('/api/calendar?do=book', { method: 'POST', body: { host: who, on: sl.on, at: sl.at, note: note.value } })
+            api('/api/calendar?do=book', { method: 'POST', body: { host: who, on: sl.on, at: sl.at, note: note.value, anyway: Boolean(sl.taken) } })
               .then(function () {
                 clear(body);
                 body.appendChild(h('div', { class: 'book-done' }, [h('span', { class: 'bd-tick', text: '✓' }),
-                  h('b', { text: t('bookDone') }), h('span', { text: nameOf(who) + ' · ' + whenWording(sl.on, sl.at, sl.to) })]));
+                  h('b', { text: t('bookDone') }), h('span', { text: nameOf(who) + ' · ' + whenWording(sl.on, sl.at, sl.to) }),
+                  sl.taken ? h('small', { text: t('bookDoneBusy') }) : null]));
                 refreshSchedule();
               })
               .catch(function (x) {
                 err.hidden = false; err.textContent = errText(x.code);
-                if (x.code === 'SLOT_TAKEN') setTimeout(function () { showSlots(who); }, 1200);
+                // Somebody took it in the meantime: back to the list, which
+                // will now show it as taken rather than simply losing it.
+                if (x.code === 'SLOT_TAKEN' || x.code === 'NOT_OFFERED') setTimeout(function () { showSlots(who); }, 1400);
               });
           } }),
         ]),
@@ -10846,7 +11201,9 @@
 
     function drawFound(d) {
       clear(out);
-      out.appendChild(h('div', { class: 'notice ' + (d.allFree ? 'ok' : 'warn'), text: d.allFree ? t('findAllFree').replace('%n', String(d.people.length)) : t('findNoneFree') }));
+      out.appendChild(h('div', { class: 'notice ' + (d.allFree ? 'ok' : 'warn'),
+        text: (d.allFree ? t('findAllFree').replace('%n', String(d.people.length)) : t('findNoneFree')) +
+          ' · ' + t('findPickAnyway') }));
       if (d.google.length) out.appendChild(h('p', { class: 'hint', text: t('findGoogleCounted').replace('%n', String(d.google.length)) }));
       var chosen = d.slots[0];
       var listBox = h('div', { class: 'found' });
@@ -10861,9 +11218,20 @@
           listBox.appendChild(h('div', { class: 'slot-day' }, [
             h('div', { class: 'sd-date' }, [h('b', { text: fmtDate(on, { weekday: 'short', day: 'numeric', month: 'short' }) })]),
             h('div', { class: 'sd-times' }, byDay[on].map(function (sl) {
-              var cls = 'slot' + (sl === chosen ? ' on' : '') + (sl.busy.length ? ' partial' : '');
-              return h('button', { type: 'button', class: cls, title: sl.busy.length ? t('findBusyNames') + ': ' + sl.busy.map(nameOf).join(', ') : '',
-                onclick: function () { chosen = sl; drawList(); drawAssist(); } }, [sl.at + '–' + sl.to, sl.busy.length ? h('small', { text: ' ' + sl.busy.length + ' ' + t('findBusyN') }) : null]);
+              /**
+               * Busy times are on the list and can be picked. The committee
+               * meets when it has to; whoever is calling it can see who they
+               * are pulling away from something and decide.
+               */
+              var cls = 'slot' + (sl === chosen ? ' on' : '') +
+                (sl.busy.length ? ' partial' : (sl.outside.length ? ' outside' : ''));
+              var why = sl.busy.length ? t('findBusyNames') + ': ' + sl.busy.map(nameOf).join(', ')
+                : sl.outside.length ? t('findOutsideNames') + ': ' + sl.outside.map(nameOf).join(', ') : '';
+              return h('button', { type: 'button', class: cls, title: why,
+                onclick: function () { chosen = sl; drawList(); drawAssist(); } },
+              [sl.at + '–' + sl.to,
+                sl.busy.length ? h('small', { text: ' ' + sl.busy.length + ' ' + t('findBusyN') })
+                  : sl.outside.length ? h('small', { text: ' ' + t('findOutsideShort') }) : null]);
             })),
           ]));
         });
@@ -10877,6 +11245,7 @@
         var ruler = h('div', { class: 'as-ruler' });
         for (var hr = Math.ceil(a0 / 60); hr <= Math.floor(a1 / 60); hr += 1) ruler.appendChild(h('span', { style: 'left:' + pos(hr * 60) + '%', text: String(hr) }));
         assist.appendChild(h('div', { class: 'as-head' }, [h('b', { text: fmtDate(chosen.on, { weekday: 'long', day: 'numeric', month: 'long' }) }),
+          chosen.busy.length ? h('span', { class: 'as-warn', text: t('findWillClash').replace('%n', String(chosen.busy.length)) }) : null,
           h('span', { class: 'grow' }),
           h('button', { class: 'btn primary sm', text: t('findMakeMeeting'), onclick: function () {
             v.remove();

@@ -139,6 +139,7 @@ async function handler(request) {
 
   if (request.method === 'GET') {
     if (action === 'signature') return mySignature(sql, me);
+    if (action === 'sigimg') return signatureImage(sql, me, url.searchParams.get('user'));
     if (action === 'secretaries') return listSecretaries(sql, me);
     if (id && url.searchParams.get('file')) {
       return downloadFile(sql, me, id, url.searchParams.get('file'));
@@ -175,8 +176,13 @@ const rosterFor = (sql) => sql`
   SELECT u.username, u.display_name, u.nickname, u.position, u.access,
          u.full_name, u.department, u.unit, u.is_head, u.active, u.suspended,
          COALESCE((SELECT json_agg(d.department) FROM user_departments d
-                   WHERE d.username = u.username), '[]') AS depts
-  FROM users u WHERE u.active = true AND u.suspended = false`;
+                   WHERE d.username = u.username), '[]') AS depts,
+         -- The shape of their signature, not the signature itself: enough to
+         -- draw a box the right proportions before the image is fetched.
+         sg.width AS sig_w, sg.height AS sig_h
+  FROM users u
+  LEFT JOIN signatures sg ON sg.username = u.username
+  WHERE u.active = true AND u.suspended = false`;
 
 const asPeople = (rows) => rows.map((r) => ({
   ...r,
@@ -272,9 +278,40 @@ async function oneDocument(sql, me, id) {
   const events = await sql`SELECT * FROM doc_events WHERE doc_id = ${id} ORDER BY at`;
   const files = await sql`SELECT kind, byte_size, pages, file_name, mime, updated_at FROM doc_files WHERE doc_id = ${id}`;
 
+  /**
+   * Every box, not only the first, and the shape of each signer's signature.
+   *
+   * Together they are what lets the page show a signer where their name will
+   * land and how big it will be, before they put it there — the same picture
+   * the uploader had when they placed it.
+   */
+  const boxes = steps.length
+    ? await sql`SELECT step_id, page, x, y, w, h FROM doc_boxes
+                WHERE step_id = ANY(${steps.map((st) => st.id)})`
+    : [];
+  const sigs = steps.length
+    ? await sql`SELECT username, width, height FROM signatures
+                WHERE username = ANY(${steps.map((st) => st.username)})`
+    : [];
+  const sigOf = new Map(sigs.map((g) => [g.username, g]));
+  const boxesOfStep = (stepId) => boxes
+    .filter((b) => b.step_id === stepId)
+    .map((b) => ({ page: b.page, x: Number(b.x), y: Number(b.y), w: Number(b.w), h: Number(b.h) }));
+
   return json({
     document: shapeDoc(doc),
-    steps: steps.map(shapeStep),
+    steps: steps.map((st) => {
+      const shaped = shapeStep(st);
+      const sig = sigOf.get(st.username);
+      const own = boxesOfStep(st.id);
+      return {
+        ...shaped,
+        marks: own.length ? own : (shaped.mark ? [shaped.mark] : []),
+        hasSignature: Boolean(sig && sig.width && sig.height),
+        sigW: Number(sig?.width) || 0,
+        sigH: Number(sig?.height) || 0,
+      };
+    }),
     events: events.map((e) => ({ id: e.id, at: e.at, kind: e.kind, username: e.username, detail: e.detail })),
     files: files.map((f) => ({
       kind: f.kind, size: f.byte_size, pages: f.pages, at: f.updated_at,
@@ -332,6 +369,38 @@ async function downloadFile(sql, me, id, kind) {
       'content-length': String(buffer.length),
       'content-disposition':
         `${isSource ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(name)}`,
+      'cache-control': 'private, no-store',
+    },
+  });
+}
+
+/**
+ * Somebody's saved signature, as the PNG.
+ *
+ * Shown so that whoever is placing the boxes — and the signer, before they
+ * approve — can see the real signature at the size it will be stamped,
+ * instead of a pink rectangle that tells them nothing. A box the wrong size
+ * is only discovered on the finished letter otherwise.
+ *
+ * Any signed-in member may fetch any active member's, because that is already
+ * the position: anyone may write a letter naming anyone as a signer, and the
+ * signature appears on the finished PDF that is then circulated. It is never
+ * served to someone who is not signed in, never cached, and the drawing
+ * itself is only ever worth as much as a signature on a photocopy.
+ */
+async function signatureImage(sql, me, username) {
+  const who = clean(username, 64) || me.username;
+  const [row] = await sql`
+    SELECT sg.png, sg.width, sg.height FROM signatures sg
+    JOIN users u ON u.username = sg.username AND u.active = true AND u.suspended = false
+    WHERE sg.username = ${who}`;
+  const buffer = toBuffer(row?.png);
+  if (!buffer) return json({ error: 'NO_SIGNATURE' }, 404);
+  return new Response(buffer, {
+    status: 200,
+    headers: {
+      'content-type': 'image/png',
+      'content-length': String(buffer.length),
       'cache-control': 'private, no-store',
     },
   });
@@ -395,6 +464,11 @@ async function propose(sql, me, body) {
     people: people.map((p) => ({
       username: p.username, displayName: p.display_name, nickname: p.nickname,
       position: p.position, department: p.department, unit: p.unit, isHead: p.is_head,
+      // So the form can draw each signer's box at the proportions their real
+      // signature has, and say plainly when somebody has not saved one.
+      hasSignature: Boolean(p.sig_w && p.sig_h),
+      sigW: Number(p.sig_w) || 0,
+      sigH: Number(p.sig_h) || 0,
     })),
   });
 }

@@ -6314,12 +6314,52 @@ r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'content', body:
 ok('office hours are set as weekly windows', r.status === 200 && r.data.windows.length === 1, JSON.stringify(r.data).slice(0, 100));
 r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'content', body: { windows: [{ day: 'mon', from: '09:00', to: '09:10', slot: 30 }] } });
 ok('a window shorter than one slot is refused', r.status === 400 && r.data.error === 'WINDOW_TOO_SHORT');
+/**
+ * The same hours on several days, sent as one window per day — which is
+ * what the day chips in the form produce. Nothing clever server-side; the
+ * point is that the shape the form sends round-trips unchanged.
+ */
+r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'content', body: { windows: [
+  { day: 'mon', from: '09:00', to: '12:00', slot: 30, place: 'ห้องชมรม' },
+  { day: 'wed', from: '09:00', to: '12:00', slot: 30, place: 'ห้องชมรม' },
+  { day: 'fri', from: '09:00', to: '12:00', slot: 30, place: 'ห้องชมรม' },
+] } });
+ok('one set of hours can cover several days at once',
+  r.data.windows.map((w) => w.day).join() === 'mon,wed,fri' &&
+  r.data.windows.every((w) => w.from === '09:00' && w.to === '12:00'),
+  JSON.stringify(r.data.windows.map((w) => w.day + ' ' + w.from)));
+// Back to the single Monday window the rest of this section is written against.
+r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'content', body: { windows: [
+  { day: 'mon', from: '09:00', to: '12:00', slot: 30, place: 'ห้องชมรม' },
+] } });
+
 r = await sched('/api/calendar?do=hosts', { as: 'member' });
 ok('people can see who keeps office hours', r.data.hosts.some((x) => x.username === 'Kungking_HeadCon'));
 r = await sched(`/api/calendar?do=slots&host=Kungking_HeadCon&from=${day1}&to=${day1}`, { as: 'member' });
-ok('her open slots leave out the time her focus block covers',
-  r.data.slots.map((x) => x.at).join() === '11:00,11:30', r.data.slots.map((x) => x.at).join());
+/**
+ * Busy is shown, not hidden. A slot the host already has something in used
+ * to vanish from the list, which read as "she is closed then" — so people
+ * never asked. Now it is on the list, marked, and can still be booked.
+ */
+const slotMap = Object.fromEntries(r.data.slots.map((x) => [x.at, x.taken ? 'busy' : 'free']));
+ok('every slot inside her office hours is listed, free or not',
+  Object.keys(slotMap).join() === '09:00,09:30,10:00,10:30,11:00,11:30', Object.keys(slotMap).join());
+ok('...with the ones her focus block covers marked busy',
+  slotMap['09:00'] === 'busy' && slotMap['10:30'] === 'busy' && slotMap['11:00'] === 'free',
+  JSON.stringify(slotMap));
 ok('...and say nothing about what the block is', !JSON.stringify(r.data).includes('สคริปต์'));
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'member', body: { host: 'Kungking_HeadCon', on: day1, at: '09:00' } });
+ok('booking over something of hers is refused until the guest says they know',
+  r.status === 409 && r.data.error === 'SLOT_TAKEN' && r.data.reason === 'busy', JSON.stringify(r.data));
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'member', body: { host: 'Kungking_HeadCon', on: day1, at: '09:00', anyway: true } });
+ok('...and goes through when they do', r.status === 201 && r.data.overBusy === true, JSON.stringify(r.data).slice(0, 80));
+const warned = await sql`SELECT body FROM notifications WHERE username = 'Kungking_HeadCon' AND kind = 'booking' ORDER BY created_at DESC LIMIT 1`;
+ok('...and the host is told it lands on top of something', warned[0] && warned[0].body.includes('มีนัดอื่น'), JSON.stringify(warned[0] || {}));
+r = await sched('/api/calendar?do=book', { method: 'POST', as: 'member', body: { host: 'Kungking_HeadCon', on: day1, at: '08:00', anyway: true } });
+ok('an hour she never offered is still refused, however insistent', r.status === 409 && r.data.error === 'NOT_OFFERED', JSON.stringify(r.data));
+// Put her morning back the way the rest of this section expects it.
+await sql`DELETE FROM appointments WHERE kind = 'booking' AND starts_at = ${day1 + 'T09:00:00+07:00'}::timestamptz`;
+r = await sched(`/api/calendar?do=slots&host=Kungking_HeadCon&from=${day1}&to=${day1}`, { as: 'member' });
 r = await sched('/api/calendar?do=book', { method: 'POST', as: 'member', body: { host: 'Kungking_HeadCon', on: day1, at: '11:00', note: 'ถามเรื่องคิวเวที' } });
 ok('somebody books a slot', r.status === 201 && r.data.slot.to === '11:30', JSON.stringify(r.data));
 r = await sched('/api/calendar?do=book', { method: 'POST', as: 'unitlead', body: { host: 'Kungking_HeadCon', on: day1, at: '11:00' } });
@@ -6338,9 +6378,18 @@ ok('the booking is on the guest’s schedule too, with whom', guestBooking && gu
 await sql`DELETE FROM user_availability WHERE username IN ('Ploy_StaffCon', 'New_UnitCon', 'Kungking_HeadCon')`;
 r = await sched('/api/calendar?do=find', { method: 'POST', as: 'content', body: {
   people: ['Ploy_StaffCon', 'New_UnitCon'], fromOn: day1, toOn: day1, duration: 60, dayFrom: '09:00', dayTo: '13:00' } });
-ok('finding a time for three people skips everything any of them has on',
-  r.data.allFree && r.data.slots[0].at === '11:30' && !r.data.slots.some((x) => x.at === '11:00' || x.at === '09:30'),
-  r.data.slots.map((x) => x.at).join());
+/**
+ * The clashing times stay on the list too — marked, and pickable. A
+ * committee meets when it has to; whoever is calling the meeting can see
+ * who they are pulling away from something and decide for themselves.
+ */
+const freeAt = r.data.slots.filter((x) => !x.busy.length && !x.outside.length).map((x) => x.at);
+const clashAt = r.data.slots.filter((x) => x.busy.length).map((x) => x.at);
+ok('finding a time says when all three are free', r.data.allFree && freeAt.includes('11:30') &&
+  !freeAt.includes('11:00') && !freeAt.includes('09:30'), freeAt.join());
+ok('...and still offers the times that clash, marked with who is busy',
+  clashAt.includes('11:00') && r.data.slots.find((x) => x.at === '11:00').busy.includes('Kungking_HeadCon'),
+  clashAt.join());
 ok('...and gives each person’s busy times to draw, without titles',
   r.data.busy.Kungking_HeadCon.length >= 2 && !JSON.stringify(r.data.busy).includes('สคริปต์'), JSON.stringify(r.data.busy.Kungking_HeadCon));
 r = await sched('/api/calendar?do=find', { method: 'POST', as: 'content', body: {
@@ -6395,7 +6444,8 @@ r = await sched(`/api/calendar?do=schedule&from=${day1}&to=${day1}`, { as: 'cont
 ok('her Google events show on her own schedule, with titles', r.data.google.some((e) => e.title === 'นัดหมอฟัน' && e.at === '11:00'), JSON.stringify(r.data.google));
 ok('...but a "free" Google event is not counted', !r.data.google.some((e) => e.title === 'ว่าง'));
 r = await sched(`/api/calendar?do=slots&host=Kungking_HeadCon&from=${day1}&to=${day1}`, { as: 'member' });
-ok('her Google appointment takes her office-hour slots away', r.data.slots.length === 0, r.data.slots.map((x) => x.at).join());
+ok('her Google appointment marks her office-hour slots busy',
+  r.data.slots.length > 0 && r.data.slots.every((x) => x.taken), r.data.slots.map((x) => x.at + ':' + (x.taken ? 'busy' : 'free')).join());
 r = await sched('/api/calendar?do=find', { method: 'POST', as: 'member', body: { people: ['Kungking_HeadCon'], fromOn: day1, toOn: day1, duration: 30, dayFrom: '11:00', dayTo: '12:00' } });
 ok('...and counts when somebody looks for a time with her, shown only as busy',
   !r.data.allFree && r.data.busy.Kungking_HeadCon.some((b) => b.kind === 'google') && !JSON.stringify(r.data).includes('หมอฟัน'),

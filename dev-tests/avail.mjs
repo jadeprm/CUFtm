@@ -91,10 +91,13 @@ while (await remove.count()) {
 ok('starting from nothing, it says so rather than showing an empty box',
   (await freeBox.locator('.free-none').count()) >= 1);
 
-await freeBox.locator('.free-add select').first().selectOption('mon');
-await freeBox.locator('.free-add input[type=time]').first().fill('17:00');
-await freeBox.locator('.free-add input[type=time]').nth(1).fill('22:00');
-await freeBox.locator('.free-add button').first().click();
+// Days are chips now, several at a time; Monday starts out ticked.
+const monChip = freeBox.locator('.free-add.multi .day-chip').first();
+if (!/ on/.test((await monChip.getAttribute('class')) || '')) await monChip.click();
+await freeBox.locator('.free-add.multi input[type=time]').first().fill('17:00');
+await freeBox.locator('.free-add.multi input[type=time]').nth(1).fill('22:00');
+// The day chips are buttons too, so the add button is named.
+await freeBox.locator('.free-add.multi button.btn').first().click();
 await ploy.waitForTimeout(1800);
 ok('an evening can be added', (await freeBox.locator('.free-row').count()) === 1,
   await freeBox.locator('.free-row').first().innerText().catch(() => ''));
@@ -104,11 +107,30 @@ ok('an evening can be added', (await freeBox.locator('.free-row').count()) === 1
  * read across. Every input in this app is width:100% by default, which turned
  * it into five stacked full-width boxes.
  */
-const row = await Promise.all(['select', 'input[type=time]'].map(async (sel) =>
-  freeBox.locator('.free-add ' + sel).first().boundingBox()));
-ok('...and the controls for adding one sit on a line, not stacked',
-  row[0] && row[1] && Math.abs(row[0].y - row[1].y) < 10,
+const row = await Promise.all(['input[type=time]', 'button.btn'].map(async (sel) =>
+  freeBox.locator('.free-add.multi ' + sel).first().boundingBox()));
+ok('...and the hours and the add button sit on a line, not stacked',
+  row[0] && row[1] && Math.abs(row[0].y - row[1].y) < 14,
   JSON.stringify(row.map((x) => x && Math.round(x.y))));
+
+/**
+ * Several days at once. "Tuesday and Thursday, 15:00-17:00" used to be two
+ * trips through this form, which is why most people only ever filled in one.
+ */
+const chips = freeBox.locator('.free-add.multi .day-chip');
+for (const i of [0, 1, 3]) {
+  const c = chips.nth(i);
+  const on = / on/.test((await c.getAttribute('class')) || '');
+  if ((i === 0 && on) || (i !== 0 && !on)) await c.click();
+}
+await freeBox.locator('.free-add.multi input[type=time]').first().fill('15:00');
+await freeBox.locator('.free-add.multi input[type=time]').nth(1).fill('17:00');
+await freeBox.locator('.free-add.multi button.btn').first().click();
+await ploy.waitForTimeout(1800);
+const multi = await freeBox.locator('.free-list').first().locator('.free-row').allInnerTexts();
+ok('two days ticked at once save a window on each, in one go',
+  multi.filter((x) => /15:00/.test(x)).length === 2,
+  multi.map((x) => x.replace(/\n/g, ' ')).join(' | ').slice(0, 90));
 
 // A stretch of days away.
 const awayAdd = freeBox.locator('.free-add.away');
@@ -128,8 +150,10 @@ ok('...with the page saying out loud that others will not',
 // What it survives.
 await ploy.reload({ waitUntil: 'networkidle' }); await ploy.waitForTimeout(2600);
 const afterReload = ploy.locator('.field', { hasText: 'เวลาที่ว่าง' }).first();
+// Three weekly windows (Monday evening, Tuesday and Thursday afternoon)
+// and the stretch of days away.
 ok('all of it is still there after a reload',
-  (await afterReload.locator('.free-row').count()) === 2,
+  (await afterReload.locator('.free-row').count()) === 4,
   String(await afterReload.locator('.free-row').count()));
 
 // ===========================================================================

@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { quietGuide } from './quiet.mjs';
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:pw@127.0.0.1:5432/fairv2';
-const { getSql } = await import('../lib/db.js');
+const { getSql } = await import('./lib/db.js');
 const { sql, ready } = getSql();
 await ready;
 
