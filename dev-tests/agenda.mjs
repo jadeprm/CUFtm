@@ -33,27 +33,36 @@ const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 await title.fill(tag);
 await pg.locator('.veil .field', { hasText: 'วันที่' }).locator('input').first().fill(tomorrow);
 
+/**
+ * One bar for the whole agenda, with the วาระ picked in it — five identical
+ * add rows down the page was the thing people could not read.
+ */
 const boxes = pg.locator('.veil .agenda-add');
-ok('each standing วาระ has its own add box', await boxes.count() === 5,
+ok('there is one add bar for the whole agenda', await boxes.count() === 1,
   String(await boxes.count()));
+const box4 = boxes.first();
+ok('...and it asks which วาระ the item goes under',
+  await box4.locator('select.agenda-under').count() === 1);
+const underOptions = await box4.locator('select.agenda-under option').allInnerTexts();
+ok('...listing every standing วาระ', underOptions.length === 5, underOptions.join(' | '));
+await box4.locator('select.agenda-under').selectOption({ index: 3 });
 
 // Press the button with nothing filled in — it must SAY why, not sit dead.
-const box4 = boxes.nth(3);
-await box4.locator('button').click();
+await box4.locator('button.btn').click();
 await pg.waitForTimeout(400);
 ok('pressing add with nothing typed explains itself',
   await box4.locator('.add-why').isVisible(),
   await box4.locator('.add-why').innerText().catch(() => '(silent)'));
 
 await box4.locator('input[type="text"]').fill('คัดเลือกผู้สมัคร');
-await box4.locator('button').click();
+await box4.locator('button.btn').click();
 await pg.waitForTimeout(400);
 ok('...and with no duration it says that too',
   (await box4.locator('.add-why').innerText()).length > 0,
   await box4.locator('.add-why').innerText());
 
 await box4.locator('input[type="number"]').fill('20');
-await box4.locator('button').click();
+await box4.locator('button.btn').click();
 await pg.waitForTimeout(600);
 const nums = await pg.locator('.veil .agenda-row .t-code').allInnerTexts();
 ok('the item appears, numbered 4.1', nums.includes('4.1'), nums.join(' '));
@@ -72,15 +81,16 @@ console.log('  saved agenda:', nums2.join(' '));
 ok('the saved agenda keeps its five headings', 
   nums2.filter((x) => !x.includes('.')).length === 5, nums2.join(' '));
 ok('...and the sub-item survived the save', nums2.includes('4.1'), nums2.join(' '));
-ok('...and each heading still offers its own add box',
-  await pg.locator('.veil .agenda-add').count() === 5,
+ok('...and the saved meeting has the one add bar too',
+  await pg.locator('.veil .agenda-add').count() === 1,
   String(await pg.locator('.veil .agenda-add').count()));
 
-// Add one to a different วาระ on the saved meeting.
-const box2 = pg.locator('.veil .agenda-add').nth(1);
+// Add one to a different วาระ on the saved meeting, through the picker.
+const box2 = pg.locator('.veil .agenda-add').first();
+await box2.locator('select.agenda-under').selectOption({ index: 1 });
 await box2.locator('input[type="text"]').fill('แจ้งกำหนดการรับสมัคร');
 await box2.locator('input[type="number"]').fill('5');
-await box2.locator('button').click();
+await box2.locator('button.btn').click();
 await pg.waitForTimeout(2500);
 await expandUpcoming(pg);
 await pg.locator('.up-row.meeting', { hasText: tag }).first().click();

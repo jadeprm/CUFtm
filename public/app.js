@@ -87,7 +87,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-11c';
+  var APP_VERSION = '2026-10-14a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -183,6 +183,40 @@
     parts.timeZone = 'UTC';
     return d.toLocaleDateString(S.lang === 'th' ? 'th-TH' : 'en-GB', parts);
   }
+  /**
+   * A moment, as Bangkok wall time.
+   *
+   * The server sends timestamps in UTC, and the document page used to read the
+   * date and the clock straight out of that string — so a letter signed at
+   * 17:05 showed 10:05, and anything done after 7pm was filed under the day
+   * before. Everything in this committee happens on Bangkok time, so that is
+   * what every timestamp is shown in, whatever clock the laptop is set to.
+   */
+  function bkkStamp(value) {
+    if (!value) return null;
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return null;
+    var p = new Intl.DateTimeFormat('en-CA', {
+      timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d);
+    var g = function (type) { var x = p.find(function (y) { return y.type === type; }); return x ? x.value : ''; };
+    // Intl gives hour 24 for midnight in some engines.
+    var hh = g('hour') === '24' ? '00' : g('hour');
+    return { date: g('year') + '-' + g('month') + '-' + g('day'), time: hh + ':' + g('minute') };
+  }
+  /** The date part only, for a timestamp. */
+  function stampDate(value, opts) {
+    var p = bkkStamp(value);
+    return p ? fmtDate(p.date, opts) : '';
+  }
+  /** Date and clock, the way the committee writes it. */
+  function fmtStamp(value, opts) {
+    var p = bkkStamp(value);
+    if (!p) return '';
+    return fmtDate(p.date, opts) + ' ' + p.time + (S.lang === 'th' ? ' \u0e19.' : '');
+  }
+
   function relativeDay(iso) {
     var today = todayIso();
     if (iso === today) return t('today');
@@ -1128,9 +1162,10 @@
    * A list of people that stays a line long on a phone.
    *
    * Ten people as ten full-width chips was most of the screen in the task Jade
-   * photographed — the detail she opened the task to read was below it. On a
-   * phone, more than four collapse to a row of faces and a count, and open on
-   * a tap. On a computer, where they sit side by side, nothing changes.
+   * photographed — the detail she opened the task to read was below it. The
+   * same list on a computer was four wrapped lines of names above the thing
+   * she had opened the task for, so it folds there too, just later: a row of
+   * faces and a count, opening on a tap.
    */
   function peopleList(usernames, chipClass) {
     var chips = function () {
@@ -1139,13 +1174,14 @@
           [avatarNode(u, 'sm'), nameOf(u)]);
       });
     };
-    if (!isPhone() || usernames.length <= 4) return h('span', { class: 'selected' }, chips());
+    var keep = isPhone() ? 4 : 6;
+    if (usernames.length <= keep) return h('span', { class: 'selected' }, chips());
 
     var box = h('div', { class: 'ppl-fold' });
     function fold() {
       clear(box);
       box.appendChild(h('button', { type: 'button', class: 'ppl-sum', onclick: unfold }, [
-        h('span', { class: 'stack' }, usernames.slice(0, 5).map(function (u) { return avatarNode(u, 'sm'); })),
+        h('span', { class: 'stack' }, usernames.slice(0, keep).map(function (u) { return avatarNode(u, 'sm'); })),
         h('span', { class: 'ppl-n', text: t('phPeopleN').replace('%n', String(usernames.length)) }),
         h('span', { class: 'ppl-more', text: t('phShowAll') }),
       ]));
@@ -1634,7 +1670,7 @@
         (DOC_STAGE_TH[doc.stage] || doc.stage) +
         (doc.stage === 'approving' || doc.stage === 'secretary'
           ? ' · ' + t('docWaitingOn') + ' ' + waiting : '') +
-        ' · ' + fmtDate(String(doc.createdAt).slice(0, 10)) }),
+        ' · ' + stampDate(doc.createdAt) }),
     ]);
   }
 
@@ -2511,7 +2547,7 @@
           ? h('span', { class: 'vb-prio prio-' + doc.priority, text: prioLabel(doc.priority) }) : null,
         h('span', { class: 'grow' }),
         h('span', { class: 'vb-due', text: t('docSubmittedOn') + ' ' +
-          fmtDate(String(doc.createdAt).slice(0, 10), { day: 'numeric', month: 'long', year: 'numeric' }) }),
+          stampDate(doc.createdAt, { day: 'numeric', month: 'long', year: 'numeric' }) }),
       ]));
 
       if (doc.note) pane.appendChild(h('p', { class: 'view-desc', text: doc.note }));
@@ -2524,8 +2560,7 @@
        * step, and a coloured strip can only show one of them.
        */
       var steps = h('ol', { class: 'doc-steps' }, data.progress.map(function (p) {
-        var when = p.at ? fmtDate(String(p.at).slice(0, 10), { day: 'numeric', month: 'short' }) +
-          ' ' + String(p.at).slice(11, 16) + ' น.' : '';
+        var when = fmtStamp(p.at, { day: 'numeric', month: 'short' });
         return h('li', { class: 'ds ' + p.state }, [
           h('span', { class: 'ds-dot' }),
           h('div', { class: 'ds-main' }, [
@@ -3559,10 +3594,35 @@
    * that a meeting still reads as a meeting.
    */
   /** The events still ahead, that this view should show. */
+  /**
+   * Is this still ahead of us, by the clock rather than by the date?
+   *
+   * "ที่กำลังจะถึง" kept listing the 17:00 meeting all evening, because the
+   * filter only compared dates — so at nine o'clock the first thing on the
+   * page was two meetings that had already happened. Something with no time
+   * on it belongs to the whole day; something with a start but no end is
+   * counted as over an hour after it starts.
+   */
+  var RUNS_FOR = 60;
+  function stillAhead(on, at, to) {
+    var today = todayIso();
+    if (!on || on > today) return true;
+    if (on < today) return false;
+    if (!at) return true;
+    var start = minutesOfClock(at);
+    if (start === null) return true;
+    var ends = (to !== undefined && to !== null && minutesOfClock(to) !== null)
+      ? minutesOfClock(to) : start + RUNS_FOR;
+    return nowMinutes() < ends;
+  }
+
   function comingEvents(mineOnly) {
     var today = todayIso();
     return S.events.filter(function (e) {
       if ((e.endsOn || e.startsOn) < today) return false;
+      // A single-day event that has finished is no longer "coming up".
+      if ((e.endsOn || e.startsOn) === today && !e.allDay
+        && !stillAhead(e.startsOn, e.startsAt, e.endsAt)) return false;
       if (mineOnly && (e.people || []).length && e.people.indexOf(S.user.username) === -1) return false;
       // A search covers events as well as tasks — asking for E0007 and being
       // shown the whole calendar would not be a search.
@@ -3642,6 +3702,7 @@
     var today = todayIso();
     return (S.meetings || []).filter(function (m) {
       if (m.meetsOn < today || m.status === 'cancelled') return false;
+      if (!stillAhead(m.meetsOn, m.meetsAt, m.endsAt)) return false;
       if (mineOnly && !(m.people || []).some(function (x) {
         return x.username === S.user.username;
       })) return false;
@@ -6017,9 +6078,47 @@
 
     var notice = h('div', { class: 'notice ok', hidden: true });
 
-    main.appendChild(h('div', { class: 'modal', style: 'width:min(34rem,100%);margin:0' }, [
-      h('div', { class: 'body' }, [
+    /**
+     * Two columns on a computer.
+     *
+     * This was one 34rem column in the middle of a 1400px page: who you are,
+     * then nine settings boxes stacked below it, and two thirds of the window
+     * empty beside them. The split is by kind — who you are on the left, what
+     * the app does for you on the right — and it folds back to one column on
+     * anything narrow.
+     */
+    var pfLeft = h('div', { class: 'pf-col' });
+    var pfRight = h('div', { class: 'pf-col' });
+
+    main.appendChild(h('div', { class: 'modal profile-page', style: 'width:100%;margin:0' }, [
+      h('div', { class: 'body pf-grid' }, [
         notice,
+        pfLeft, pfRight,
+      ]),
+      h('footer', {}, [
+        h('button', {
+          class: 'btn primary', text: t('save'),
+          onclick: function () {
+            var body = {
+              displayName: nameInput.value.trim(),
+              fullName: fullNameInput.value.trim(),
+            };
+            if (pendingAvatar !== undefined) body.avatar = pendingAvatar;
+            api('/api/users?do=me', { method: 'PATCH', body: body }).then(function (data) {
+              S.user.displayName = data.user.displayName;
+              S.user.fullName = data.user.fullName;
+              S.user.avatar = data.user.avatar;
+              var i = S.users.findIndex(function (u) { return u.username === S.user.username; });
+              if (i !== -1) S.users[i] = data.user;
+              notice.hidden = false; notice.textContent = t('saved');
+              renderShell();
+            }).catch(function (err) { notice.hidden = false; notice.className = 'notice err'; notice.textContent = errText(err.code); });
+          },
+        }),
+      ]),
+    ]));
+
+    [
         h('div', { style: 'display:flex;gap:16px;align-items:center' }, [
           avatarPreview,
           h('div', { style: 'display:flex;flex-direction:column;gap:6px' }, [
@@ -6073,6 +6172,9 @@
             })),
         ]),
 
+    ].filter(Boolean).forEach(function (el) { pfLeft.appendChild(el); });
+
+    [
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
         h('div', { class: 'field', id: 'notify-settings' }, [h('label', { text: t('notifySettings') }), notifyBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
@@ -6080,29 +6182,7 @@
         h('div', { class: 'field' }, [h('label', { text: t('freeTitle') }), availabilityBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
         versionBox(),
-      ]),
-      h('footer', {}, [
-        h('button', {
-          class: 'btn primary', text: t('save'),
-          onclick: function () {
-            var body = {
-              displayName: nameInput.value.trim(),
-              fullName: fullNameInput.value.trim(),
-            };
-            if (pendingAvatar !== undefined) body.avatar = pendingAvatar;
-            api('/api/users?do=me', { method: 'PATCH', body: body }).then(function (data) {
-              S.user.displayName = data.user.displayName;
-              S.user.fullName = data.user.fullName;
-              S.user.avatar = data.user.avatar;
-              var i = S.users.findIndex(function (u) { return u.username === S.user.username; });
-              if (i !== -1) S.users[i] = data.user;
-              notice.hidden = false; notice.textContent = t('saved');
-              renderShell();
-            }).catch(function (err) { notice.hidden = false; notice.className = 'notice err'; notice.textContent = errText(err.code); });
-          },
-        }),
-      ]),
-    ]));
+    ].filter(Boolean).forEach(function (el) { pfRight.appendChild(el); });
   }
 
   /**
@@ -7314,7 +7394,35 @@
       health.appendChild(h('div', {}, lines.concat(upcoming)));
     }).catch(function () { health.hidden = true; });
 
-    var rows = S.users.map(function (u) {
+    /**
+     * The list, in the committee's own order.
+     *
+     * Alphabetical put a สมาชิก from ประชาสัมพันธ์ above the ประธานโครงการ,
+     * which is not how anybody looks for a person: you look by where they sit
+     * in the chart first. So it goes by access level, then whether they run a
+     * ฝ่าย, then the department's order in the chart (ประธานโครงการ, เลขานุการ,
+     * … as lib/departments.js lists them), and only then by name — which is
+     * what settles the twenty people inside one unit.
+     */
+    var ACCESS_RANK = { admin: 0, coadmin: 1, editor: 2, unitlead: 3, inner: 4 };
+    var byHierarchy = function (a, b) {
+      // Anybody who has left the committee goes to the bottom whatever rank.
+      var live = function (u) { return (u.active ? 0 : 1) + (u.suspended ? 1 : 0); };
+      if (live(a) !== live(b)) return live(a) - live(b);
+      var ra = ACCESS_RANK[a.access] === undefined ? 5 : ACCESS_RANK[a.access];
+      var rb = ACCESS_RANK[b.access] === undefined ? 5 : ACCESS_RANK[b.access];
+      if (ra !== rb) return ra - rb;
+      // "All departments" is the board, which sits above any one ฝ่าย.
+      if (Boolean(a.allDepartments) !== Boolean(b.allDepartments)) return a.allDepartments ? -1 : 1;
+      if (Boolean(a.isHead) !== Boolean(b.isHead)) return a.isHead ? -1 : 1;
+      var da = chartOrder(a.department || (a.departments || [])[0]);
+      var db = chartOrder(b.department || (b.departments || [])[0]);
+      if (da !== db) return da - db;
+      return String(a.displayName || a.username)
+        .localeCompare(String(b.displayName || b.username), S.lang === 'th' ? 'th' : 'en');
+    };
+
+    var rows = S.users.slice().sort(byHierarchy).map(function (u) {
       var blocked = blockedReason(u);
       var status = [];
       if (!u.active) status.push(h('span', { class: 'chip', text: t('inactive') }));
@@ -7345,8 +7453,17 @@
       ].concat(status.map(function (n) { return n.cloneNode(true); })));
       var tr = h('tr', {
         class: 'urow' + (u.active ? '' : ' off') + (open ? ' open' : ''),
-        dataset: { find: [u.displayName, u.username, u.position || '',
-          (u.departments || []).map(deptLabel).join(' ')].join(' ').toLowerCase() },
+        dataset: {
+          find: [u.displayName, u.username, u.position || '',
+            (u.departments || []).map(deptLabel).join(' ')].join(' ').toLowerCase(),
+          access: u.access,
+          depts: (u.allDepartments ? S.departments.map(function (d) { return d.key; })
+            : (u.departments || [])).join(' '),
+          state: [u.active ? 'active' : 'inactive', u.suspended ? 'suspended' : '',
+            u.resetAllowed ? 'reset' : '',
+            (!u.hasPassword && !u.resetAllowed) ? 'nopassword' : '',
+            u.isHead ? 'head' : ''].filter(Boolean).join(' '),
+        },
       }, [
         h('td', { class: 'u-head', onclick: function (e) {
           if (!isPhone() || e.target.closest('select,button,input,a')) return;
@@ -7398,19 +7515,53 @@
       return tr;
     });
 
-    // Find a person by name, username, position or department without
-    // scrolling past everyone else. Filters in place so typing keeps focus.
+    /**
+     * Find a person without scrolling past four hundred others.
+     *
+     * The search box alone meant knowing the name you were after; the three
+     * dropdowns answer the other question an admin comes here with — "show me
+     * everyone in ฝ่ายร้านค้า", "who is still without a password". Everything
+     * filters in place so typing never loses focus, and the choices are kept
+     * in S so a change that redraws the page does not reset them.
+     */
+    S.userFilter = S.userFilter || { dept: '', access: '', state: '' };
     function filterUsers() {
       S.userQuery = findBox.value;
+      S.userFilter = { dept: deptPick.value, access: accessPick.value, state: statePick.value };
       var q = findBox.value.trim().toLowerCase();
-      rows.forEach(function (r) { r.hidden = !!q && r.dataset.find.indexOf(q) === -1; });
+      var shown = 0;
+      rows.forEach(function (r) {
+        var d = r.dataset;
+        var hide = (!!q && d.find.indexOf(q) === -1)
+          || (S.userFilter.dept && (' ' + d.depts + ' ').indexOf(' ' + S.userFilter.dept + ' ') === -1)
+          || (S.userFilter.access && d.access !== S.userFilter.access)
+          || (S.userFilter.state && (' ' + d.state + ' ').indexOf(' ' + S.userFilter.state + ' ') === -1);
+        r.hidden = hide;
+        if (!hide) shown += 1;
+      });
+      count.textContent = t('userShowing').replace('%n', String(shown)).replace('%a', String(rows.length));
     }
     var findBox = h('input', {
       type: 'search', class: 'user-find', placeholder: t('userFind'), value: S.userQuery || '',
       oninput: filterUsers,
     });
-    main.appendChild(findBox);
-    if (S.userQuery) filterUsers();
+    var deptPick = h('select', { onchange: filterUsers }, [h('option', { value: '', text: t('allDepts') })]
+      .concat(S.departments.map(function (d) {
+        return h('option', { value: d.key, text: deptOptionLabel(d), selected: d.key === S.userFilter.dept });
+      })));
+    var accessPick = h('select', { onchange: filterUsers }, [h('option', { value: '', text: t('allAccess') })]
+      .concat(['admin', 'coadmin', 'editor', 'unitlead', 'inner'].map(function (lv) {
+        return h('option', { value: lv, selected: lv === S.userFilter.access,
+          text: t('access' + lv.charAt(0).toUpperCase() + lv.slice(1)) });
+      })));
+    var statePick = h('select', { onchange: filterUsers }, [h('option', { value: '', text: t('allStates') })]
+      .concat([['active', 'userOnlyActive'], ['head', 'userOnlyHeads'], ['nopassword', 'userNoPassword'],
+        ['reset', 'pendingReset'], ['suspended', 'suspended'], ['inactive', 'inactive']].map(function (pair) {
+        return h('option', { value: pair[0], selected: pair[0] === S.userFilter.state, text: t(pair[1]) });
+      })));
+    var count = h('small', { class: 'user-count' });
+    main.appendChild(h('div', { class: 'user-filters' }, [findBox, deptPick, accessPick, statePick, count]));
+    filterUsers();
 
     main.appendChild(h('div', { class: 'tablewrap users-table' }, [
       h('table', {}, [
@@ -8090,6 +8241,23 @@
             href: meeting.googleUrl, text: t('mtgGoogleCalendar') }),
         ]));
       }
+
+      /**
+       * The notice, as a letter.
+       *
+       * Written by the server from this meeting — the date, the place and the
+       * whole ระเบียบวาระ — in TH Sarabun New, so it can be printed, signed
+       * and sent as it is instead of being retyped in Word every time.
+       */
+      summaryPane.appendChild(h('div', { class: 'sum-row' }, [
+        h('span', { class: 'sum-label', text: t('mtgNotice') }),
+        h('a', {
+          class: 'btn sm', target: '_blank', rel: 'noopener',
+          href: '/api/events?do=notice&id=' + encodeURIComponent(meeting.id),
+          text: t('mtgNoticeOpen'),
+        }),
+        h('small', { class: 'hint', text: t('mtgNoticeWhy') }),
+      ]));
     }
     if (!isNew) { drawSummary(); bodyBox.appendChild(summaryPane); }
 
@@ -8129,7 +8297,12 @@
           return draft.agenda.filter(function (x) { return !x.heading && x.under === headIndex; });
         }
 
-        function addBox(headIndex) {
+        /** One bar for the whole agenda — the วาระ is picked in it. */
+        function addBox(headList) {
+          var pick = headList.length ? h('select', { class: 'agenda-under' },
+            headList.map(function (x, i) {
+              return h('option', { value: String(i), text: (i + 1) + '. ' + x.title });
+            })) : null;
           var newTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
           // Deliberately empty: the duration is the proposer's to state.
           var newMins = h('input', { type: 'number', min: '1', max: '600', value: '',
@@ -8147,7 +8320,8 @@
               newMins.focus(); return;
             }
             draft.agenda.push({ title: newTitle.value.trim(),
-              minutes: Number(newMins.value), under: headIndex, heading: false });
+              minutes: Number(newMins.value),
+              under: pick ? Number(pick.value) : null, heading: false });
             drawDraftAgenda();
           }
           [newTitle, newMins].forEach(function (el) {
@@ -8156,7 +8330,10 @@
             });
           });
           addBtn.addEventListener('click', add);
-          return h('div', { class: 'agenda-add' }, [newTitle, newMins, addBtn, why]);
+          return h('div', { class: 'agenda-add one' }, [
+            pick ? h('label', { class: 'agenda-under-l' }, [t('mtgUnderWhich'), pick]) : null,
+            newTitle, newMins, addBtn, why,
+          ].filter(Boolean));
         }
 
         function row(item, number, depth) {
@@ -8188,13 +8365,13 @@
             subs.forEach(function (sub, j) {
               agendaDraft.appendChild(row(sub, (i + 1) + '.' + (j + 1), 1));
             });
-            agendaDraft.appendChild(addBox(i));
           });
+          agendaDraft.appendChild(addBox(heads));
         } else {
           draft.agenda.forEach(function (item, i) {
             agendaDraft.appendChild(row(item, String(i + 1), 1));
           });
-          agendaDraft.appendChild(addBox(null));
+          agendaDraft.appendChild(addBox([]));
         }
 
         var total = draft.agenda.reduce(function (n, x) {
@@ -8357,7 +8534,20 @@
         ].filter(Boolean));
       }
 
-      function addBox(parentId) {
+      /**
+       * One bar, not one per heading.
+       *
+       * Every standing วาระ carried its own add box, so a meeting with five
+       * headings showed five identical rows of "title · minutes · เสนอวาระ"
+       * down the page and you had to work out which one you were typing into
+       * from how far down it was. There is one bar now, at the end, and the
+       * วาระ is the first thing you choose in it.
+       */
+      function addBox(headings) {
+        var pick = headings.length ? h('select', { class: 'agenda-under' },
+          headings.map(function (x) {
+            return h('option', { value: x.id, text: x.number + '. ' + x.title });
+          })) : null;
         var itemTitle = h('input', { type: 'text', placeholder: t('mtgItemTitle') });
         // No default: a made-up ten minutes against every item produces a
         // total nobody chose. The button stays dead until a number is given.
@@ -8388,7 +8578,7 @@
           api('/api/events?do=agenda', {
             method: 'POST',
             body: { meetingId: meeting.id, title: itemTitle.value.trim(),
-                    minutes: Number(itemMins.value), parentId: parentId || null },
+                    minutes: Number(itemMins.value), parentId: (pick && pick.value) || null },
           }).then(function () { veil.remove(); reloadMeetings(); })
             .catch(function (err) { addBtn.disabled = false; fail(errText(err.code)); });
         });
@@ -8398,7 +8588,10 @@
             if (e.key === 'Enter') { e.preventDefault(); addBtn.click(); }
           });
         });
-        return h('div', { class: 'agenda-add' }, [itemTitle, itemMins, addBtn, why]);
+        return h('div', { class: 'agenda-add one' }, [
+          pick ? h('label', { class: 'agenda-under-l' }, [t('mtgUnderWhich'), pick]) : null,
+          itemTitle, itemMins, addBtn, why,
+        ].filter(Boolean));
       }
 
       meeting.agenda.forEach(function (item) {
@@ -8407,13 +8600,9 @@
         if (!item.hasChildren && isHeading) {
           agendaPane.appendChild(h('div', { class: 'agenda-empty', text: t('mtgNoSub') }));
         }
-        // The add box sits under the heading it will add to, so nobody has to
-        // be told which วาระ they are proposing into.
-        if (canPropose && isHeading) agendaPane.appendChild(addBox(item.id));
       });
 
-      // A blank agenda has no headings, so items go straight on it.
-      if (canPropose && !headings.length) agendaPane.appendChild(addBox(null));
+      if (canPropose) agendaPane.appendChild(addBox(headings));
 
       /**
        * The papers.
@@ -9175,7 +9364,7 @@
     if (!iso) return '';
     try {
       return new Date(iso).toLocaleString(S.lang === 'th' ? 'th-TH' : 'en-GB',
-        { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TZ });
     } catch (e) { return ''; }
   }
 
@@ -9461,10 +9650,22 @@
       try { return Number(localStorage.getItem('fair-guide-cal-claimed') || 0) > Date.now() - 3 * 864e5; }
       catch (e) { return false; }
     }());
-    return deviceSubscribed().then(function (subscribed) {
+    /**
+     * LINE is where this committee actually talks, so adding the fair's
+     * account is the step that makes every reminder arrive somewhere people
+     * already look. It is only offered when LINE is set up on the server.
+     */
+    var lineState = api('/api/line?do=status').catch(function () { return { configured: false }; });
+    return Promise.all([deviceSubscribed(), lineState]).then(function (res) {
+      var subscribed = res[0];
+      var line = res[1] || {};
+      S.lineOa = line.oa || null;
       var steps = [];
       if (touch) {
         steps.push({ key: 'install', done: S.push.standalone || localFlag('fair-guide-installed') });
+      }
+      if (line.configured) {
+        steps.push({ key: 'line', done: Boolean(line.linked) });
       }
       if (S.push.supported || S.push.needsInstall) {
         steps.push({ key: 'notify', done: S.push.permission === 'granted' && subscribed });
@@ -9501,6 +9702,7 @@
       plus: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>',
       dots: '<circle cx="12" cy="5.5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="18.5" r="1.4"/>',
       check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+      line: '<path d="M21 10.2c0-4-4-7.2-9-7.2s-9 3.2-9 7.2c0 3.6 3.2 6.6 7.5 7.1.3.1.7.2.8.5.1.3 0 .8 0 1.1l-.1.9c0 .3-.2 1 .9.6s5.9-3.5 8-6c1.3-1.4 1.9-2.9 1.9-4.2z"/><path d="M8 8.5v3.4M8 8.5h-.1M11 11.9V8.5l2.4 3.4V8.5M16 8.5h2M16 8.5v3.4h2M16 10.2h1.7"/>',
     };
     var span = document.createElement('span');
     span.className = 'gd-ic';
@@ -9617,6 +9819,43 @@
             },
           }));
         }
+        return;
+      }
+
+      if (current.key === 'line') {
+        var oa = S.lineOa || {};
+        card.appendChild(h('ol', { class: 'gd-steps' }, [
+          gStep(1, 'guideLine1', 'line'), gStep(2, 'guideLine2'), gStep(3, 'guideLine3'),
+        ]));
+        if (oa.basicId) {
+          card.appendChild(h('div', { class: 'gd-oa' }, [
+            // The LINE QR, drawn by LINE itself, so it is always the right one.
+            h('img', { class: 'gd-qr', alt: '',
+              src: 'https://qr-official.line.me/gs/M_' + encodeURIComponent(String(oa.basicId).replace(/^@/, '')) + '_GW.png' }),
+            h('div', {}, [
+              h('b', { text: oa.displayName || t('guideStep_line') }),
+              h('div', { class: 'line-code', text: oa.basicId }),
+            ]),
+          ]));
+          footer.appendChild(h('a', {
+            class: 'btn primary', target: '_blank', rel: 'noopener',
+            href: oa.addUrl, text: t('guideLineAdd'),
+          }));
+        }
+        footer.appendChild(h('button', {
+          class: 'btn' + (oa.basicId ? '' : ' primary'), text: t('guideLineCode'),
+          onclick: function (e) {
+            e.target.disabled = true;
+            api('/api/line?do=code', { method: 'POST' }).then(function (d) {
+              clear(say); say.hidden = false; say.className = 'notice';
+              say.appendChild(h('div', { text: t('lineCodeSteps') }));
+              say.appendChild(h('div', { class: 'line-code', text: d.code }));
+              say.appendChild(h('div', { class: 'hint', text: t('lineCodeExpires').replace('{n}', String(d.minutes)) }));
+              e.target.disabled = false;
+            }).catch(function (err) { e.target.disabled = false; tell('err', 'errOffline'); });
+          },
+        }));
+        footer.appendChild(h('button', { class: 'btn', text: t('guideCheckAgain'), onclick: refresh }));
         return;
       }
 
@@ -10567,6 +10806,11 @@
     var busy = Object.keys(mins).reduce(function (a, k) { return a + mins[k]; }, 0);
     return { mins: mins, busy: busy, free: Math.max(0, days * 9 * 60 - busy), tasks: items.filter(function (i) { return i.kind === 'task'; }).length };
   }
+  /** 8.5 rather than "8 ชม. 30 นาที" — for the middle of a ring. */
+  var shortHours = function (m) {
+    var h1 = m / 60;
+    return (Math.round(h1 * 10) % 10 === 0 ? String(Math.round(h1)) : h1.toFixed(1));
+  };
   var hoursText = function (m) { var hh = Math.floor(m / 60); var mm = m % 60; return (hh ? hh + t('hrsUnit') : '') + (mm ? ' ' + mm + t('minUnit') : (hh ? '' : '0' + t('hrsUnit'))); };
 
   function pageSchedule(main) {
@@ -10819,11 +11063,21 @@
     side.appendChild(h('section', { class: 'card alloc' }, [
       h('div', { class: 'card-head' }, [icon('pie'), h('h3', { text: r.view === 'week' ? t('allocWeek') : t('allocDay') })]),
       h('div', { class: 'donut-row' }, [
-        donut(parts, { size: 112, stroke: 16, center: hoursText(al.busy), sub: t('allocBooked') }),
+        /**
+         * "8 ชม. 30 นาที" does not fit inside a 112px ring — on a computer it
+         * ran out over the stroke on both sides and sat on top of the legend.
+         * The ring says the number, the line under it says what it is.
+         */
+        h('div', { class: 'alloc-ring' }, [
+          donut(parts, { size: 104, stroke: 15, center: shortHours(al.busy), sub: t('hrsUnit') }),
+          h('small', { text: t('allocBooked') }),
+        ]),
         h('ul', { class: 'legend' }, kinds.filter(function (k) { return al.mins[k]; }).map(function (k) {
           return h('li', {}, [h('i', { style: 'background:' + KIND_COLOUR[k] }), h('span', { text: t('kind_' + k) }), h('b', { text: hoursText(al.mins[k]) })]);
         }).concat([
-          h('li', { class: 'free' }, [h('i', { style: 'background:var(--surface-3)' }), h('span', { text: t('allocFree') }), h('b', { text: hoursText(al.free) })]),
+          h('li', { class: 'free' }, [h('i', { style: 'background:var(--surface-3)' }),
+            h('span', {}, [t('allocFree'), h('small', { text: t('allocFreeHow') })]),
+            h('b', { text: hoursText(al.free) })]),
           al.tasks ? h('li', {}, [h('i', { style: 'background:' + KIND_COLOUR.task }), h('span', { text: t('allocDeadlines') }), h('b', { text: String(al.tasks) })]) : null,
         ])),
       ]),
@@ -11438,6 +11692,28 @@
     setTimeout(function () { name.focus(); }, 30);
   }
 
+  /**
+   * A page left open all evening.
+   *
+   * "ที่กำลังจะถึง" and today's timeline are worked out from the clock, so a
+   * tab opened at five in the afternoon still showed the five o'clock meeting
+   * at nine. Every five minutes, if nothing is open on top and nobody is
+   * typing, the page is drawn again — cheap, because it uses the data already
+   * loaded and never asks the server for anything.
+   */
+  var clockWatch = null;
+  function watchTheClock() {
+    if (clockWatch) return;
+    clockWatch = setInterval(function () {
+      if (!S.user) return;
+      if (document.hidden) return;
+      if ($('modal-root') && $('modal-root').childElementCount) return;
+      var el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
+      renderPage();
+    }, 5 * 60 * 1000);
+  }
+
   function boot() {
     return Promise.all([
       api('/api/meta'),
@@ -11478,6 +11754,7 @@
       setTimeout(maybeShowGuide, 1200);
       // What this person wants to be told about, for the switches inside tasks.
       loadNotify();
+      watchTheClock();
     }).catch(function (err) {
       if (err.code === 'NOT_SIGNED_IN') { S.user = null; renderAuth(); return; }
       alert(err.code === 'NO_DATABASE' ? t('noDatabase') : t('errOffline'));

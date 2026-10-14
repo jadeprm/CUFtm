@@ -9,6 +9,7 @@ import {
   addAgendaItem, editAgendaItem, removeAgendaItem, replyToInvitation, canSeeMeeting,
   addAttachment, removeAttachment, downloadAttachment,
 } from '../lib/meetingstore.js';
+import { meetingNoticePdf } from '../lib/meetingnotice.js';
 import { circleSummary } from '../lib/circles.js';
 import { applyPrecedence, clearPrecedence, precedenceOver } from '../lib/availstore.js';
 
@@ -186,7 +187,7 @@ async function handler(request) {
      * spoken for. The work itself is in lib/meetingstore.js.
      */
     if (action.startsWith('meeting') || action.startsWith('mtg') ||
-        action === 'agenda' || action === 'reply') {
+        action === 'agenda' || action === 'reply' || action === 'notice') {
       const roster = await sql`SELECT * FROM users`;
       const secretary = isSecretary(me);
       const kit = { people: roster, isSecretary: secretary, json };
@@ -218,6 +219,47 @@ async function handler(request) {
       if (action === 'mtgfile' && request.method === 'POST') return addAttachment(sql, me, await request.json().catch(() => ({})), kit);
       if (action === 'mtgfile' && request.method === 'DELETE') return removeAttachment(sql, me, url.searchParams.get('id'), kit);
       if (action === 'mtgfile' && request.method === 'GET') return downloadAttachment(sql, me, url.searchParams.get('id'), kit);
+
+      /**
+       * หนังสือนัดประชุม, built from the meeting itself.
+       *
+       * Anybody who can see the meeting can print its notice — the agenda is
+       * already on their screen, and a letter they cannot produce is a letter
+       * somebody retypes in Word.
+       */
+      if (action === 'notice' && request.method === 'GET') {
+        const id = String(url.searchParams.get('id') || '');
+        const all = await assembleMeetings(sql, roster);
+        const meeting = all.find((m) => m.id === id);
+        if (!meeting) return json({ error: 'NO_SUCH_MEETING' }, 404);
+        if (!canSeeMeeting(me, { ...meeting, meets_on: meeting.meetsOn, created_by: meeting.createdBy },
+          meeting.people, { isSecretary: secretary })) {
+          return json({ error: 'NOT_ALLOWED' }, 403);
+        }
+        const byName = new Map(roster.map((u) => [u.username, u]));
+        const nameOf = (u) => {
+          const row = byName.get(u);
+          if (!row) return u;
+          const post = row.position || '';
+          // The full name is what belongs on a letter; the display name
+          // ("Jade - Project Director") is what the app shows on screen and is
+          // the fallback for anybody who has not filled their name in yet.
+          return row.full_name
+            ? `${row.full_name}${post ? ` (${post})` : ''}`
+            : (row.display_name || u);
+        };
+        const pdf = await meetingNoticePdf(meeting, { nameOf });
+        const name = `หนังสือนัดประชุม ${meeting.meetsOn} ${meeting.title}.pdf`;
+        return new Response(pdf, {
+          status: 200,
+          headers: {
+            'content-type': 'application/pdf',
+            'content-length': String(pdf.length),
+            'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(name)}`,
+            'cache-control': 'private, no-store',
+          },
+        });
+      }
 
       return json({ error: 'BAD_REQUEST' }, 400);
     }

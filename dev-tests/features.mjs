@@ -140,7 +140,12 @@ await up.locator('.up-more').click(); await kk.waitForTimeout(400);
 ok('ดูทั้งหมด unfolds the rest', (await up.locator('.up-row').count()) > 4, `${total} → ${await up.locator('.up-row').count()}`);
 await up.locator('.up-more').click(); await kk.waitForTimeout(300);
 const deskBox = await up.boundingBox();
-ok('the whole section is short on a computer', deskBox.height < 260, `${Math.round(deskBox.height)}px`);
+/**
+ * Four rows, plus a day heading above each day they fall on. Finished
+ * meetings now drop off this list during the day, so the four that show can
+ * span three days where they used to span two — one more heading, ~23px.
+ */
+ok('the whole section is short on a computer', deskBox.height < 300, `${Math.round(deskBox.height)}px`);
 await up.locator('.up-row.event').first().click(); await kk.waitForTimeout(800);
 ok('tapping a row opens it', (await kk.locator('#modal-root .modal').count()) === 1);
 await kk.locator('#modal-root .modal header button').last().click(); await kk.waitForTimeout(300);

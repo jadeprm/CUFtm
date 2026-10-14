@@ -93,10 +93,16 @@ const deskCtx = await b.newContext(DESK);
 let pg = await signIn(deskCtx, 'Jade_Pres', 'fairAdmin1');
 ok('the guide opens by itself after signing in', await guideOf(pg));
 let list = await items(pg);
-ok('...as a checklist of what is left', list.length === 2, list.join(' | '));
+/**
+ * Two steps on a computer, three where LINE is set up on the server — adding
+ * the fair's Official Account is offered then, and is ticked for anybody
+ * already linked.
+ */
+ok('...as a checklist of what is left', list.length === 2 || list.length === 3, list.join(' | '));
 ok('...without "add to home screen", which means nothing on a computer',
   !list.some((x) => x.includes('หน้าจอโฮม')));
-ok('...starting at notifications', list[0].startsWith('→') && list[0].includes('แจ้งเตือน'));
+const nowStep = list.find((x) => x.startsWith('→')) || '';
+ok('...starting at notifications', nowStep.includes('แจ้งเตือน'), nowStep);
 const perm = await pg.evaluate(() => Notification.permission);
 if (perm === 'denied') {
   ok('notifications blocked in this browser: it says how to unblock them',
@@ -133,12 +139,20 @@ await deskCtx.close();
 
 // ===========================================================================
 console.log('\nThe Google Calendar step');
+// Linked on LINE already, so the step before this one is out of the way.
+await sql`
+  INSERT INTO line_links (line_user_id, username, display_name, last_seen_at)
+  VALUES ('Uguide-kaew', 'Kaew_VP', '', now())
+  ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
 const calCtx = await b.newContext(DESK);
 await calCtx.addInitScript(PUSH_ON);
 pg = await signIn(calCtx, 'Kaew_VP', 'coadminPw1');
 ok('with notifications already on, the guide still opens for the calendar', await guideOf(pg));
 list = await items(pg);
-ok('...notifications ticked, the calendar next', list[0].startsWith('✓') && list[1].startsWith('→'), list.join(' | '));
+const calNow = list.find((x) => x.startsWith('→')) || '';
+ok('...notifications ticked, the calendar next',
+  list.every((x) => !x.includes('แจ้งเตือน') || x.startsWith('✓')) && /ปฏิทิน|Calendar/.test(calNow),
+  list.join(' | '));
 ok('...with its three steps', (await pg.locator('.guide-modal .gd-card .gd-li').count()) === 3);
 
 await pg.locator('.guide-modal .gd-actions .btn', { hasText: 'สร้างลิงก์ปฏิทิน' }).click();
@@ -175,7 +189,8 @@ await pg.reload({ waitUntil: 'networkidle' });
 ok('with everything done, the guide no longer opens by itself', !(await guideOf(pg, 5000)));
 await pg.click('#me-avatar'); await pg.click('#me-guide'); await pg.waitForTimeout(900);
 list = await items(pg);
-ok('...and from the menu it shows every step ticked', list.length === 2 && list.every((x) => x.startsWith('✓')), list.join(' | '));
+ok('...and from the menu it shows every step ticked',
+  list.length >= 2 && list.every((x) => x.startsWith('✓')), list.join(' | '));
 ok('...under "all set"', (await pg.locator('.guide-modal .gd-card.done').count()) === 1);
 await calCtx.close();
 
@@ -186,7 +201,7 @@ pg = await signIn(iosCtx, 'Ploy_StaffCon', 'memberPw11');
 ok('the guide opens by itself', await guideOf(pg));
 await pg.waitForTimeout(500);
 list = await items(pg);
-ok('...with all three steps, home screen first', list.length === 3 && list[0].startsWith('→') && list[0].includes('หน้าจอโฮม'),
+ok('...with every step, home screen first', list.length >= 3 && list[0].startsWith('→') && list[0].includes('หน้าจอโฮม'),
   list.join(' | '));
 ok('...as a sheet from the bottom, like every dialog on a phone',
   await pg.locator('#modal-root .veil.sheet:has(.guide-modal)').count() === 1);
@@ -208,7 +223,23 @@ await pg.screenshot({ path: `${shotDir}/guide-ios.png` });
 await pg.locator('.guide-modal footer .btn', { hasText: 'ติดตั้งแล้ว' }).click();
 await pg.waitForTimeout(900);
 list = await items(pg);
-ok('"installed" ticks it and moves on to notifications', list[0].startsWith('✓') && list[1].startsWith('→'), list.join(' | '));
+/**
+ * Where LINE is set up, adding the Official Account comes between installing
+ * and notifications — so "what is next" is read off the list rather than
+ * assumed to be the second line.
+ */
+const afterInstall = list.find((x) => x.startsWith('→')) || '';
+ok('"installed" ticks it and moves on', list[0].startsWith('✓') && afterInstall, list.join(' | '));
+if (!/แจ้งเตือน/.test(afterInstall)) {
+  await sql`
+    INSERT INTO line_links (line_user_id, username, display_name, last_seen_at)
+    VALUES ('Uguide-ploy', 'Ploy_StaffCon', '', now())
+    ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
+  await pg.locator('.guide-modal footer .btn', { hasText: 'ตรวจอีกครั้ง' }).click();
+  await pg.waitForTimeout(1200);
+  list = await items(pg);
+}
+ok('...and then to notifications', (list.find((x) => x.startsWith('→')) || '').includes('แจ้งเตือน'), list.join(' | '));
 ok('...which, in a Safari tab, says it must be opened from the icon first',
   (await pg.locator('.guide-modal .notice.warn').innerText().catch(() => '')).includes('หน้าจอโฮม'));
 await pg.screenshot({ path: `${shotDir}/guide-ios-2.png` });

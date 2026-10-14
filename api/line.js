@@ -6,8 +6,7 @@ import { assembled } from './tasks.js';
 import { assembledEvents, canSeeEvent } from './events.js';
 import {
   lineConfigured, verifySignature, reply, text, newLinkCode,
-  installRichMenu, removeRichMenu, taskLink, pageLink,
-} from '../lib/line.js';
+  installRichMenu, removeRichMenu, taskLink, pageLink, botProfile } from '../lib/line.js';
 import { RICH_MENU_PNG_BASE64, RICH_MENU_VERSION } from '../lib/richmenu-image.js';
 import {
   readCommand, parseTaskLine, todayIso, addDays,
@@ -73,6 +72,8 @@ async function handler(request) {
       canManageMenu: me.access === 'admin' || me.access === 'coadmin',
       menuInstalled: Boolean(menu?.value),
       menuOutdated: Boolean(menu?.value) && menuVersion?.value !== RICH_MENU_VERSION,
+      // Who to add as a friend, for the guide — null when LINE is not set up.
+      oa: await botProfile(),
     });
   }
 
