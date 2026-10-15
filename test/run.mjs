@@ -755,18 +755,30 @@ const tPr = await make('pr', 'โพสต์เปิดงาน');
 const seenBy = async (who) =>
   (await call(tasksApi, '/api/tasks', { as: who })).data.tasks.map((x) => x.id);
 
+/**
+ * Since 2026-10-14 an Editor sees the whole fair — a ประธานฝ่าย has to know
+ * what the other ฝ่าย are doing to the same deadline. Department access is
+ * still what decides where they may FILE work, and still what decides what a
+ * unit editor or a member sees, which is what the rest of this section is.
+ */
+const deptsOf = async (who) =>
+  (await call(tasksApi, '/api/tasks', { as: who })).data.myDepartments || [];
+
 let mine = await seenBy('content');
 ok('a Content head sees the Content task', mine.includes(tContent.id));
 ok('...and the PR task, because the sheet gives them both', mine.includes(tPr.id));
-ok('...but NOT the Merchant task', !mine.includes(tMerch.id));
-ok('...and NOT the Operations 1 task', !mine.includes(tOper1.id));
+ok('...and the Merchant one too, because an Editor sees the whole fair',
+  mine.includes(tMerch.id) && mine.includes(tOper1.id));
+
+let deps = await deptsOf('content');
+ok('...but the departments they may file into are still only theirs',
+  deps.includes('content') && deps.includes('pr') && !deps.includes('merchant'), deps.join(','));
 
 mine = await seenBy('merch');
-ok('a Merchant head sees only their own', mine.includes(tMerch.id) && !mine.includes(tContent.id));
+ok('a Merchant head sees the whole fair as well', mine.includes(tMerch.id) && mine.includes(tContent.id));
 
 mine = await seenBy('oper');
 ok('an Oper 1 head sees the Oper 1 task', mine.includes(tOper1.id));
-ok('...and not Content', !mine.includes(tContent.id));
 
 mine = await seenBy('admin');
 ok('the admin sees all four', [tContent, tMerch, tOper1, tPr].every((x) => mine.includes(x.id)));
@@ -777,9 +789,10 @@ r = await call(usersApi, '/api/users?do=manage', {
   body: { username: 'Kluayhom_HeadMerchant', departments: ['operations'] },
 });
 ok('granting the Operations umbrella works', r.status === 200);
-mine = await seenBy('merch');
-ok('...and it carries the three divisions with it', mine.includes(tOper1.id), mine.join(','));
-ok('...while dropping the department that was replaced', !mine.includes(tMerch.id));
+deps = await deptsOf('merch');
+ok('...and it carries the three divisions with it',
+  ['operations', 'oper1', 'oper2', 'oper3'].every((k) => deps.includes(k)), deps.join(','));
+ok('...while dropping the department that was replaced', !deps.includes('merchant'), deps.join(','));
 
 // Cross-department work must stay possible.
 await call(tasksApi, '/api/tasks', {
@@ -828,9 +841,9 @@ r = await call(usersApi, '/api/users?do=manage', {
 });
 ok('clearing access is an empty list', r.data.user.departments.length === 0);
 ok('...and the home teamspace is cleared with it', r.data.user.department === null);
-mine = await seenBy('merch');
-ok('someone with no department sees only their own and tagged work',
-  !mine.includes(tMerch.id) && mine.includes(tContent.id), mine.join(','));
+deps = await deptsOf('merch');
+ok('someone with no department has nowhere of their own to file into',
+  deps.length === 0, deps.join(','));
 
 r = await call(usersApi, '/api/users?do=manage', {
   method: 'PATCH', as: 'admin',
@@ -1285,8 +1298,15 @@ const asSeen = async (who, id) =>
 
 let theirs = await asSeen('merch', owned.id);
 ok('a tagged person can see it', Boolean(theirs));
-ok('...and is told they may NOT edit it', theirs.mayEdit === false);
-ok('...but may move its status', theirs.maySetStatus === true);
+/**
+ * The person the work was given to may change the task. They are the ones who
+ * find out that the deadline has moved or that half the description is
+ * missing, and routing all of that back through whoever typed it is how a
+ * tracker stops matching the work. Deleting is still not theirs.
+ */
+ok('...and is told they may edit it', theirs.mayEdit === true);
+ok('...but not delete it', theirs.mayDelete === false);
+ok('...and may move its status', theirs.maySetStatus === true);
 
 r = await call(tasksApi, '/api/tasks', {
   method: 'PATCH', as: 'merch', body: { id: owned.id, status: 'review' },
@@ -1294,39 +1314,30 @@ r = await call(tasksApi, '/api/tasks', {
 ok('a tagged person CAN move the status', r.status === 200 && r.data.task.status === 'review');
 
 r = await call(tasksApi, '/api/tasks', {
-  method: 'PATCH', as: 'merch', body: { id: owned.id, title: 'เปลี่ยนชื่อซะเลย' },
+  method: 'PATCH', as: 'merch', body: { id: owned.id, title: 'ทำโปสเตอร์เวที (แก้โดยผู้รับผิดชอบ)' },
 });
-ok('a tagged person CANNOT rename it', r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
+ok('a tagged person CAN rename it',
+  r.status === 200 && r.data.task.title === 'ทำโปสเตอร์เวที (แก้โดยผู้รับผิดชอบ)', JSON.stringify(r.data).slice(0, 70));
 
 r = await call(tasksApi, '/api/tasks', {
   method: 'PATCH', as: 'merch', body: { id: owned.id, dueDate: '2027-01-01' },
 });
-ok('...nor move the deadline', r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
+ok('...and move the deadline', r.status === 200 && r.data.task.dueDate === '2027-01-01');
 
 r = await call(tasksApi, '/api/tasks', {
-  method: 'PATCH', as: 'merch', body: { id: owned.id, assignees: [] },
+  method: 'PATCH', as: 'merch', body: { id: owned.id, status: 'review', priority: 'highest' },
 });
-ok('...nor take people off it', r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
-
-// The obvious way round the rule: send the status AND something else.
-r = await call(tasksApi, '/api/tasks', {
-  method: 'PATCH', as: 'merch', body: { id: owned.id, status: 'done', title: 'sneaky' },
-});
-ok('smuggling an edit alongside a status change is refused',
-  r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
-theirs = await asSeen('merch', owned.id);
-ok('...and the refused request changed nothing at all',
-  theirs.title === 'ทำโปสเตอร์เวที' && theirs.status === 'review',
-  theirs.title + ' / ' + theirs.status);
-
-r = await call(tasksApi, '/api/tasks', {
-  method: 'PATCH', as: 'merch', body: { id: owned.id, priority: 'highest' },
-});
-ok('priority is an edit, not a status', r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
+ok('...and change two things at once, which used to be the way round the rule',
+  r.status === 200 && r.data.task.priority === 'highest', JSON.stringify(r.data).slice(0, 70));
 
 r = await call(tasksApi, '/api/tasks?id=' + owned.id, { method: 'DELETE', as: 'merch' });
 ok('a tagged person cannot delete it', r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
 ok('...and it is still there', Boolean(await asSeen('merch', owned.id)));
+
+// Put the name back so the checks below read as they always did.
+await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'content', body: { id: owned.id, title: 'ทำโปสเตอร์เวที' },
+});
 
 // Someone in the department who is NOT tagged at all.
 await call(usersApi, '/api/users?do=manage', {
@@ -1342,6 +1353,24 @@ r = await call(tasksApi, '/api/tasks', {
 });
 ok('...and the server refuses a status change from them',
   r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
+
+/**
+ * A watcher is the other half of the rule: being asked to follow something is
+ * the opposite of being asked to do it, so following it brings no pen with it.
+ */
+await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'content', body: { id: owned.id, viewers: ['Ikkew_HeadOper1'] },
+});
+const watcher = await asSeen('bystander', owned.id);
+ok('a watcher sees the task', Boolean(watcher));
+ok('...and is told they may not edit it', watcher && watcher.mayEdit === false);
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'bystander', body: { id: owned.id, title: 'ผู้ติดตามแก้เอง' },
+});
+ok('...and the server refuses them', r.status === 403 && r.data.error === 'NOT_TASK_OWNER', String(r.status));
+await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'content', body: { id: owned.id, viewers: [] },
+});
 
 // The owner and the admins keep full control.
 r = await call(tasksApi, '/api/tasks', {
@@ -2061,10 +2090,14 @@ r = await call(tasksApi, '/api/tasks', {
 });
 ok('the admin-only task exists', r.status === 201, JSON.stringify(r.data).slice(0, 80));
 
-// The member cannot see it, so it never reaches their numbered list.
+/**
+ * The chat shows exactly what the website shows this person — which, since an
+ * Editor sees the whole fair, now includes a task filed under ประธานโครงการ.
+ * What they may DO with it is the check below, and that has not moved.
+ */
 await lineApi(lineHook(sayToBot('Umember', 'หา งานของแอดมินเท่านั้น')));
-ok('a task they cannot see does not appear in their list',
-  lastReply().includes('ไม่มีรายการ'), lastReply().slice(0, 60));
+ok('an editor finds a task from another ฝ่าย, as they do on the website',
+  lastReply().includes('งานของแอดมินเท่านั้น'), lastReply().slice(0, 60));
 
 // A task they CAN see but do not own.
 r = await call(tasksApi, '/api/tasks', {
@@ -3357,10 +3390,22 @@ r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'member',
 ok('...and can say they have started what was given to them',
   r.status === 200, JSON.stringify(r.data).slice(0, 60));
 
+/**
+ * Rewriting it is theirs now too — the work was given to them, and they are
+ * the ones who find out that the deadline moved. See canEditTask.
+ */
 r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'member',
-  body: { id: unitTaskId, title: 'เปลี่ยนชื่องานเอง' } });
+  body: { id: unitTaskId, title: 'ซ้อมคิวเวที (แก้เอง)' } });
 const stillNamed = await sql`SELECT title FROM tasks WHERE id = ${unitTaskId}`;
-ok('...but cannot rewrite it', stillNamed[0].title === 'ซ้อมคิวเวที', stillNamed[0].title);
+ok('...and can rewrite the task they were given',
+  r.status === 200 && stillNamed[0].title === 'ซ้อมคิวเวที (แก้เอง)', stillNamed[0].title);
+
+// Removing it is not: that takes the work off everybody's list.
+r = await call(tasksApi, `/api/tasks?id=${encodeURIComponent(unitTaskId)}`, { method: 'DELETE', as: 'member' });
+ok('...but not delete it', r.status === 403 &&
+  (await sql`SELECT count(*)::int AS n FROM tasks WHERE id = ${unitTaskId}`)[0].n === 1, String(r.status));
+await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'unitlead',
+  body: { id: unitTaskId, title: 'ซ้อมคิวเวที' } });
 
 r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'member2',
   body: { id: unitTaskId, status: 'done' } });
@@ -5678,8 +5723,16 @@ ok('viewers can be changed later by whoever set it up', r.status === 200 &&
   r.data.task.viewers.join() === 'Kluayhom_HeadMerchant,Yam_HeadSpon', JSON.stringify(r.data.task.viewers));
 r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'content', body: { id: watched.id, viewers: ['Yam_HeadSpon'] } });
 ok('...and removed', r.data.task.viewers.join() === 'Yam_HeadSpon');
+/**
+ * They are off the watch list. An Editor still SEES every task in the fair,
+ * so what changed is their standing on this one, not whether it is on screen:
+ * no longer a viewer, and nothing they may change.
+ */
 r = await call(tasksApi, '/api/tasks', { as: 'merch' });
-ok('someone no longer following it, from outside the department, no longer sees it', !r.data.tasks.some((x) => x.id === watched.id));
+const noLonger = r.data.tasks.find((x) => x.id === watched.id);
+ok('someone taken off the watch list is no longer one of its viewers',
+  !noLonger || (!noLonger.viewers.includes('Kluayhom_HeadMerchant') && noLonger.mayEdit === false),
+  noLonger ? noLonger.viewers.join(',') : 'not visible');
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'content', body: { title: 'ผู้ติดตาม: ชิ้นงาน', viewers: ['Yam_HeadSpon'] } });
 const pieceTask = r.data.task;
 r = await call(tasksApi, '/api/tasks?do=part', { method: 'POST', as: 'content', body: { taskId: pieceTask.id, title: 'ชิ้นหนึ่ง', assignee: 'Yam_HeadSpon' } });
@@ -6612,6 +6665,42 @@ ok('...and can take it off again', r.status === 200 &&
 
 await sql`DELETE FROM documents WHERE title IN ('หนังสือที่มีไฟล์ Word', 'หนังสือไม่มี Word')`;
 
+
+// ===========================================================================
+head('85. An Editor sees the whole fair');
+
+/**
+ * Jade asked for this: a ประธานฝ่าย needs to know what the other ฝ่าย are
+ * doing to the same deadline, and "your own departments only" meant asking in
+ * LINE for something the tracker already knew. It is visibility and nothing
+ * else — the same person still cannot edit what is not theirs.
+ */
+await call(usersApi, '/api/users?do=manage', {
+  method: 'PATCH', as: 'admin',
+  body: { username: 'Kungking_HeadCon', allDepartments: false, departments: ['content'] },
+});
+r = await call(tasksApi, '/api/tasks', {
+  method: 'POST', as: 'admin',
+  body: { title: 'งานของฝ่ายอื่นล้วน ๆ', department: 'sponsor', notify: [] },
+});
+const faraway = r.data.task;
+ok('a task in a department the editor has no access to', r.status === 201, JSON.stringify(r.data).slice(0, 60));
+
+const seenByEditor = async (who) =>
+  (await call(tasksApi, '/api/tasks', { as: who })).data.tasks.find((x) => x.id === faraway.id);
+
+const editorSees = await seenByEditor('content');
+ok('a department head sees it anyway', Boolean(editorSees));
+ok('...without being handed the right to edit it', editorSees && editorSees.mayEdit === false);
+r = await call(tasksApi, '/api/tasks', {
+  method: 'PATCH', as: 'content', body: { id: faraway.id, title: 'แก้ของฝ่ายอื่น' },
+});
+ok('...and the server refuses the edit', r.status === 403 && r.data.error === 'NOT_TASK_OWNER', String(r.status));
+
+ok('a unit editor still sees only their own', !(await seenByEditor('unitlead')));
+ok('...and so does a member', !(await seenByEditor('member')));
+
+await sql`DELETE FROM tasks WHERE id = ${faraway.id}`;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

@@ -38,19 +38,31 @@ console.log('\n1. A meeting that has already finished');
  * the same thing whenever it is run.
  */
 const [nowH, nowM] = bkkNow().split(':').map(Number);
-const earlier = `${String(Math.max(0, nowH - 3)).padStart(2, '0')}:00`;
-const earlierEnd = `${String(Math.max(1, nowH - 2)).padStart(2, '0')}:00`;
-const later = `${String(Math.min(23, nowH + 2)).padStart(2, '0')}:00`;
+const nowMin = nowH * 60 + nowM;
+const clock = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+/**
+ * One that ended ten minutes ago and one still an hour off, worked out in
+ * minutes rather than whole hours — run at 00:20 the hour version produced a
+ * "finished" meeting that had not started.
+ */
+const doneDay = nowMin >= 80 ? iso(0) : iso(-1);
+const doneStart = nowMin >= 80 ? nowMin - 70 : 22 * 60;
+const doneEnd = nowMin >= 80 ? nowMin - 10 : 23 * 60;
+const aheadDay = nowMin + 60 < 24 * 60 ? iso(0) : iso(1);
+const aheadAt = nowMin + 60 < 24 * 60 ? nowMin + 60 : 9 * 60;
+const earlier = clock(doneStart);
+const earlierEnd = clock(doneEnd);
+const later = clock(aheadAt);
 
-const made = await jade.evaluate(async ({ on, a, b2, c }) => {
-  const mk = (title, meetsAt, endsAt) => fetch('/api/events?do=meeting', {
+const made = await jade.evaluate(async (x) => {
+  const mk = (title, on, meetsAt, endsAt) => fetch('/api/events?do=meeting', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ title, meetsOn: on, meetsAt, endsAt, place: 'ห้องทดสอบ', people: ['Jade_Pres'] }),
   }).then((r) => r.json());
-  const done = await mk('O14: ประชุมที่จบไปแล้ว', a, b2);
-  const ahead = await mk('O14: ประชุมที่ยังไม่ถึง', c, null);
+  const done = await mk('O14: ประชุมที่จบไปแล้ว', x.doneDay, x.a, x.b2);
+  const ahead = await mk('O14: ประชุมที่ยังไม่ถึง', x.aheadDay, x.c, null);
   return { done: done.id || null, ahead: ahead.id || null };
-}, { on: iso(0), a: earlier, b2: earlierEnd, c: later });
+}, { doneDay, aheadDay, a: earlier, b2: earlierEnd, c: later });
 
 await jade.evaluate(() => { location.hash = '#/work'; });
 await jade.reload({ waitUntil: 'networkidle' }); await jade.waitForTimeout(2600);
@@ -223,6 +235,83 @@ await jade.keyboard.press('Escape'); await jade.waitForTimeout(400);
 if (taskId) {
   await jade.evaluate((id) => fetch('/api/tasks?id=' + encodeURIComponent(id), { method: 'DELETE' }), taskId);
 }
+
+// ===========================================================================
+console.log('\n9. The people doing the work can edit it');
+const perm = await jade.evaluate(async () => {
+  const r = await fetch('/api/tasks', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'O14: งานที่ผู้รับผิดชอบแก้เองได้',
+      assignees: ['Ploy_StaffCon'], viewers: ['Fah_StaffCon'], notify: [] }),
+  });
+  const d = await r.json();
+  return (d.task && d.task.id) || null;
+});
+const ploy = outsider;   // Ploy, a member, is the one it was given to
+await ploy.evaluate((id) => { location.hash = '#/t/' + id; }, perm);
+await ploy.waitForTimeout(2200);
+ok('the person it was given to is given the edit button',
+  (await ploy.locator('.veil footer .btn', { hasText: /แก้ไข/ }).count()) >= 1);
+ok('...but not the delete button',
+  (await ploy.locator('.veil footer .btn.danger', { hasText: /ลบงาน/ }).count()) === 0);
+const edited = await ploy.evaluate(async (id) => {
+  const r = await fetch('/api/tasks', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, title: 'O14: แก้โดยผู้รับผิดชอบ', dueDate: '2026-12-09' }),
+  });
+  return { status: r.status, body: (await r.json()).task || {} };
+}, perm);
+ok('...and the change goes through', edited.status === 200 && edited.body.title === 'O14: แก้โดยผู้รับผิดชอบ',
+  `${edited.status} ${edited.body.title || ''}`);
+const delTry = await ploy.evaluate(async (id) =>
+  (await fetch('/api/tasks?id=' + encodeURIComponent(id), { method: 'DELETE' })).status, perm);
+ok('...while deleting it is still the owner\'s', delTry === 403, String(delTry));
+
+const fah = await as('Fah_StaffCon', 'memberPw22');
+const watcherTry = await fah.evaluate(async (id) => {
+  const seen = (await (await fetch('/api/tasks')).json()).tasks.find((t) => t.id === id);
+  const r = await fetch('/api/tasks', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, title: 'ผู้ติดตามแก้' }),
+  });
+  return { sees: Boolean(seen), mayEdit: seen && seen.mayEdit, status: r.status };
+}, perm);
+ok('a watcher sees it but cannot edit it',
+  watcherTry.sees && watcherTry.mayEdit === false && watcherTry.status === 403,
+  JSON.stringify(watcherTry));
+
+// ===========================================================================
+console.log('\n10. An editor sees the whole fair');
+const kung = await as('Kungking_HeadCon', 'brandNew22');
+const far = await jade.evaluate(async () => {
+  const r = await fetch('/api/tasks', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'O14: งานของฝ่ายอื่น', department: 'sponsor', notify: [] }),
+  });
+  return ((await r.json()).task || {}).id || null;
+});
+await kung.reload({ waitUntil: 'networkidle' }); await kung.waitForTimeout(2600);
+const farSeen = await kung.evaluate(async (id) => {
+  const t = (await (await fetch('/api/tasks')).json()).tasks.find((x) => x.id === id);
+  return t ? { yes: true, mayEdit: t.mayEdit } : { yes: false };
+}, far);
+ok('a department head sees a task filed under another ฝ่าย', farSeen.yes === true);
+ok('...without being handed the right to change it', farSeen.mayEdit === false);
+await kung.evaluate(() => { location.hash = '#/work'; }); await kung.waitForTimeout(2000);
+// The department dropdown is the one whose first option is "ทุกฝ่าย".
+const deptOptions = await kung.evaluate(() => {
+  const sel = Array.from(document.querySelectorAll('select'))
+    .find((s) => s.options[0] && /ทุกฝ่าย/.test(s.options[0].textContent));
+  return sel ? Array.from(sel.options).map((o) => o.textContent.trim()) : [];
+});
+ok('...and can filter to that ฝ่าย, because its work is on their screen',
+  deptOptions.some((x) => /หาทุน|Sponsor/.test(x)), deptOptions.slice(0, 8).join(' | '));
+
+await jade.evaluate(async (ids) => {
+  for (const id of ids) {
+    if (id) await fetch('/api/tasks?id=' + encodeURIComponent(id), { method: 'DELETE' });
+  }
+}, [perm, far]);
 
 await jade.evaluate(async (ids) => {
   for (const id of ids) {

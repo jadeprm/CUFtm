@@ -172,6 +172,9 @@ const withRights = (me, tasks) =>
   tasks.map((task) => ({
     ...task,
     mayEdit: canEditTask(me, task),
+    // Rewriting and removing parted company when the people doing the work
+    // were given the pen: see canDeleteTask in lib/scope.js.
+    mayDelete: canDeleteTask(me, task),
     maySetStatus: canSetStatus(me, task),
     mayAttach: canAttach(me, task),
     // The piece of this task that is this person's own, if any — what the
@@ -711,10 +714,11 @@ async function handler(request) {
        * Two levels of permission, checked here rather than only in the
        * interface — a hidden button is a suggestion, this is the rule.
        *
-       * The creator and the admins may change anything. Anyone else who is
-       * tagged in the task may change the status and nothing else, so a
-       * member can report their own progress without being able to rewrite
-       * the deadline or remove people from it.
+       * The creator, the people it was given to, and the admins may change
+       * the task. Anybody else who is tagged in it — a watcher — may change
+       * the status and nothing else, so somebody asked to follow a task can
+       * still report what they know without being able to rewrite the
+       * deadline or take people off it.
        */
       const mayEdit = canEditTask(me, visible);
       if (!mayEdit) {

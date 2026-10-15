@@ -87,7 +87,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-14a';
+  var APP_VERSION = '2026-10-15a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -441,6 +441,21 @@
         });
       }));
     });
+  }
+
+  /**
+   * Who sees every task.
+   *
+   * Wider than `seesEverything`, and on purpose: that one answers "may this
+   * person act across the whole fair", while this answers "is the whole fair
+   * on their screen". Since 2026-10-15 an Editor sees every ฝ่าย's work
+   * without being able to file into it or change it — so this decides what to
+   * SHOW, and myDepartments() below still decides what may be filed where.
+   */
+  function seesAllTasks() {
+    if (S.seesEverything) return true;
+    var a = S.user && S.user.access;
+    return a === 'editor' || a === 'admin' || a === 'coadmin';
   }
 
   /** Departments this person may file into, as objects, in org-chart order. */
@@ -1127,8 +1142,10 @@
       h('span', { class: 'sb-plus', text: '+' }), h('span', { class: 'sb-label', text: t('spaceNew') }),
     ])));
 
+    // Every ฝ่าย for anybody who sees every ฝ่าย's work — otherwise the tasks
+    // are in the list but there is no way to look at one department's worth.
     var depts = (S.departments || []).filter(function (d) {
-      return S.seesEverything || (S.myDepartments || []).indexOf(d.key) !== -1;
+      return seesAllTasks() || (S.myDepartments || []).indexOf(d.key) !== -1;
     });
     if (depts.length) {
       box.appendChild(sbSection('depts', t('departments'), depts.map(function (d) {
@@ -3082,8 +3099,10 @@
      */
     var deptSelect = h('select', {
       onchange: function (e) { S.dept = e.target.value; S.who = ''; S.unit = ''; after(); },
+      // Filtering follows what is on screen, not what may be filed: an Editor
+      // sees every ฝ่าย's work, so every ฝ่าย is worth offering here.
     }, [h('option', { value: '', text: t('allDepartments') })].concat(
-      myDepartments().map(function (d) {
+      (seesAllTasks() ? (S.departments || []) : myDepartments()).map(function (d) {
         return h('option', { value: d.key, text: deptOptionLabel(d), selected: S.dept === d.key });
       })
     ));
@@ -3552,7 +3571,7 @@
 
     // On a phone this line cost two lines above the first task; the role tabs
     // say the same thing more usefully.
-    if (!S.seesEverything && !phone) {
+    if (!seesAllTasks() && !phone) {
       main.appendChild(h('p', {
         style: 'margin:-6px 0 12px;font-size:12.5px;color:var(--ink-faint)',
         text: t('deptOnlyNote'),
@@ -4633,7 +4652,8 @@
         // Backing out of an edit returns to the task, not out of it entirely.
         onclick: isNew ? close : function () { mode = 'view'; paintPanes(); },
       }));
-      if (task && task.mayEdit) {
+      // Deleting is the creator's and the admins', not everybody who may edit.
+      if (task && task.mayDelete) {
         footer.appendChild(h('span', { class: 'grow' }));
         footer.appendChild(h('button', {
           class: 'btn danger', text: t('deleteTask'),
