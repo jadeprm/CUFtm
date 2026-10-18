@@ -43,15 +43,24 @@ const json = (body, status = 200) =>
   });
 
 /**
- * Three megabytes.
+ * Three megabytes for the PDF, five for the editable original.
  *
  * The request carries the file base64-encoded, which inflates it by a third,
  * and the platform refuses a body over about 4.5 MB. Refusing a large file
  * here with a clear message beats a request that dies halfway with none.
+ *
+ * That is also why the Word file can be bigger than the PDF: a letter with
+ * photographs in it goes past three megabytes easily, so anything over
+ * INLINE_SOURCE arrives in pieces instead (see ?do=source-part), and the
+ * five-megabyte ceiling is on the file rather than on one request.
  */
 const MAX_PDF = 3 * 1024 * 1024;
 const MAX_PNG = 512 * 1024;
-const MAX_SOURCE = 3 * 1024 * 1024;
+const MAX_SOURCE = 5 * 1024 * 1024;
+/** The biggest source file still worth sending in one request. */
+const INLINE_SOURCE = 2 * 1024 * 1024;
+/** One piece of a chunked upload, before base64 inflates it by a third. */
+const MAX_PART = 1536 * 1024;
 
 /**
  * The editable original that may ride along with the PDF.
@@ -141,6 +150,7 @@ async function handler(request) {
     if (action === 'signature') return mySignature(sql, me);
     if (action === 'sigimg') return signatureImage(sql, me, url.searchParams.get('user'));
     if (action === 'secretaries') return listSecretaries(sql, me);
+    if (action === 'delegates') return listDelegates(sql, me);
     if (id && url.searchParams.get('file')) {
       return downloadFile(sql, me, id, url.searchParams.get('file'));
     }
@@ -160,6 +170,9 @@ async function handler(request) {
     case 'reject':    return reject(sql, me, body);
     case 'replace':   return replaceFile(sql, me, body);
     case 'source':    return putSourceFile(sql, me, body);
+    // A Word file too big for one request — see putSourcePart.
+    case 'source-part': return putSourcePart(sql, me, body);
+    case 'delegates': return setDelegates(sql, me, body);
     case 'send':      return markSent(sql, me, body);
     case 'secretaries': return changeSecretaries(sql, me, body);
     case 'names':       return syncNames(sql, me);
@@ -912,6 +925,7 @@ async function approve(sql, me, body) {
 
   if (!canAct(me, doc, steps)) return json({ error: 'NOT_YOUR_TURN' }, 403);
   const step = pendingStep(steps);
+  const standingIn = step.username !== me.username;
 
   /**
    * Approving without signing.
@@ -931,15 +945,34 @@ async function approve(sql, me, body) {
    * it up rather than the document advancing with an empty box where their
    * name should be.
    */
+  /**
+   * Whose signature goes on, when somebody stands in.
+   *
+   * Their own, normally: the letter should show who actually approved it,
+   * not a signature its owner never pressed for. The exception is a standing
+   * authorisation — the owner of the signature has said in advance that this
+   * person may sign as them (?do=delegates) — and then it is the owner's
+   * signature, because that is the whole point of arranging it.
+   */
+  let signer = me.username;
+  if (standingIn) {
+    const [allowed] = await sql`
+      SELECT 1 FROM signature_delegates
+      WHERE owner = ${step.username} AND delegate = ${me.username}`;
+    if (allowed) signer = step.username;
+  }
+
   let signature = null;
   if (willSign && signsPdf(step.role)) {
-    const [row] = await sql`SELECT png FROM signatures WHERE username = ${me.username}`;
+    const [row] = await sql`SELECT png FROM signatures WHERE username = ${signer}`;
     signature = toBuffer(row?.png);
-    if (!signature) return json({ error: 'NO_SIGNATURE' }, 400);
+    if (!signature) return json({ error: 'NO_SIGNATURE', who: signer }, 400);
   }
 
   await sql`
     UPDATE doc_steps SET state = 'approved', acted_at = now(), signs = ${willSign},
+      acted_by = ${standingIn ? me.username : null},
+      signed_by = ${willSign ? signer : null},
       comment = ${clean(body.comment, 1000)}
     WHERE id = ${step.id}`;
 
@@ -1078,7 +1111,10 @@ async function rebuildSigned(sql, docId, steps) {
   const signing = steps.filter((s) => s.state === 'approved' && s.signs !== false);
   const marks = [];
   for (const step of signing) {
-    const [row] = await sql`SELECT png FROM signatures WHERE username = ${step.username}`;
+    // Whoever's signature this step put on: the named signer normally, the
+    // person who stood in for them when somebody else pressed — see approve.
+    const owner = step.signed_by || step.signedBy || step.username;
+    const [row] = await sql`SELECT png FROM signatures WHERE username = ${owner}`;
     const png = toBuffer(row?.png);
     if (!png) continue;
 
@@ -1092,7 +1128,7 @@ async function rebuildSigned(sql, docId, steps) {
 
     for (const spot of spots) {
       marks.push({
-        username: step.username, page: spot.page,
+        username: owner, page: spot.page,
         x: spot.x, y: spot.y, w: spot.w, h: spot.h, png,
       });
     }
@@ -1126,7 +1162,8 @@ async function reject(sql, me, body) {
   if (!comment) return json({ error: 'REASON_REQUIRED' }, 400);
 
   const step = pendingStep(steps);
-  await sql`UPDATE doc_steps SET state = 'rejected', acted_at = now(), comment = ${comment}
+  await sql`UPDATE doc_steps SET state = 'rejected', acted_at = now(), comment = ${comment},
+              acted_by = ${step.username === me.username ? null : me.username}
             WHERE id = ${step.id}`;
   await sql`UPDATE documents SET stage = 'rejected', updated_at = now() WHERE id = ${doc.id}`;
   await note(sql, doc.id, 'rejected', me.username, comment);
@@ -1264,6 +1301,129 @@ async function putSourceFile(sql, me, body) {
   await sql`UPDATE documents SET updated_at = now() WHERE id = ${doc.id}`;
   await note(sql, doc.id, 'source_added', me.username, source.name);
   return json({ ok: true, source: { name: source.name, size: source.buffer.length } });
+}
+
+/**
+ * A big Word file, in pieces.
+ *
+ * Vercel refuses a request body over about 4.5 MB, and base64 adds a third,
+ * so a five-megabyte .docx cannot arrive in one piece however the limits are
+ * written. It arrives in pieces instead, appended to one staging row in the
+ * order the browser sends them — `bytes = bytes || …` is Postgres appending
+ * to a BYTEA, which keeps the assembly in the database rather than in the
+ * memory of a function that may not be the same function next time.
+ *
+ * The pieces land under kind 'source-part' and only become the real 'source'
+ * when the last one arrives, so an upload that is interrupted leaves a stub
+ * nothing reads instead of half a document somebody might open.
+ */
+async function putSourcePart(sql, me, body) {
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+  const bounced = doc.stage === 'rejected' && doc.created_by === me.username;
+  const writing = doc.created_by === me.username && doc.stage === 'draft';
+  if (!canReplaceFile(me, doc, steps) && !bounced && !writing) {
+    return json({ error: 'NOT_ALLOWED' }, 403);
+  }
+
+  const name = clean(body.name, 200) || 'document.docx';
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (!SOURCE_EXTS.includes(ext)) return json({ error: 'NOT_A_DOC' }, 400);
+
+  const part = Number(body.part);
+  const parts = Number(body.parts);
+  if (!Number.isInteger(part) || !Number.isInteger(parts) ||
+      part < 0 || parts < 1 || part >= parts || parts > 16) {
+    return json({ error: 'BAD_PART' }, 400);
+  }
+
+  const piece = fromBase64(body.data, MAX_PART);
+  if (piece.error) {
+    return json({ error: piece.error === 'FILE_TOO_BIG' ? 'PART_TOO_BIG' : piece.error }, 400);
+  }
+
+  if (part === 0) {
+    // A fresh upload starts clean, so an abandoned one cannot be built on.
+    await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source-part'`;
+    await sql`
+      INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, file_name, mime, updated_at)
+      VALUES (${doc.id}, 'source-part', ${piece.buffer}, ${piece.buffer.length}, 0,
+              ${name}, ${SOURCE_TYPES[ext]}, now())`;
+  } else {
+    const [stub] = await sql`
+      SELECT byte_size FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source-part'`;
+    if (!stub) return json({ error: 'UPLOAD_LOST' }, 409);
+    if (Number(stub.byte_size) + piece.buffer.length > MAX_SOURCE) {
+      await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source-part'`;
+      return json({ error: 'SOURCE_TOO_BIG', limit: MAX_SOURCE }, 400);
+    }
+    await sql`
+      UPDATE doc_files
+         SET bytes = bytes || ${piece.buffer}::bytea,
+             byte_size = byte_size + ${piece.buffer.length},
+             file_name = ${name}, updated_at = now()
+       WHERE doc_id = ${doc.id} AND kind = 'source-part'`;
+  }
+
+  if (part < parts - 1) return json({ ok: true, part, parts, done: false });
+
+  // The last piece: the staging row becomes the file itself.
+  const [whole] = await sql`
+    SELECT byte_size FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source-part'`;
+  await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source'`;
+  await sql`
+    UPDATE doc_files SET kind = 'source', updated_at = now()
+     WHERE doc_id = ${doc.id} AND kind = 'source-part'`;
+  await sql`UPDATE documents SET updated_at = now() WHERE id = ${doc.id}`;
+  await note(sql, doc.id, 'source_added', me.username, name);
+  return json({ ok: true, done: true, source: { name, size: Number(whole?.byte_size || 0) } });
+}
+
+/**
+ * Who may sign as me, and who I may sign for.
+ *
+ * Set up once rather than per letter: a ประธานฝ่าย going abroad authorises
+ * their รองประธาน and every letter that reaches their step for the next
+ * fortnight can be signed with their signature by that one person. Only the
+ * owner of a signature can hand it out, and only to somebody with an active
+ * account.
+ */
+async function listDelegates(sql, me) {
+  const mine = await sql`
+    SELECT delegate, note, created_at FROM signature_delegates
+    WHERE owner = ${me.username} ORDER BY created_at`;
+  const forOthers = await sql`
+    SELECT owner, created_at FROM signature_delegates
+    WHERE delegate = ${me.username} ORDER BY created_at`;
+  return json({
+    delegates: mine.map((r) => ({ username: r.delegate, note: r.note || '', since: r.created_at })),
+    actingFor: forOthers.map((r) => ({ username: r.owner, since: r.created_at })),
+  });
+}
+
+async function setDelegates(sql, me, body) {
+  const wanted = (Array.isArray(body.delegates) ? body.delegates : [])
+    .map((u) => clean(u, 64))
+    .filter((u) => u && u !== me.username);
+  if (wanted.length > 5) return json({ error: 'TOO_MANY_DELEGATES' }, 400);
+
+  if (wanted.length) {
+    const live = await sql`
+      SELECT username FROM users
+      WHERE username = ANY(${wanted}) AND active = true AND suspended = false`;
+    if (live.length !== new Set(wanted).size) return json({ error: 'NO_SUCH_USER' }, 400);
+  }
+
+  await sql`DELETE FROM signature_delegates WHERE owner = ${me.username}
+            AND delegate <> ALL(${wanted.length ? wanted : ['']})`;
+  for (const delegate of new Set(wanted)) {
+    await sql`
+      INSERT INTO signature_delegates (owner, delegate, note)
+      VALUES (${me.username}, ${delegate}, ${clean(body.note, 200)})
+      ON CONFLICT (owner, delegate) DO NOTHING`;
+  }
+  return listDelegates(sql, me);
 }
 
 async function markSent(sql, me, body) {

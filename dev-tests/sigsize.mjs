@@ -55,13 +55,33 @@ await kk.evaluate(async (title) => {
   }
 }, TITLE);
 
+/**
+ * The letter this suite uploads, made here if it is not already about.
+ *
+ * It used to be whatever docchain.mjs had left in /tmp — which worked right
+ * up until docchain failed first, and then this suite died on a missing file
+ * with nothing to say about signatures at all.
+ */
+const LETTER = '/tmp/claude-0/sig-letter.pdf';
+{
+  const { existsSync, writeFileSync, mkdirSync } = await import('node:fs');
+  if (!existsSync(LETTER)) {
+    const { PDFDocument } = await import('pdf-lib');
+    const made = await PDFDocument.create();
+    made.addPage([595.28, 841.89]);
+    made.addPage([595.28, 841.89]);
+    mkdirSync('/tmp/claude-0', { recursive: true });
+    writeFileSync(LETTER, Buffer.from(await made.save()));
+  }
+}
+
 console.log('\n1. Placing the boxes: the real signature, not a pink rectangle');
 await kk.evaluate(() => { location.hash = '#/docs'; }); await kk.waitForTimeout(1400);
 await kk.locator('#main .page-head button.primary').first().click(); await kk.waitForTimeout(900);
 await kk.locator('.modal input[type=text]').nth(1).fill(TITLE);
 await kk.locator('.modal input[type=text]').nth(2).fill('คณะวิศวกรรมศาสตร์');
 await kk.locator('.modal .field', { hasText: 'หน่วยงานภายในจุฬาฯ' }).locator('input[type="checkbox"]').check();
-await kk.locator('.modal #doc-pdf').setInputFiles('/tmp/claude-0/chain-letter.pdf');
+await kk.locator('.modal #doc-pdf').setInputFiles(LETTER);
 await kk.waitForTimeout(900);
 await kk.locator('.modal footer .btn.primary').click(); await kk.waitForTimeout(2500);
 await kk.locator('.modal footer .btn.primary').click();

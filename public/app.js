@@ -87,7 +87,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-15a';
+  var APP_VERSION = '2026-10-18a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1531,6 +1531,40 @@
     });
   }
 
+  /**
+   * Five megabytes, and how a five-megabyte file gets there.
+   *
+   * The platform refuses a request body over about 4.5 MB, and base64 adds a
+   * third on top, so anything over roughly 2 MB goes up in pieces: the file
+   * is sliced, each slice is sent on its own, and the server appends them
+   * into one row (see putSourcePart in api/documents.js). The last piece is
+   * what turns the pieces into the document's editable original, so an
+   * upload cut off halfway leaves nothing half-attached.
+   */
+  var MAX_SOURCE_BYTES = 5 * 1024 * 1024;
+  var SOURCE_PART_BYTES = 1400 * 1024;
+
+  function sendSourceInParts(docId, source, onProgress) {
+    var file = source.file;
+    var parts = Math.max(1, Math.ceil(file.size / SOURCE_PART_BYTES));
+    var index = 0;
+    function next() {
+      if (index >= parts) return Promise.resolve();
+      var slice = file.slice(index * SOURCE_PART_BYTES, (index + 1) * SOURCE_PART_BYTES);
+      return fileToBase64(slice).then(function (b64) {
+        return api('/api/documents?do=source-part', {
+          method: 'POST',
+          body: { id: docId, name: source.name, part: index, parts: parts, data: b64 },
+        });
+      }).then(function () {
+        index += 1;
+        if (onProgress) onProgress(index, parts);
+        return next();
+      });
+    }
+    return next();
+  }
+
   var DOC_STAGE_TH = {
     approving: 'กำลังรออนุมัติ', secretary: 'รอเลขาฯ ส่ง',
     done: 'อนุมัติครบแล้ว', sent: 'ส่งแล้ว', rejected: 'ถูกตีกลับ',
@@ -1967,11 +2001,27 @@
       srcInput.addEventListener('change', function () {
         var file = srcInput.files && srcInput.files[0];
         if (!file) return;
-        if (file.size > 3 * 1024 * 1024) { fail(t('docTooBig')); srcInput.value = ''; return; }
+        if (file.size > MAX_SOURCE_BYTES) { fail(t('docTooBig')); srcInput.value = ''; return; }
         notice.hidden = true;
+        /**
+         * Over two megabytes the file does not travel with the letter.
+         *
+         * Vercel refuses a request body over about 4.5 MB and base64 adds a
+         * third, so a five-megabyte .docx cannot ride along with the PDF in
+         * the create call. The big ones are kept aside and sent in pieces
+         * once the letter exists — see sendSourceInParts.
+         */
+        var big = file.size > 2 * 1024 * 1024;
+        var shown = file.name + ' · ' + Math.round(file.size / 1024) + ' KB';
+        if (big) {
+          sourceFile = { name: file.name, file: file, big: true };
+          srcNote.textContent = shown;
+          srcClear.hidden = false;
+          return;
+        }
         fileToBase64(file).then(function (b64) {
           sourceFile = { name: file.name, data: b64 };
-          srcNote.textContent = file.name + ' · ' + Math.round(file.size / 1024) + ' KB';
+          srcNote.textContent = shown;
           srcClear.hidden = false;
         }).catch(function () { fail(t('errGeneric')); });
       });
@@ -2461,15 +2511,25 @@
           recipientEmail: draft.sendMode === 'secretary' && !draft.internalUnit ? draft.recipientEmail : '',
           internalUnit: draft.sendMode === 'secretary' && draft.internalUnit,
           pdf: pdfBase64,
-          source: sourceFile,
+          source: sourceFile && !sourceFile.big ? sourceFile : null,
           steps: chain.map(function (s) {
             return { role: s.role, username: s.username, marks: s.marks };
           }),
         },
       }).then(function (data) {
-        api('/api/documents').then(function (fresh) {
-          S.docs = fresh.documents || [];
-          renderPage();
+        // The big editable original follows the letter, in pieces.
+        var after = (sourceFile && sourceFile.big && data && data.id)
+          ? sendSourceInParts(data.id, sourceFile).catch(function () {
+            // The letter is in; say what did not make it rather than losing
+            // the submission over an attachment.
+            alert(t('docSourceLater'));
+          })
+          : Promise.resolve();
+        after.then(function () {
+          api('/api/documents').then(function (fresh) {
+            S.docs = fresh.documents || [];
+            renderPage();
+          });
         });
         /**
          * The เลขรันเอกสาร, said once and clearly.
@@ -2586,6 +2646,19 @@
               p.signs ? h('span', { class: 'chip unit', text: t('docSigns') }) : null,
             ]),
             p.username ? h('div', { class: 'ds-who' }, [avatarNode(p.username, 'sm'), nameOf(p.username)]) : null,
+            /**
+             * Who actually dealt with it, when that was not the person whose
+             * step it is. Anybody in a letter's chain may approve or bounce
+             * at any stage now, and a history that quietly credited the wrong
+             * person would be worse than no history.
+             */
+            p.actedBy ? h('div', { class: 'ds-standin' }, [
+              avatarNode(p.actedBy, 'sm'),
+              h('span', { text: t('docActedBy').replace('%n', nameOf(p.actedBy)) }),
+              (p.signedBy && p.signedBy !== p.actedBy)
+                ? h('span', { class: 'chip unit', text: t('docSignedAs').replace('%n', nameOf(p.signedBy)) })
+                : null,
+            ].filter(Boolean)) : null,
             when ? h('div', { class: 'ds-when', text: when }) : null,
             p.comment ? h('div', { class: 'ds-note', text: '“' + p.comment + '”' }) : null,
           ]),
@@ -2762,12 +2835,16 @@
         srcPick.addEventListener('change', function () {
           var file = srcPick.files && srcPick.files[0];
           if (!file) return;
-          if (file.size > 3 * 1024 * 1024) { alert(t('docTooBig')); return; }
-          fileToBase64(file).then(function (b64) {
-            return api('/api/documents?do=source', {
-              method: 'POST', body: { id: doc.id, source: { name: file.name, data: b64 } },
+          if (file.size > MAX_SOURCE_BYTES) { alert(t('docTooBig')); return; }
+          // Over about two megabytes it goes up in pieces — see sendSourceInParts.
+          var work = file.size > 2 * 1024 * 1024
+            ? sendSourceInParts(doc.id, { name: file.name, file: file })
+            : fileToBase64(file).then(function (b64) {
+              return api('/api/documents?do=source', {
+                method: 'POST', body: { id: doc.id, source: { name: file.name, data: b64 } },
+              });
             });
-          }).then(load).catch(function (err) { alert(errText(err.code)); });
+          work.then(load).catch(function (err) { alert(errText(err.code)); });
         });
         footer.appendChild(srcPick);
         footer.appendChild(h('button', {
@@ -2932,6 +3009,7 @@
         upload,
       ]);
       box.appendChild(row);
+      box.appendChild(delegateBox());
     }
 
     function save(base64) {
@@ -2941,6 +3019,64 @@
     }
 
     api('/api/documents?do=signature').then(draw).catch(function () { draw({ has: false }); });
+    return box;
+  }
+
+  /**
+   * Letting somebody else sign as me.
+   *
+   * Anybody in a letter's chain can already approve at any stage, and when
+   * they do it is their own signature that goes on — which is right, because
+   * the letter should show who approved it. This is the other case: a
+   * ประธานฝ่าย away for a fortnight who wants their own signature to go on
+   * the letters that reach their step while they are gone. Arranged once,
+   * applies to every letter, and only the owner of the signature can arrange
+   * it.
+   */
+  function delegateBox() {
+    var box = h('div', { class: 'deleg-box' });
+    var state = { delegates: [], actingFor: [] };
+
+    function send(list) {
+      return api('/api/documents?do=delegates', { method: 'POST', body: { delegates: list } })
+        .then(function (d) { state = d; draw(); })
+        .catch(function (err) { alert(errText(err.code)); });
+    }
+
+    function draw() {
+      clear(box);
+      box.appendChild(h('h4', { class: 'free-head', text: t('sigDelegTitle') }));
+      box.appendChild(h('p', { class: 'hint', text: t('sigDelegHow') }));
+
+      var names = state.delegates.map(function (d) { return d.username; });
+      box.appendChild(h('div', { class: 'selected' }, names.length
+        ? names.map(function (u) {
+          return h('span', {
+            class: 'chip who x', title: t('remove'),
+            onclick: function () { send(names.filter(function (x) { return x !== u; })); },
+          }, [avatarNode(u, 'sm'), nameOf(u), ' ✕']);
+        })
+        : [h('span', { class: 'hint', text: t('sigDelegNone') })]));
+
+      var pick = h('select', {}, [h('option', { value: '', text: t('sigDelegAdd') })].concat(
+        groupedPeopleOptions(S.users.filter(function (u) {
+          return u.active && !u.suspended && u.username !== S.user.username &&
+            names.indexOf(u.username) === -1;
+        }))));
+      pick.addEventListener('change', function () {
+        if (!pick.value) return;
+        send(names.concat([pick.value]));
+      });
+      box.appendChild(pick);
+
+      if (state.actingFor.length) {
+        box.appendChild(h('p', { class: 'hint', text: t('sigDelegFor') + ' ' +
+          state.actingFor.map(function (d) { return nameOf(d.username); }).join(', ') }));
+      }
+    }
+
+    api('/api/documents?do=delegates').then(function (d) { state = d; draw(); })
+      .catch(function () { draw(); });
     return box;
   }
 
@@ -3633,6 +3769,23 @@
     var ends = (to !== undefined && to !== null && minutesOfClock(to) !== null)
       ? minutesOfClock(to) : start + RUNS_FOR;
     return nowMinutes() < ends;
+  }
+
+  /**
+   * Can this invitation still be answered?
+   *
+   * Mirrors canReply on the server exactly: until the meeting starts, and a
+   * meeting with no time on it counts as starting at midnight. Kept here
+   * rather than read off the meeting, so the answer is right on a page that
+   * has been open since yesterday.
+   */
+  function rsvpStillOpen(m) {
+    if (!m || m.status === 'cancelled') return false;
+    var today = todayIso();
+    if (!m.meetsOn || m.meetsOn > today) return true;
+    if (m.meetsOn < today) return false;
+    var start = minutesOfClock(m.meetsAt || '00:00');
+    return start !== null && nowMinutes() < start;
   }
 
   function comingEvents(mineOnly) {
@@ -6422,14 +6575,12 @@
       if (state.linked) {
         box.appendChild(h('p', { class: 'ok-line', text: '\u2713 ' + t('lineConnected') }));
 
-        var toggle = h('input', { type: 'checkbox', checked: state.digest !== false });
-        toggle.addEventListener('change', function () {
-          api('/api/line?do=digest', { method: 'PATCH', body: { digest: toggle.checked } })
-            .then(function (d) { state.digest = d.digest; })
-            .catch(function (err) { toggle.checked = !toggle.checked; alert(errText(err.code)); });
-        });
-        box.appendChild(h('label', { class: 'inline-check' }, [toggle, t('lineDigestOn')]));
-        box.appendChild(h('p', { class: 'hint', text: t('lineDigestHelp') }));
+        /**
+         * The morning digest is off (see sendDigests in api/cron.js), so the
+         * switch for it is gone rather than left there promising a message
+         * that will not arrive. What LINE is still for is said instead.
+         */
+        box.appendChild(h('p', { class: 'hint', text: t('lineWhatFor') }));
 
         // Admins also get the one-click menu install. It changes what every
         // member sees, so it is deliberately not offered to everyone.
@@ -7093,6 +7244,90 @@
     return window.location.origin + (short.charAt(0) === '/' ? '' : '/') + short;
   }
 
+  /**
+   * Saving a canvas as a file.
+   *
+   * `a.href = canvas.toDataURL()` with an anchor that was never added to the
+   * page works in Chrome on a computer and in almost nothing else: Safari
+   * opens the data URL as a page instead — the code on a white background,
+   * flush to the top-left corner, which is what "not centred when I download
+   * it" turned out to be. A blob, a real anchor in the document, and the URL
+   * released afterwards behave the same way everywhere.
+   */
+  function saveCanvas(canvas, filename) {
+    var finish = function (href, revoke) {
+      var a = document.createElement('a');
+      a.download = filename;
+      a.href = href;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        a.remove();
+        if (revoke) URL.revokeObjectURL(href);
+      }, 4000);
+    };
+    if (canvas.toBlob) {
+      canvas.toBlob(function (blob) {
+        if (!blob) { finish(canvas.toDataURL('image/png'), false); return; }
+        finish(URL.createObjectURL(blob), true);
+      }, 'image/png');
+      return;
+    }
+    finish(canvas.toDataURL('image/png'), false);
+  }
+
+  /**
+   * The same code on a sheet of A4, ready to print.
+   *
+   * What people actually do with these is stick them on a wall, and a bare
+   * PNG means somebody then fights Word to get it centred on a page with the
+   * address under it. This is that page: the title at the top, the code in
+   * the middle of the paper, and the address under it in type big enough to
+   * read from where the poster is standing.
+   *
+   * 2480 × 3508 is A4 at 300 dpi, which is what a laser printer wants.
+   */
+  function qrSheet(code, link, short) {
+    var W = 2480;
+    var H = 3508;
+    var sheet = document.createElement('canvas');
+    sheet.width = W; sheet.height = H;
+    var g = sheet.getContext('2d');
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, W, H);
+
+    /**
+     * The whole block is centred, not the code.
+     *
+     * Centring the code alone and hanging the title above it and the address
+     * below leaves the printed page bottom-heavy — measured on the first
+     * version: 595px of paper above the title and 855px below the last line.
+     */
+    var side = Math.round(W * 0.62);            // ~13 cm, a comfortable scan
+    var above = link.title ? 260 : 0;            // the title and its air
+    var below = 300;                             // the address and the caption
+    var x = Math.round((W - side) / 2);
+    var y = Math.round((H - (above + side + below)) / 2 + above);
+    // Nearest-neighbour: a QR resampled smoothly is a QR with soft edges.
+    g.imageSmoothingEnabled = false;
+    g.drawImage(code, x, y, side, side);
+
+    g.fillStyle = '#14121a';
+    g.textAlign = 'center';
+    var font = '"Anuphan", "IBM Plex Sans Thai", system-ui, sans-serif';
+    if (link.title) {
+      g.font = '600 110px ' + font;
+      g.fillText(String(link.title).slice(0, 48), W / 2, y - 150);
+    }
+    g.font = '500 78px ' + font;
+    g.fillText(short, W / 2, y + side + 170);
+    g.font = '400 56px ' + font;
+    g.fillStyle = '#6b6875';
+    g.fillText(t('qrSheetScan'), W / 2, y + side + 270);
+    return sheet;
+  }
+
   function openQr(link) {
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
     var holder = h('div', { class: 'qr-holder' });
@@ -7156,13 +7391,12 @@
         }),
         h('span', { class: 'grow' }),
         canvas ? h('button', {
+          class: 'btn', text: t('qrDownloadSheet'), title: t('qrDownloadSheetWhy'),
+          onclick: function () { saveCanvas(qrSheet(canvas, link, short), 'qr-' + link.code + '-a4.png'); },
+        }) : null,
+        canvas ? h('button', {
           class: 'btn primary', text: t('qrDownload'),
-          onclick: function () {
-            var a = document.createElement('a');
-            a.download = 'qr-' + link.code + '.png';
-            a.href = canvas.toDataURL('image/png');
-            a.click();
-          },
+          onclick: function () { saveCanvas(canvas, 'qr-' + link.code + '.png'); },
         }) : null,
         h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }),
       ]),
@@ -8069,6 +8303,7 @@
       // People with no account here, invited by email through Google.
       guests: meeting ? meeting.guests.map(function (g) { return g.email; }).join(', ') : '',
       template: 'standard',
+      notify: meeting ? (meeting.notify || ['1d', '1h']).slice() : ['1d', '1h'],
     };
     var mayEdit = isNew || meeting.mayEdit;
 
@@ -8165,6 +8400,25 @@
       repeatBox = h('div', { class: 'field repeat-box' }, [h('label', { text: t('repeat') }),
         h('div', { class: 'repeat-row' }, [freqSel, endRow]), repeatNote]);
     }
+    /**
+     * The reminders this meeting sends.
+     *
+     * An invitation always goes out, and so does a change of day, time or
+     * place, and a cancellation — those are news. These are the nudges
+     * before it, and they are per meeting because a weekly stand-up does not
+     * need the same warning as the ประชุมสามัญ.
+     */
+    var notifyBox = h('div', { class: 'checks' }, [
+      ['3d', 'mtgRemind3d'], ['1d', 'mtgRemind1d'], ['1h', 'mtgRemind1h'],
+    ].map(function (pair) {
+      var cb = h('input', { type: 'checkbox', checked: draft.notify.indexOf(pair[0]) !== -1, disabled: !mayEdit });
+      cb.addEventListener('change', function () {
+        draft.notify = draft.notify.filter(function (k) { return k !== pair[0]; });
+        if (cb.checked) draft.notify.push(pair[0]);
+      });
+      return h('label', {}, [cb, t(pair[1])]);
+    }));
+
     var spaceOpts = (S.spaces || []).filter(function (sp) { return sp.mine || S.seesEverything; });
     var spaceSel = h('select', { disabled: !mayEdit }, [h('option', { value: '', text: t('spaceNone') })].concat(
       spaceOpts.map(function (sp) { return h('option', { value: sp.id, text: sp.name, selected: sp.id === draft.spaceId }); })));
@@ -8186,6 +8440,11 @@
         h('label', { text: t('mtgGuests') }),
         guestsIn,
         h('p', { class: 'hint', text: t('mtgGuestsHow') }),
+      ]),
+      h('div', { class: 'field' }, [
+        h('label', { text: t('mtgRemind') }),
+        notifyBox,
+        h('p', { class: 'hint', text: t('mtgRemindHow') }),
       ]),
     ].filter(Boolean));
     if (isNew) bodyBox.appendChild(detailPane);
@@ -8269,6 +8528,12 @@
        * whole ระเบียบวาระ — in TH Sarabun New, so it can be printed, signed
        * and sent as it is instead of being retyped in Word every time.
        */
+      // How loudly this one meeting speaks to me, over my own settings.
+      summaryPane.appendChild(h('div', { class: 'sum-row' }, [
+        h('span', { class: 'sum-label', text: t('mtgNotifyThis') }),
+        notifyControl('meeting', meeting.id, 'meeting'),
+      ]));
+
       summaryPane.appendChild(h('div', { class: 'sum-row' }, [
         h('span', { class: 'sum-label', text: t('mtgNotice') }),
         h('a', {
@@ -8447,7 +8712,19 @@
        */
       if (mine) {
         var rsvp = h('div', { class: 'rsvp' });
-        var closed = meeting.status !== 'planned';
+        /**
+         * The buttons go when the meeting starts, because the answer does.
+         *
+         * The server stops taking replies the moment a meeting begins (see
+         * canReply in lib/meeting.js — an answer afterwards is not an RSVP,
+         * it is a claim about attendance). The page did not know that, so it
+         * kept offering จะเข้าร่วม on a meeting from last night and answered
+         * the press with "เกิดข้อผิดพลาด กรุณาลองใหม่", which is both wrong
+         * and the least helpful thing it could have said. Same rule, said
+         * plainly, before the press.
+         */
+        var started = !rsvpStillOpen(meeting);
+        var closed = meeting.status !== 'planned' || started;
         var answeredMtg = mine.reply === 'accepted' || mine.reply === 'declined';
         var changing = false;
 
@@ -8466,6 +8743,11 @@
             } else {
               rsvp.appendChild(h('span', { class: 'hint', text: t('rsvpClosed') }));
             }
+            return;
+          }
+
+          if (started && meeting.status === 'planned') {
+            rsvp.appendChild(h('span', { class: 'hint', text: t('mtgRsvpClosed') }));
             return;
           }
 
@@ -8804,6 +9086,7 @@
             people: draft.assignees,
             guests: draft.guests,
             spaceId: draft.spaceId || null,
+            notify: draft.notify,
           };
           if (isNew) {
             body.template = 'blank'; body.agenda = draft.agenda;

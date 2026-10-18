@@ -1,5 +1,7 @@
 import http from 'node:http'; import { readFileSync, existsSync } from 'node:fs';
 process.env.DATABASE_URL='postgres://postgres:pw@127.0.0.1:5432/fairv2';
+// Points the Neon driver at the Postgres on this machine — see neon-local.mjs.
+await import('./neon-local.mjs');
 process.env.LINE_CHANNEL_SECRET='dev_secret';
 process.env.LINE_CHANNEL_ACCESS_TOKEN='dev_token';
 const SHEET=readFileSync('test/sheet.csv','utf8'); const rf=globalThis.fetch;

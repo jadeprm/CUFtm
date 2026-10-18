@@ -79,6 +79,13 @@ const MESSAGES = {
  * reminder down with it. Nobody got anything that hour, for any task, and the
  * only sign was a failed cron nobody was watching.
  */
+/** The three windows before a meeting. */
+const MEETING_MESSAGES = {
+  '3d': { th: 'ประชุมอีก 3 วัน', en: 'Meeting in 3 days' },
+  '1d': { th: 'ประชุมพรุ่งนี้', en: 'Meeting tomorrow' },
+  '1h': { th: 'ประชุมอีก 1 ชั่วโมง', en: 'Meeting in an hour' },
+};
+
 const EVENT_MESSAGES = {
   '7d': { th: 'อีก 7 วัน', en: 'In 7 days' },
   '3d': { th: 'อีก 3 วัน', en: 'In 3 days' },
@@ -294,6 +301,98 @@ async function handler(request) {
   }
 
   /**
+   * Meetings.
+   *
+   * Three windows: three days before, the day before, and an hour before.
+   * The first two are counted in whole days like everything else here; the
+   * last is counted off the clock, which is the one thing meetings have that
+   * events do not — "อีก 1 ชั่วโมง" for a meeting with no time on it would be
+   * a lie, so a meeting without a time can only use the day windows.
+   *
+   * reminders_sent is shared with tasks and events; a meeting id is
+   * distinctive enough that the three can never collide.
+   */
+  const meetingRows = await sql`
+    SELECT * FROM meetings
+    WHERE status <> 'cancelled' AND meets_on >= ${today}::date AND meets_on <= ${today}::date + 3`;
+  let meetingNotices = 0;
+
+  for (const meeting of meetingRows) {
+    const on = toIsoDate(meeting.meets_on);
+    // An empty string means "none, please" — `|| '1d,1h'` would read that as
+    // "nothing set" and remind everybody anyway.
+    const wants = String(meeting.notify ?? '1d,1h').split(',').filter(Boolean);
+    const days = daysBetween(today, on);
+
+    let kind = null;
+    if (days === 3) kind = '3d';
+    else if (days === 1) kind = '1d';
+    else if (days === 0 && meeting.meets_at) {
+      // The hour before, in whole hours: this runs hourly, so "an hour before"
+      // means the run that lands in the hour before it starts.
+      const startsIn = Number(String(meeting.meets_at).slice(0, 2)) - hour;
+      if (startsIn === 1) kind = '1h';
+    }
+    if (!kind || !wants.includes(kind)) continue;
+    /**
+     * A day-before notice at 2am helps nobody; it waits for the morning.
+     *
+     * CRON_QUIET_HOURS=off lifts it, which is how the tests check the day
+     * windows at whatever hour they happen to run — the alternative was a
+     * suite that passed in the afternoon and failed after midnight.
+     */
+    if (kind !== '1h' && hour < 7 &&
+        String(process.env.CRON_QUIET_HOURS || '').toLowerCase() !== 'off') continue;
+    if (!MEETING_MESSAGES[kind]) continue;
+
+    const invited = await sql`SELECT username FROM meeting_people WHERE meeting_id = ${meeting.id}`;
+    const audience = invited.map((r) => r.username);
+    if (!audience.length) continue;
+    const heard = await sortRecipients(sql, audience, {
+      category: 'meeting', scope: 'meeting', id: meeting.id,
+    });
+
+    for (const username of audience) {
+      const [already] = await sql`
+        SELECT 1 FROM reminders_sent
+        WHERE task_id = ${meeting.id} AND username = ${username} AND kind = ${kind}`;
+      if (already) continue;
+      if (heard.off.includes(username)) {
+        await sql`INSERT INTO reminders_sent (task_id, username, kind)
+                  VALUES (${meeting.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
+        continue;
+      }
+
+      const [person] = await sql`SELECT lang FROM users WHERE username = ${username}`;
+      const lang = person?.lang === 'en' ? 'en' : 'th';
+      const when = `${on}${meeting.meets_at ? ` ${meeting.meets_at} \u0e19.` : ''}`;
+      const line = `${MEETING_MESSAGES[kind][lang]} \u00b7 ${when}` +
+        (meeting.place ? ` \u00b7 ${meeting.place}` : '');
+
+      const id = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      await sql`
+        INSERT INTO notifications (id, username, task_id, kind, title, body)
+        VALUES (${id}, ${username}, ${null}, ${'meeting'}, ${meeting.title}, ${line})`;
+      await sql`
+        INSERT INTO reminders_sent (task_id, username, kind)
+        VALUES (${meeting.id}, ${username}, ${kind}) ON CONFLICT DO NOTHING`;
+
+      meetingNotices++;
+      if (!heard.loud.includes(username)) continue;   // the bell only
+      const result = await sendToUser(sql, username, {
+        id,
+        title: meeting.title,
+        body: line,
+        level: kind === '1h' ? 'urgent' : 'normal',
+        lang,
+        tag: `meeting-${meeting.id}`,
+        unread: await unreadCount(sql, username),
+      });
+      pushed += result.sent;
+    }
+  }
+
+  /**
    * The LINE digest — the only message this app ever pays for.
    *
    * One message per person, addressed to that person's own LINE account,
@@ -335,6 +434,7 @@ async function handler(request) {
     remindersCreated: created.length,
     created,
     eventNotices,
+    meetingNotices,
     pushesSent: pushed,
     line: digest,
     archive,
@@ -465,6 +565,20 @@ async function archiveDocuments(sql) {
  */
 async function sendDigests(sql, today) {
   if (!lineConfigured()) return { skipped: 'not configured' };
+
+  /**
+   * Switched off, 15 October 2026, at Jade's request.
+   *
+   * It was the only message this app ever paid LINE for, and between the
+   * reminders in the bell, the push notifications and the bot answering
+   * "งานของฉัน" on demand, a message pushed at everybody every morning was
+   * one channel too many. The code stays because the decision might not:
+   * setting LINE_DIGEST=on brings it back exactly as it was, and nobody's
+   * saved preference was thrown away in the meantime.
+   */
+  if (String(process.env.LINE_DIGEST || '').toLowerCase() !== 'on') {
+    return { skipped: 'turned off' };
+  }
 
   // Only in the morning, once. The hour is Bangkok time, like everything else.
   const hour = hourInBangkok();

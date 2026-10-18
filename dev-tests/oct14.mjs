@@ -313,6 +313,49 @@ await jade.evaluate(async (ids) => {
   }
 }, [perm, far]);
 
+// ===========================================================================
+console.log('\n11. Meeting notifications');
+await jade.evaluate(() => { location.hash = '#/work'; }); await jade.waitForTimeout(1500);
+await jade.locator('.page-head .btn', { hasText: /นัดประชุม/ }).first().click();
+await jade.waitForTimeout(900);
+const remindRow = jade.locator('.veil .field', { hasText: 'เตือนก่อนประชุม' }).first();
+ok('the meeting form asks which reminders to send',
+  (await remindRow.locator('input[type=checkbox]').count()) === 3,
+  String(await remindRow.locator('input[type=checkbox]').count()));
+const ticked = await remindRow.locator('input[type=checkbox]').evaluateAll((els) => els.map((e) => e.checked));
+ok('...with a day before and an hour before on by default',
+  ticked.join() === 'false,true,true', ticked.join());
+ok('...and says plainly that invitations and changes always go',
+  /ทันทีที่ถูกเชิญ/.test(await remindRow.innerText()));
+await jade.keyboard.press('Escape'); await jade.waitForTimeout(500);
+
+const invited = await outsider.evaluate(async () =>
+  ((await (await fetch('/api/notifications')).json()).notifications || [])
+    .filter((n) => n.kind === 'meeting').length);
+await jade.evaluate(async (on) => {
+  await fetch('/api/events?do=meeting', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'O14: ประชุมแจ้งเตือน', meetsOn: on, meetsAt: '15:00',
+      place: 'ห้องทดสอบ', people: ['Ploy_StaffCon'] }),
+  });
+}, iso(2));
+const afterInvite = await outsider.evaluate(async () =>
+  ((await (await fetch('/api/notifications')).json()).notifications || [])
+    .filter((n) => n.kind === 'meeting'));
+ok('being invited puts a notice in the bell', afterInvite.length === invited + 1,
+  (afterInvite[0] || {}).title || '(none)');
+ok('...that says when and where', /O14/.test((afterInvite[0] || {}).title || '') &&
+  /ห้องทดสอบ/.test((afterInvite[0] || {}).body || ''), (afterInvite[0] || {}).body || '');
+
+await jade.evaluate(async () => {
+  const d = await (await fetch('/api/events?do=meetings')).json();
+  for (const m of (d.meetings || [])) {
+    if (/^O14: ประชุมแจ้งเตือน/.test(m.title)) {
+      await fetch('/api/events?do=meeting&id=' + encodeURIComponent(m.id), { method: 'DELETE' });
+    }
+  }
+});
+
 await jade.evaluate(async (ids) => {
   for (const id of ids) {
     if (id) await fetch('/api/events?do=meeting&id=' + encodeURIComponent(id), { method: 'DELETE' });

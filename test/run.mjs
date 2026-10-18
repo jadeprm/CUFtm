@@ -8,6 +8,13 @@
 
 process.env.DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:pw@127.0.0.1:5432/fairv2';
+/**
+ * Only when the database is a local one. Against a real Neon URL this import
+ * is skipped and the driver talks to Neon exactly as production does.
+ */
+if (/127\.0\.0\.1|localhost/.test(process.env.DATABASE_URL)) {
+  await import('../neon-local.mjs').catch(() => import('../dev-tests/neon-local.mjs'));
+}
 
 // ---- stub the Google Sheet so tests never depend on the network ------------
 const SHEET_CSV = `ลำดับ,ชื่อเล่น,Username,Display Name,ตำแหน่ง,Access,Department
@@ -2127,6 +2134,22 @@ ok('they cannot file a task into a department they have no access to',
 
 head('33. LINE: the daily digest is personal, not a broadcast');
 
+/**
+ * The digest is switched off for the whole committee (15 October 2026) — the
+ * first check here is that it really sends nothing. The rest of the section
+ * turns it back on the way production would, with LINE_DIGEST=on, because the
+ * decision might be reversed and the machinery under it should not rot.
+ */
+await sql`DELETE FROM line_digests_sent`;
+await sql`UPDATE line_links SET digest = true`;
+delete process.env.LINE_DIGEST;
+lineSent.length = 0;
+await call(cronApi, '/api/cron');
+ok('with the morning digest switched off, nothing is sent at all',
+  lineSent.filter((m) => m.kind === 'push').length === 0,
+  JSON.stringify(lineSent.map((m) => m.kind)));
+process.env.LINE_DIGEST = 'on';
+
 // Give the two linked people something each.
 await sql`DELETE FROM line_digests_sent`;
 r = await call(tasksApi, '/api/tasks', {
@@ -2168,7 +2191,7 @@ ok('a second run the same day sends nothing',
 await sql`DELETE FROM line_digests_sent`;
 await lineApi(lineHook(sayToBot('Umember', 'ปิดแจ้งเตือน')));
 ok('a person can switch their own digest off from the chat',
-  lastReply().includes('ปิดสรุปงานประจำวัน'), lastReply().slice(0, 40));
+  lastReply().includes('ปิดสรุปงานรายเช้า'), lastReply().slice(0, 40));
 lineSent.length = 0;
 await call(cronApi, '/api/cron');
 const afterOff = lineSent.filter((m) => m.kind === 'push');
@@ -2208,6 +2231,9 @@ await call(cronApi, '/api/cron');
 lineFails = null;
 const stillLinked = await sql`SELECT line_user_id FROM line_links WHERE line_user_id = 'Uadmin'`;
 ok('a blocked account is unlinked instead of retried forever', stillLinked.length === 0);
+
+// Back to how production runs: the digest off, and the chat still answering.
+delete process.env.LINE_DIGEST;
 
 head('34. LINE: unlinking, from either side');
 
@@ -2468,7 +2494,9 @@ const escapedLabels = lineSent.filter((m) => (m.labels || []).some((l) => l.incl
 ok('no button label does either', escapedLabels.length === 0,
   escapedLabels.length ? JSON.stringify(escapedLabels[0].labels) : '');
 
-// And the digest, which is built somewhere else entirely.
+// And the digest, which is built somewhere else entirely. It is switched off
+// in production (see sendDigests), so these turn it back on to check it.
+process.env.LINE_DIGEST = 'on';
 await sql`DELETE FROM line_digests_sent`;
 await sql`UPDATE line_links SET digest = true WHERE line_user_id = 'Uwiz'`;
 r = await call(tasksApi, '/api/tasks', {
@@ -2518,11 +2546,13 @@ const linked = r.data.tasks.find((t) => t.title === 'งานที่มีล
 ok('...at the right id', saved.includes(`/#/t/${linked.id}`), linked?.id);
 
 // And the digest carries one too.
+process.env.LINE_DIGEST = 'on';
 await sql`DELETE FROM line_digests_sent`;
 lineSent.length = 0;
 await call(cronApi, '/api/cron');
 const dg = lineSent.find((m) => m.kind === 'push')?.text || '';
 ok('the daily digest links to the website', dg.includes(`${SITE}/#/work`), dg.split('\n').slice(-3)[0]);
+delete process.env.LINE_DIGEST;
 
 /**
  * With no domain configured a link cannot be built, and the bot must simply
@@ -2554,7 +2584,55 @@ async function makePdf(pages = 2) {
   for (let i = 0; i < pages; i++) d.addPage([595.28, 841.89]);
   return Buffer.from(await d.save()).toString('base64');
 }
-const sigPng = (await import('node:fs')).readFileSync('/tmp/sig.png').toString('base64');
+/**
+ * A signature, drawn here rather than read from a file.
+ *
+ * It used to be `readFileSync('/tmp/sig.png')`, left over from the day the
+ * feature was written — and /tmp is scratch, so the suite stopped running
+ * the moment that file was swept up. Anything the tests need, the tests make.
+ */
+const sigPng = await (async () => {
+  const zlib = await import('node:zlib');
+  const W = 420;
+  const H = 120;
+  const rows = [];
+  for (let y = 0; y < H; y++) {
+    const row = Buffer.alloc(W * 3 + 1, 0xff);
+    row[0] = 0;                                   // filter: none
+    // A stroke across the middle, so the image has ink in it.
+    const ink = Math.round(H / 2 + Math.sin(y) * 0);
+    if (Math.abs(y - ink) < 10) row.fill(0x11, 1 + 3 * 20, 1 + 3 * (W - 20));
+    rows.push(row);
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crcTable = [];
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+    let crc = 0xffffffff;
+    for (const byte of body) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    const crcBuf = Buffer.alloc(4);
+    crcBuf.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([len, body, crcBuf]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(W, 0);
+  ihdr.writeUInt32BE(H, 4);
+  ihdr[8] = 8;        // bit depth
+  ihdr[9] = 2;        // colour type: truecolour
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(Buffer.concat(rows))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  return png.toString('base64');
+})();
 
 /**
  * Full names, given once.
@@ -2634,11 +2712,22 @@ r = await call(docsApi, '/api/documents?do=create', {
 ok('a complete submission is accepted', r.status === 201 && r.data.id, JSON.stringify(r.data).slice(0, 80));
 const docId = r.data.id;
 
-head('43. Documents: nobody signs out of turn');
+head('43. Documents: who may press, and in what order');
 
+/**
+ * Since 18 October anybody named in a letter's OWN chain may deal with the
+ * step it is waiting on — a letter stuck on one person who is in an exam
+ * helps nobody. The order of the chain is unchanged: it still advances one
+ * step at a time, and the step records who really pressed.
+ */
 r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'content' });
 ok('it is waiting on the first approver', r.data.progress.length >= 3, JSON.stringify(r.data.progress.map(p => p.key)));
-ok('...and the uploader cannot act on it themselves', r.data.myTurn === false);
+ok('...and the writer, being in its chain, may deal with it', r.data.myTurn === true);
+
+// Somebody with no part in this letter still has none.
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'merch', body: { id: docId } });
+ok('somebody outside the chain still cannot',
+  r.status === 403 && r.data.error === 'NOT_YOUR_TURN', JSON.stringify(r.data));
 
 // The secretary is last in the chain and cannot jump ahead.
 r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: docId } });
@@ -2656,7 +2745,9 @@ r = await call(docsApi, '/api/documents?do=signature', {
 ok('a signature that is not a PNG is refused', r.data.error === 'NOT_A_PNG', JSON.stringify(r.data));
 
 r = await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: 'admin', body: { png: sigPng } });
-ok('a real PNG signature is saved', r.status === 200 && r.data.width === 200, JSON.stringify(r.data));
+// The size is read out of the PNG itself, so it follows the fixture above.
+ok('a real PNG signature is saved',
+  r.status === 200 && r.data.width === 420 && r.data.height === 120, JSON.stringify(r.data));
 
 head('44. Documents: signing stamps the PDF');
 
@@ -6452,8 +6543,11 @@ ok('when nobody is free together, the least-bad times come back marked', r.data.
 
 r = await sched(`/api/calendar?do=appt&id=${guestBooking.id}`, { method: 'DELETE', as: 'member' });
 ok('cancelling a booking cancels it for both people', r.data.removed.length === 2);
-const cancelBell = await sql`SELECT title FROM notifications WHERE username = 'Kungking_HeadCon' AND title LIKE 'ยกเลิก%'`;
-ok('...and tells the host', cancelBell.length === 1);
+// Specifically the booking's own notice: cancelling a MEETING also writes a
+// row that starts with ยกเลิก, and this is not about those.
+const cancelBell = await sql`SELECT title FROM notifications
+  WHERE username = 'Kungking_HeadCon' AND title LIKE 'ยกเลิกนัดหมาย%'`;
+ok('...and tells the host', cancelBell.length === 1, String(cancelBell.length));
 r = await sched(`/api/calendar?do=appt&id=nope`, { method: 'DELETE', as: 'member' });
 ok('somebody else’s appointment cannot be cancelled', r.status === 404);
 
@@ -6701,6 +6795,289 @@ ok('a unit editor still sees only their own', !(await seenByEditor('unitlead')))
 ok('...and so does a member', !(await seenByEditor('member')));
 
 await sql`DELETE FROM tasks WHERE id = ${faraway.id}`;
+
+// ===========================================================================
+head('86. Meetings tell the people who are in them');
+
+const bellFor = async (who, like) => sql`
+  SELECT title, body FROM notifications
+  WHERE username = ${who} AND kind = 'meeting' AND title LIKE ${like}
+  ORDER BY created_at DESC`;
+
+await sql`DELETE FROM notifications WHERE kind = 'meeting'`;
+await sql`DELETE FROM reminders_sent WHERE task_id LIKE 'mt_%'`;
+
+const tomorrowIso = (() => {
+  const d = new Date(`${todayIsoForTest()}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+})();
+
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ประชุมแจ้งเตือน', meetsOn: tomorrowIso, meetsAt: '18:30', endsAt: '20:00',
+          place: 'ห้องประชุม 3', people: ['Kungking_HeadCon', 'Kluayhom_HeadMerchant'] },
+});
+const notified = r.data.id;
+ok('a meeting is created', r.status === 201 || r.status === 200, JSON.stringify(r.data).slice(0, 70));
+
+let mtgBell = await bellFor('Kungking_HeadCon', 'เชิญประชุม%');
+ok('everybody invited is told, when they are invited', mtgBell.length === 1, JSON.stringify(mtgBell[0] || {}));
+ok('...with the day, the time and the place in it',
+  mtgBell[0] && mtgBell[0].body.includes(tomorrowIso) && mtgBell[0].body.includes('18:30') && mtgBell[0].body.includes('ห้องประชุม 3'),
+  mtgBell[0] && mtgBell[0].body);
+ok('...and the person who called it is not told about their own meeting',
+  (await bellFor('Jade_Pres', 'เชิญประชุม%')).length === 0);
+
+// Moving it.
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin', body: { id: notified, meetsAt: '19:00', place: 'ห้องประชุม 5' },
+});
+mtgBell = await bellFor('Kungking_HeadCon', 'เปลี่ยน%');
+ok('moving the time and the place tells them what moved',
+  mtgBell.length === 1 && mtgBell[0].title.includes('เวลา') && mtgBell[0].title.includes('สถานที่'),
+  mtgBell[0] && mtgBell[0].title);
+ok('...saying what it was and what it is now',
+  mtgBell[0] && mtgBell[0].body.includes('18:30') && mtgBell[0].body.includes('19:00'), mtgBell[0] && mtgBell[0].body);
+
+// A save that changes none of the four facts says nothing.
+await sql`DELETE FROM notifications WHERE kind = 'meeting' AND title LIKE 'เปลี่ยน%'`;
+await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin', body: { id: notified, note: 'เตรียมเอกสารมาด้วย' },
+});
+ok('editing the note buzzes nobody', (await bellFor('Kungking_HeadCon', 'เปลี่ยน%')).length === 0);
+
+// Somebody added later is invited, not told that something moved.
+await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin',
+  body: { id: notified, people: ['Kungking_HeadCon', 'Kluayhom_HeadMerchant', 'Ploy_StaffCon'] },
+});
+ok('somebody added to a meeting is invited to it',
+  (await bellFor('Ploy_StaffCon', 'เชิญประชุม%')).length === 1);
+
+/**
+ * The reminders. The meeting is tomorrow, so the day-before window is the one
+ * that fires — and only once, however many times the cron runs.
+ */
+await sql`DELETE FROM reminders_sent WHERE task_id = ${notified}`;
+// Day-window reminders wait for 07:00 Bangkok; this suite runs at any hour.
+process.env.CRON_QUIET_HOURS = 'off';
+r = await call(cronApi, '/api/cron');
+const reminded = await sql`SELECT username FROM reminders_sent WHERE task_id = ${notified} AND kind = '1d'`;
+const dayBefore = await bellFor('Kungking_HeadCon', 'ประชุมแจ้งเตือน');
+// Four: the three invited and the person who called it, who is also going.
+ok('everybody invited is reminded the day before',
+  reminded.length === 4 && dayBefore.length === 1,
+  `${reminded.length} marked / ${dayBefore.length} bells`);
+ok('...and the notice says when and where',
+  dayBefore[0] && dayBefore[0].body.includes('พรุ่งนี้') && dayBefore[0].body.includes('ห้องประชุม 5'),
+  dayBefore[0] && dayBefore[0].body);
+
+await call(cronApi, '/api/cron');
+ok('...once, however often the cron runs',
+  (await bellFor('Kungking_HeadCon', 'ประชุมแจ้งเตือน')).length === 1);
+
+// Turned off per meeting.
+await sql`DELETE FROM reminders_sent WHERE task_id = ${notified}`;
+await sql`DELETE FROM notifications WHERE kind = 'meeting'`;
+await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin', body: { id: notified, notify: [] },
+});
+await call(cronApi, '/api/cron');
+ok('a meeting with its reminders switched off sends none',
+  (await bellFor('Kungking_HeadCon', 'ประชุมแจ้งเตือน')).length === 0);
+delete process.env.CRON_QUIET_HOURS;
+
+// Cancelling, and deleting.
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'PATCH', as: 'admin', body: { id: notified, status: 'cancelled' },
+});
+mtgBell = await bellFor('Kungking_HeadCon', 'ยกเลิกประชุม%');
+ok('cancelling a meeting tells everybody in it', mtgBell.length === 1, JSON.stringify(mtgBell[0] || {}));
+
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ประชุมที่จะถูกลบ', meetsOn: tomorrowIso, meetsAt: '09:00',
+          people: ['Kungking_HeadCon'] },
+});
+await call(eventsApi, `/api/events?do=meeting&id=${encodeURIComponent(r.data.id)}`,
+  { method: 'DELETE', as: 'admin' });
+ok('...and so does deleting one',
+  (await bellFor('Kungking_HeadCon', 'ยกเลิกประชุม%')).length === 2);
+
+// Somebody who has silenced meetings hears nothing at all.
+await sql`DELETE FROM notifications WHERE kind = 'meeting'`;
+await call(usersApi, '/api/users?do=notify', {
+  method: 'POST', as: 'content', body: { scope: 'meeting', level: 'off' },
+});
+await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: { title: 'ประชุมที่เงียบ', meetsOn: tomorrowIso, meetsAt: '13:00',
+          people: ['Kungking_HeadCon'] },
+});
+ok('somebody who turned meetings off is not told',
+  (await bellFor('Kungking_HeadCon', 'เชิญประชุม%')).length === 0);
+await call(usersApi, '/api/users?do=notify', {
+  method: 'POST', as: 'content', body: { scope: 'meeting', level: null },
+});
+
+// ===========================================================================
+head('87. Documents: standing in, signing for somebody, and a big Word file');
+
+/**
+ * A letter anybody in its chain can deal with, and a signature its owner has
+ * lent to somebody else. Both were asked for on 18 October: a letter waiting
+ * on one person who is unreachable is a letter that does not go out.
+ */
+const standChain = (await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps;
+const standSteps = standChain.map((x) => ({
+  role: x.role, username: x.username,
+  mark: x.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+}));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือทดสอบการกดแทน',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: standSteps },
+});
+const standId = r.data.id;
+ok('a letter to stand in on', r.status === 201 && Boolean(standId), JSON.stringify(r.data).slice(0, 70));
+
+const standState = await call(docsApi, `/api/documents?id=${standId}`, { as: 'admin' });
+const waitingOn = standState.data.progress.find((p) => p.state === 'waiting' && p.username);
+ok('...waiting on somebody', Boolean(waitingOn), JSON.stringify(waitingOn || {}));
+
+/**
+ * Somebody who is in this chain but whose step it is not. They may press,
+ * and what goes on the page is THEIR signature — the letter should show who
+ * actually approved it.
+ */
+const WHO = {
+  Jade_Pres: 'admin', Kaew_VP: 'coadmin', Kungking_HeadCon: 'content',
+  Kluayhom_HeadMerchant: 'merch', Ikkew_HeadOper1: 'oper', Totti_HeadOp: 'opall',
+  Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin',
+};
+const standName = standState.data.progress
+  .map((p) => p.username)
+  .find((u) => u && u !== waitingOn.username && WHO[u]);
+const standBy = WHO[standName];
+ok('...with somebody else from the same chain to hand',
+  Boolean(standBy), `${standName || '-'} for ${waitingOn.username}`);
+await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: standBy, body: { png: sigPng } });
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: standBy, body: { id: standId, comment: 'กดแทนเพราะเจ้าตัวติดสอบ' },
+});
+ok('somebody else in the chain can approve the step',
+  r.status === 200, JSON.stringify(r.data).slice(0, 80));
+
+const afterStand = await call(docsApi, `/api/documents?id=${standId}`, { as: 'admin' });
+const doneStep = afterStand.data.progress.find((p) => p.state === 'approved' && p.actedBy);
+ok('...and the history says who really pressed',
+  Boolean(doneStep && doneStep.actedBy === standName), JSON.stringify(doneStep || {}));
+ok('...with their own signature on the page, not the absent person\u2019s',
+  doneStep && (doneStep.signedBy === standName || doneStep.signs === false),
+  JSON.stringify({ signedBy: doneStep && doneStep.signedBy }));
+
+// ---- a signature lent in advance ----------------------------------------
+r = await call(docsApi, '/api/documents?do=delegates', {
+  method: 'POST', as: 'content', body: { delegates: ['Kaew_VP'] },
+});
+ok('a signature can be lent to somebody, once, for everything',
+  r.status === 200 && r.data.delegates.some((d) => d.username === 'Kaew_VP'),
+  JSON.stringify(r.data.delegates));
+r = await call(docsApi, '/api/documents?do=delegates', { as: 'coadmin' });
+ok('...and they are told they may sign for them',
+  r.data.actingFor.some((d) => d.username === 'Kungking_HeadCon'), JSON.stringify(r.data.actingFor));
+r = await call(docsApi, '/api/documents?do=delegates', {
+  method: 'POST', as: 'content', body: { delegates: ['Nobody_At_All'] },
+});
+ok('...but only to somebody who exists', r.status === 400, JSON.stringify(r.data));
+/**
+ * And what the lending is FOR: when the delegate presses, the owner's own
+ * signature is what goes on the page — that is the difference between
+ * standing in (your name, your signature) and signing for somebody.
+ */
+await call(docsApi, '/api/documents?do=delegates', {
+  method: 'POST', as: 'admin', body: { delegates: ['Kungking_HeadCon'] },
+});
+const lentDoc = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือเซ็นแทนด้วยลายเซ็นเจ้าของ',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: standSteps },
+});
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: 'content', body: { id: lentDoc.data.id, comment: 'เซ็นแทนตามที่มอบอำนาจ' },
+});
+ok('a delegate signing uses the owner\u2019s signature', r.status === 200, JSON.stringify(r.data).slice(0, 70));
+const lentStep = (await call(docsApi, `/api/documents?id=${lentDoc.data.id}`, { as: 'admin' }))
+  .data.progress.find((p) => p.state === 'approved' && p.actedBy === 'Kungking_HeadCon');
+ok('...recorded as pressed by them, signed as the owner',
+  Boolean(lentStep) && lentStep.signedBy === 'Jade_Pres', JSON.stringify(lentStep || {}));
+await call(docsApi, '/api/documents?do=delegates', { method: 'POST', as: 'admin', body: { delegates: [] } });
+await sql`DELETE FROM documents WHERE id = ${lentDoc.data.id}`;
+
+await call(docsApi, '/api/documents?do=delegates', { method: 'POST', as: 'content', body: { delegates: [] } });
+r = await call(docsApi, '/api/documents?do=delegates', { as: 'content' });
+ok('...and it can be taken back', r.data.delegates.length === 0, JSON.stringify(r.data.delegates));
+
+// ---- the Word file, five megabytes, in pieces ---------------------------
+const bigDoc = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือพร้อมไฟล์ใหญ่',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(1),
+          department: 'content', steps: standSteps },
+});
+const bigId = bigDoc.data.id;
+const partBytes = 1_400_000;
+const whole = Buffer.alloc(4_400_000, 7);
+const pieces = Math.ceil(whole.length / partBytes);
+for (let i = 0; i < pieces; i += 1) {
+  r = await call(docsApi, '/api/documents?do=source-part', {
+    method: 'POST', as: 'content',
+    body: {
+      id: bigId, name: 'ใหญ่มาก.docx', part: i, parts: pieces,
+      data: whole.subarray(i * partBytes, (i + 1) * partBytes).toString('base64'),
+    },
+  });
+  if (r.status !== 200) break;
+}
+ok('a Word file bigger than one request goes up in pieces',
+  r.status === 200 && r.data.done === true && r.data.source.size === whole.length,
+  JSON.stringify(r.data).slice(0, 90));
+
+const bigFiles = (await call(docsApi, `/api/documents?id=${bigId}`, { as: 'content' })).data.files;
+ok('...and lands as one file of the right size',
+  bigFiles.some((f) => f.kind === 'source' && f.size === whole.length),
+  JSON.stringify(bigFiles.map((f) => [f.kind, f.size])));
+ok('...with no half-uploaded leftovers beside it',
+  !bigFiles.some((f) => f.kind === 'source-part'), JSON.stringify(bigFiles.map((f) => f.kind)));
+
+const back = await docsApi(makeRequest(`/api/documents?id=${bigId}&file=source`, { as: 'content' }));
+const backBytes = Buffer.from(await back.arrayBuffer());
+ok('...and downloads back byte for byte', backBytes.length === whole.length && backBytes.equals(whole),
+  `${backBytes.length} of ${whole.length}`);
+
+// Over the ceiling, the upload is refused rather than half-kept.
+r = await call(docsApi, '/api/documents?do=source-part', {
+  method: 'POST', as: 'content',
+  body: { id: bigId, name: 'ยักษ์.docx', part: 0, parts: 5, data: Buffer.alloc(1_400_000, 1).toString('base64') },
+});
+for (let i = 1; i < 5 && r.status === 200; i += 1) {
+  r = await call(docsApi, '/api/documents?do=source-part', {
+    method: 'POST', as: 'content',
+    body: { id: bigId, name: 'ยักษ์.docx', part: i, parts: 5, data: Buffer.alloc(1_400_000, 1).toString('base64') },
+  });
+}
+ok('a file over five megabytes is refused part way, not stored',
+  r.status === 400 && r.data.error === 'SOURCE_TOO_BIG', JSON.stringify(r.data));
+const afterTooBig = (await call(docsApi, `/api/documents?id=${bigId}`, { as: 'content' })).data.files;
+ok('...and the file that was already there is untouched',
+  afterTooBig.some((f) => f.kind === 'source' && f.size === whole.length),
+  JSON.stringify(afterTooBig.map((f) => [f.kind, f.size])));
+
+await sql`DELETE FROM documents WHERE id IN (${standId}, ${bigId})`;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

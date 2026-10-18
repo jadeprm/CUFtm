@@ -498,13 +498,19 @@ async function run(sql, me, lineUserId, body) {
     case 'setStatus': return setStatus(sql, me, lineUserId, command, today);
     case 'delete':    return removeTask(sql, me, lineUserId, command.rest);
 
+    /**
+     * The morning digest was switched off for everybody (sendDigests in
+     * api/cron.js). The preference is still written down, so that turning the
+     * feature back on would restore each person's own answer rather than
+     * opting the whole committee in — but the reply says plainly that nothing
+     * is being sent, instead of promising a message that will not come.
+     */
     case 'digestOn':
     case 'digestOff': {
       const on = command.name === 'digestOn';
       await sql`UPDATE line_links SET digest = ${on} WHERE line_user_id = ${lineUserId}`;
-      return text(on
-        ? 'เปิดสรุปงานประจำวันแล้วค่ะ จะส่งให้ทุกเช้าเมื่อมีงานที่ต้องทำ'
-        : 'ปิดสรุปงานประจำวันแล้วค่ะ ยังพิมพ์ถามได้ตลอดเวลา', MENU);
+      return text('ตอนนี้ปิดสรุปงานรายเช้าทั้งระบบแล้วค่ะ ไม่มีการส่งอัตโนมัติ\n' +
+        'พิมพ์ "งานของฉัน" เมื่อไหร่ก็ได้ เพื่อดูงานที่ต้องทำ', MENU);
     }
 
     case 'unlink':

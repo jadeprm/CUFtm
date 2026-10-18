@@ -1112,3 +1112,15 @@ input[type=range].sig-size { flex: 1; max-width: 320px; accent-color: var(--acce
   .user-filters select { flex: 1 1 8rem; min-width: 0; }
   .user-count { margin-left: 0; width: 100%; }
 }
+
+/* Who dealt with a document step, when it was not the person named on it. */
+.ds-standin {
+  display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  font-size: 12.5px; color: var(--ink-faint);
+}
+.ds-standin .avatar { width: 20px; height: 20px; font-size: 9px; }
+
+/* Signing on somebody's behalf, arranged on the profile. */
+.deleg-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.deleg-box .selected { margin: 6px 0 8px; }
+.deleg-box select { max-width: 22rem; }
