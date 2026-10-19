@@ -12,7 +12,7 @@ import { chromium } from 'playwright';
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:pw@127.0.0.1:5432/fairv2';
 // The Neon driver, pointed at the Postgres on this machine.
 if (/127\.0\.0\.1|localhost/.test(process.env.DATABASE_URL)) await import('./neon-local.mjs');
-const { getSql } = await import('./lib/db.js');
+const { getSql } = await import('../lib/db.js');
 const { sql, ready } = getSql();
 await ready;
 
@@ -75,6 +75,8 @@ console.log('\nThe strings');
   const ctx = await b.newContext(DESK);
   const pg = await ctx.newPage();
   await pg.goto(ORIGIN + '/', { waitUntil: 'networkidle' });
+  // English is its own file since 2026-10-19c, fetched only for English users; load it to compare.
+  await pg.addScriptTag({ url: ORIGIN + '/i18n-en.js' });
   const missing = await pg.evaluate(() => {
     const th = Object.keys(window.STRINGS.th).filter((k) => k.startsWith('guide'));
     const en = Object.keys(window.STRINGS.en).filter((k) => k.startsWith('guide'));

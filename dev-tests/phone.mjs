@@ -220,7 +220,15 @@ if (await pg.locator('.up-row.meeting').count()) {
   const agendaBox = await pg.locator('.veil .modal').first().boundingBox();
   ok('...and a meeting opens without pushing the page sideways', !(await sideways()));
   ok('...using the width of the screen', agendaBox.width > 360, `${Math.round(agendaBox.width)}px`);
-  const rsvpBtn = await pg.locator('.veil .rsvp button').first().boundingBox();
+  /**
+   * There may be no buttons at all: a meeting that has already started no
+   * longer takes replies (18 October). Asking for the box of a locator that
+   * matches nothing waits thirty seconds and then throws, which is how an
+   * ordinary afternoon run of this suite started dying.
+   */
+  const rsvpBtn = (await pg.locator('.veil .rsvp button').count())
+    ? await pg.locator('.veil .rsvp button').first().boundingBox()
+    : null;
   ok('...with reply buttons big enough for a thumb',
     !rsvpBtn || rsvpBtn.height >= 30, rsvpBtn ? `${Math.round(rsvpBtn.height)}px` : 'none shown');
   await pg.screenshot({ path: 'm7-meeting.png' });

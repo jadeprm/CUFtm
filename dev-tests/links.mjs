@@ -150,7 +150,9 @@ ok('...and sitting in the middle of it, not high or low',
  * killed — all the checks passing, no summary, and the fixture left behind
  * for the next run to trip over. The decoder goes to the pixels instead.
  */
-await pg.addScriptTag({ path: 'node_modules/jsqr/dist/jsQR.js' });
+// Resolved against the repository, not the shell: this suite lives in
+// dev-tests/ but the package is installed at the root.
+await pg.addScriptTag({ path: new URL('../node_modules/jsqr/dist/jsQR.js', import.meta.url).pathname });
 const sheetText = await pg.evaluate(async (bytes) => {
   const img = new Image();
   img.src = 'data:image/png;base64,' + bytes;

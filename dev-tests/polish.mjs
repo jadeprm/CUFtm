@@ -89,6 +89,20 @@ ok('scrolled to the end, the last row sits above the + button', fab && last && l
   JSON.stringify({ rowBottom: last && Math.round(last.y + last.height), fabTop: fab && Math.round(fab.y) }));
 
 console.log('\n4. A first day');
+/**
+ * Somebody genuinely empty-handed, made so here rather than assumed.
+ *
+ * This section needs a person with no work at all, and Fah is only that
+ * person until another suite tags her in something (phonesweep does). The
+ * fixture is built instead of hoped for, so the run order stops mattering.
+ */
+await jade.evaluate(async () => {
+  const j = (u) => fetch(u).then((r) => r.json());
+  for (const t of (await j('/api/tasks')).tasks) {
+    const on = (t.named || t.assignees || []).concat(t.viewers || []);
+    if (on.includes('Fah_StaffCon')) await fetch('/api/tasks?id=' + t.id, { method: 'DELETE' });
+  }
+});
 const fah = await as('Fah_StaffCon', 'memberPw22', PHONE, { home: true });
 await go(fah, '#/home', 1600);
 ok('somebody with no tasks sees a "start here" card', await fah.locator('.hc-start').count() === 1);

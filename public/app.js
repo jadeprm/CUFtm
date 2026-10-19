@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-19c';
+  var APP_VERSION = '2026-10-19d';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -2487,9 +2487,10 @@
 
       bodyBox.appendChild(h('div', { class: 'pane' }, [
         notice,
+        // One instruction, not two saying the same thing in different words.
         h('p', { class: 'hint', text: t('docMarkHelp') }),
-        h('p', { class: 'hint', text: t('docMarkAdd') }),
         who,
+        h('p', { class: 'hint', text: t('docMarkAdd') }),
         // Said plainly rather than left as an empty box they cannot explain.
         sigOf(marking.username) ? null : h('div', { class: 'notice warn', text: t('docNoSignatureFor').replace('%s', nameOf(marking.username)) }),
         sizeRow,
@@ -2554,7 +2555,9 @@
           pdf: pdfBase64,
           source: sourceFile && !sourceFile.big ? sourceFile : null,
           steps: chain.map(function (s) {
-            return { role: s.role, username: s.username, marks: s.marks };
+            // `signs` goes with it: a step the sender unticked must not have a
+            // box demanded of it at the far end.
+            return { role: s.role, username: s.username, signs: s.signs !== false, marks: s.marks };
           }),
         },
       }).then(function (data) {
@@ -2583,7 +2586,19 @@
         showNumber(data);
       }).catch(function (err) {
         var code = err.data && err.data.error;
-        fail(code === 'FILE_TOO_BIG' || code === 'SOURCE_TOO_BIG' ? t('docTooBig') : errText(err.code));
+        /**
+         * Say WHOSE box is missing. "At least one spot is needed" sent people
+         * back to a page where everybody visible already had one.
+         */
+        var who = (err.data && err.data.who) || [];
+        fail(code === 'FILE_TOO_BIG' || code === 'SOURCE_TOO_BIG'
+          ? t('docTooBig')
+          : (code === 'MARK_REQUIRED' && who.length
+            ? t('docMarkMissingFor').replace('%s', who.map(function (u) { return nameOf(u); }).join(', '))
+            : errText(err.code)));
+        // Back to whoever is missing one, rather than whoever was last picked.
+        var blame = chain.filter(function (s) { return who.indexOf(s.username) !== -1; })[0];
+        if (blame) { blame.signs = true; marking = blame; }
         drawMarks();
       });
     }

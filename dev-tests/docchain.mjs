@@ -14,7 +14,7 @@ import { quietGuide } from './quiet.mjs';
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:pw@127.0.0.1:5432/fairv2';
 // The Neon driver, pointed at the Postgres on this machine.
 if (/127\.0\.0\.1|localhost/.test(process.env.DATABASE_URL)) await import('./neon-local.mjs');
-const { getSql } = await import('./lib/db.js');
+const { getSql } = await import('../lib/db.js');
 const { sql, ready } = getSql();
 await ready;
 

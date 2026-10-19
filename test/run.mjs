@@ -7395,6 +7395,72 @@ ok('...and said so in the history',
   healed.data.events.map((e) => e.kind).join(','));
 await sql`DELETE FROM documents WHERE id = ${crossId}`;
 
+/**
+ * Unticking "ลงลายเซ็น" on a signing role used to make the letter impossible
+ * to submit (reported 19 October): the form stopped asking for that person's
+ * box, the server went on demanding one, and the dialog answered every press
+ * with "ต้องวางช่องลงนามอย่างน้อยหนึ่งจุด" pointing at nobody.
+ */
+const offChain = ((await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps);
+const signers = offChain.filter((x) => x.signs);
+ok('a chain with more than one signing step to test with', signers.length >= 2,
+  signers.map((x) => x.role).join(', '));
+const offSteps = offChain.map((x) => {
+  const signing = x.signs && x.username === signers[0].username;
+  return {
+    role: x.role, username: x.username, signs: signing,
+    marks: signing ? [{ page: 1, x: 0.6, y: 0.8, w: 0.25, h: 0.07 }] : [],
+  };
+});
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือที่บางคนอนุมัติโดยไม่ลงนาม',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: offSteps },
+});
+const offId = r.data.id;
+ok('a step that was told not to sign needs no box', r.status === 201 && Boolean(offId),
+  JSON.stringify(r.data).slice(0, 80));
+
+const offView = await call(docsApi, `/api/documents?id=${offId}`, { as: 'content' });
+ok('...and is recorded as not signing',
+  offView.data.steps.filter((st) => st.signs === false).length >= 1,
+  JSON.stringify(offView.data.steps.map((st) => [st.role, st.signs])));
+ok('...with no boxes kept for it',
+  offView.data.steps.every((st) => st.signs !== false || !(st.marks || []).length),
+  JSON.stringify(offView.data.steps.map((st) => [st.role, (st.marks || []).length])));
+
+// The guard is still a guard: a step that IS signing must still have a box,
+// and the refusal says whose it is so the form can go back to them.
+const stillSteps = offChain.map((x) => ({
+  role: x.role, username: x.username, signs: x.signs, marks: [],
+}));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือไม่มีช่องลงนามเลย',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: stillSteps },
+});
+ok('a signing step with no box is still refused, and named',
+  r.status === 400 && r.data.error === 'MARK_REQUIRED' && (r.data.who || []).length >= 1,
+  JSON.stringify(r.data));
+
+// Nobody signing at all is a real letter too — approvals without stamps.
+const noneSteps = offChain.map((x) => ({
+  role: x.role, username: x.username, signs: false, marks: [],
+}));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสืออนุมัติอย่างเดียว ไม่มีลายเซ็น',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(1),
+          department: 'content', steps: noneSteps },
+});
+ok('a letter nobody signs goes through, as approvals only', r.status === 201,
+  JSON.stringify(r.data).slice(0, 80));
+await sql`DELETE FROM documents WHERE id IN (${offId}, ${r.data.id || offId})`;
+
+
 head('90. One source for colour, and colours people can read');
 /**
  * The 2026-10-19c pass. Colour tokens used to be declared in three sheets, and
