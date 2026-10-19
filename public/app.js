@@ -87,7 +87,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-18a';
+  var APP_VERSION = '2026-10-19a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -2638,6 +2638,13 @@
        */
       var steps = h('ol', { class: 'doc-steps' }, data.progress.map(function (p) {
         var when = fmtStamp(p.at, { day: 'numeric', month: 'short' });
+        /**
+         * The step behind this row, when there is one — the progress list
+         * carries the two ends as well, and only a real step has boxes.
+         */
+        var real = (data.steps || []).filter(function (st) {
+          return p.key === 'step-' + st.position;
+        })[0];
         return h('li', { class: 'ds ' + p.state }, [
           h('span', { class: 'ds-dot' }),
           h('div', { class: 'ds-main' }, [
@@ -2661,6 +2668,19 @@
             ].filter(Boolean)) : null,
             when ? h('div', { class: 'ds-when', text: when }) : null,
             p.comment ? h('div', { class: 'ds-note', text: '“' + p.comment + '”' }) : null,
+            /**
+             * Putting a signature right without re-running the chain.
+             *
+             * Shown on the signed step itself rather than in a settings
+             * corner, because the complaint is always about one particular
+             * name on the page and that is where the eye already is.
+             */
+            (real && real.mayMove) ? h('button', {
+              type: 'button', class: 'btn ghost sm ds-move', text: t('docMoveSig'),
+              onclick: function () {
+                openMoveSignature(doc, real, function () { load(); });
+              },
+            }) : null,
           ]),
         ]);
       }));
@@ -4254,6 +4274,181 @@
         });
     }
     return box;
+  }
+
+
+  /**
+   * Moving a signature that is already on the letter.
+   *
+   * The same canvas the boxes were placed on in the first place, opened on
+   * one signer at a time and on a letter that is already part-signed. It is
+   * here because the alternative was ตีกลับ: a box two centimetres too low
+   * meant the whole chain had to approve the letter again, which is a lot of
+   * people's afternoon spent on something nobody disagreed about.
+   *
+   * Only the rectangle moves. The approval, its time and its author are
+   * untouched, and the stamped copy is rebuilt from the untouched original —
+   * see canMoveMark and moveMark on the server.
+   */
+  function openMoveSignature(doc, step, onSaved) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var bodyBox = h('div', { class: 'body' });
+    var footer = h('footer', {});
+    var modal = h('div', { class: 'modal wide' }, [
+      h('header', {}, [
+        h('h2', { text: t('docMoveSig') + ' · ' + nameOf(step.username) }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      bodyBox, footer,
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+
+    // Worked on as a copy, so cancelling really does leave the letter alone.
+    var marks = (step.marks || []).map(function (m) {
+      return { page: m.page, x: m.x, y: m.y, w: m.w, h: m.h };
+    });
+    var shown = marks[0] ? marks[0].page : 1;
+    var pages = 1;
+    var bytes = null;
+
+    var canvas = h('canvas', { class: 'pdf-canvas' });
+    var overlay = h('div', { class: 'pdf-overlay' });
+    var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
+    var pager = h('div', { class: 'pdf-pager' });
+    var note = h('p', { class: 'hint', text: t('loading') });
+
+    var sizePct = h('span', { class: 'sig-size-n' });
+    var sizeIn = h('input', {
+      type: 'range', min: '8', max: '45', step: '1', class: 'sig-size',
+      value: String(Math.round((marks[0] ? marks[0].w : 0.26) * 100)),
+    });
+    var sizeRow = h('div', { class: 'sig-size-row' }, [h('label', { text: t('docSigSize') }), sizeIn, sizePct]);
+
+    bodyBox.appendChild(h('div', { class: 'pane' }, [
+      note,
+      h('p', { class: 'hint', text: t('docMarkAdd') }),
+      step.hasSignature ? null : h('div', { class: 'notice warn', text: t('docNoSignatureFor').replace('%s', nameOf(step.username)) }),
+      sizeRow, pager, sheet,
+    ]));
+
+    var pageAspect = function () {
+      return (canvas.width && canvas.height) ? (canvas.width / canvas.height) : 0.707;
+    };
+
+    function paintOverlay() {
+      clear(overlay);
+      marks.forEach(function (m) {
+        if (m.page !== shown) return;
+        overlay.appendChild(h('div', {
+          class: 'sig-box on ' + (step.hasSignature ? 'real' : 'empty'),
+          style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
+                 'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
+        }, [
+          step.hasSignature ? signatureImg(step.username) : null,
+          h('span', { class: 'sig-name', text: nameOf(step.username) }),
+        ]));
+      });
+    }
+
+    function paintSize() {
+      sizePct.textContent = sizeIn.value + '%';
+      sizeIn.disabled = !marks.length;
+    }
+    sizeIn.addEventListener('input', function () {
+      var box = sigBoxSize(step, pageAspect(), Number(sizeIn.value) / 100);
+      marks.forEach(function (m) {
+        // About its own centre, so resizing does not walk it across the page.
+        m.x = Math.max(0, Math.min(1 - box.w, m.x + (m.w - box.w) / 2));
+        m.y = Math.max(0, Math.min(1 - box.h, m.y + (m.h - box.h) / 2));
+        m.w = box.w; m.h = box.h;
+      });
+      paintSize(); paintOverlay();
+    });
+
+    sheet.addEventListener('click', function (e) {
+      var rect = canvas.getBoundingClientRect();
+      if (!rect.width) return;
+      var point = e.touches && e.touches[0] ? e.touches[0] : e;
+      var fx = (point.clientX - rect.left) / rect.width;
+      var fy = (point.clientY - rect.top) / rect.height;
+      var hit = -1;
+      marks.forEach(function (m, i) {
+        if (m.page === shown && fx >= m.x && fx <= m.x + m.w && fy >= m.y && fy <= m.y + m.h) hit = i;
+      });
+      if (hit >= 0) {
+        marks.splice(hit, 1);
+      } else {
+        var size = sigBoxSize(step, pageAspect(), Number(sizeIn.value) / 100);
+        marks.push({
+          page: shown,
+          x: Math.max(0, Math.min(1 - size.w, fx - size.w / 2)),
+          y: Math.max(0, Math.min(1 - size.h, fy - size.h / 2)),
+          w: size.w, h: size.h,
+        });
+      }
+      paintSize(); paintOverlay(); drawFooter();
+    });
+
+    function drawPager() {
+      clear(pager);
+      if (pages < 2) return;
+      pager.appendChild(h('button', { class: 'btn sm', text: '‹', disabled: shown <= 1,
+        onclick: function () { shown -= 1; show(); } }));
+      pager.appendChild(h('span', { text: t('docPage') + ' ' + shown + ' / ' + pages }));
+      pager.appendChild(h('button', { class: 'btn sm', text: '›', disabled: shown >= pages,
+        onclick: function () { shown += 1; show(); } }));
+    }
+
+    function show() {
+      return withPdfJs().then(function (lib) {
+        return renderPdfPage(lib, bytes, shown, canvas, 860);
+      }).then(function (info) {
+        pages = info.pages;
+        note.className = 'hint';
+        note.textContent = t('docMoveSigHint');
+        drawPager(); paintOverlay();
+      });
+    }
+
+    /** The unsigned original: it is the sheet the box is measured against. */
+    fetch('/api/documents?id=' + encodeURIComponent(doc.id) + '&file=original', { credentials: 'same-origin' })
+      .then(function (res) {
+        if (!res.ok) throw new Error(String(res.status));
+        return res.arrayBuffer();
+      })
+      .then(function (buf) { bytes = new Uint8Array(buf); return show(); })
+      .catch(function () {
+        note.className = 'notice err';
+        note.textContent = t('docCheckUnavailable');
+      });
+
+    var saving = false;
+    function drawFooter() {
+      clear(footer);
+      footer.appendChild(h('button', {
+        class: 'btn primary', text: t('save'), disabled: !marks.length || saving,
+        onclick: function () {
+          saving = true; drawFooter();
+          api('/api/documents?do=move-mark', {
+            method: 'POST',
+            body: { id: doc.id, stepId: step.id, marks: marks },
+          }).then(function () {
+            veil.remove();
+            if (onSaved) onSaved();
+          }).catch(function (err) {
+            saving = false; drawFooter();
+            alert(errText(err.code));
+          });
+        },
+      }));
+      footer.appendChild(h('button', {
+        class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); },
+      }));
+      if (!marks.length) footer.appendChild(h('span', { class: 'hint', text: t('docMoveSigNeedOne') }));
+    }
+    paintSize();
+    drawFooter();
   }
 
   function patchTask(id, changes) {

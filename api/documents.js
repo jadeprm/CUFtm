@@ -13,6 +13,7 @@ import {
   progressOf, progressFraction, signsPdf, isSecretary, ROLE_TH,
   isHeadSecretary, canManageSecretaries, canDeleteDocument, pickSecretary,
   canSend, canBounce, isSendingRole, APPROVAL_ROLES, candidatesFor,
+  canMoveMark,
 } from '../lib/approval.js';
 import {
   stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
@@ -31,6 +32,7 @@ import { flex, listBubble } from '../lib/lineflex.js';
  *   POST /api/documents?do=create    upload, with the signature boxes marked
  *   POST /api/documents?do=approve   sign it, and stamp it if the role signs
  *   POST /api/documents?do=reject    send it back with a reason
+ *   POST /api/documents?do=move-mark move a signature that is already stamped
  *   POST /api/documents?do=replace   put a corrected file in, keeping the chain
  *   POST /api/documents?do=send      the secretary marks it sent
  *   POST /api/documents?do=signature save my own signature
@@ -168,6 +170,7 @@ async function handler(request) {
     case 'create':    return createDocument(sql, me, body);
     case 'approve':   return approve(sql, me, body);
     case 'reject':    return reject(sql, me, body);
+    case 'move-mark': return moveMark(sql, me, body);
     case 'replace':   return replaceFile(sql, me, body);
     case 'source':    return putSourceFile(sql, me, body);
     // A Word file too big for one request — see putSourcePart.
@@ -321,6 +324,9 @@ async function oneDocument(sql, me, id) {
         ...shaped,
         marks: own.length ? own : (shaped.mark ? [shaped.mark] : []),
         hasSignature: Boolean(sig && sig.width && sig.height),
+        // Whether this person may still move where this signature is drawn,
+        // now that it is on the page — see canMoveMark.
+        mayMove: canMoveMark(me, doc, st) && Boolean(own.length || shaped.mark),
         sigW: Number(sig?.width) || 0,
         sigH: Number(sig?.height) || 0,
       };
@@ -1086,6 +1092,96 @@ async function issueNumber(sql, doc, status = REGISTER_STATUS.secretary) {
     await note(sql, doc.id, 'number_failed', null, result.reason || 'unknown');
   }
   return result;
+}
+
+/**
+ * Moves a signature that has already been stamped onto the letter.
+ *
+ * Nothing about the approval is touched — not its state, not its time, not
+ * who gave it. Only the rectangle the signature is drawn into changes, and
+ * the signed copy is rebuilt from the untouched original, so the letter ends
+ * up exactly as it would have if the box had been in the right place from the
+ * start. See canMoveMark for who is allowed to do this and when.
+ */
+async function moveMark(sql, me, body) {
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+
+  const stepId = clean(body.stepId, 64);
+  const step = steps.find((s) => s.id === stepId);
+  if (!step) return json({ error: 'NO_SUCH_STEP' }, 404);
+  if (!canMoveMark(me, doc, step)) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  const [orig] = await sql`
+    SELECT pages FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'original'`;
+  if (!orig) return json({ error: 'NO_ORIGINAL' }, 410);
+  const pages = Math.max(1, Math.round(Number(orig.pages) || 1));
+
+  /**
+   * The boxes as they now are, clamped onto the page.
+   *
+   * A box is a fraction of the sheet, so anything outside 0…1 would be drawn
+   * off the paper. The interface already keeps them inside; this is the
+   * server refusing to store what it could not stamp.
+   */
+  const span = (v, lo, hi) => Math.min(hi, Math.max(lo, Number(v)));
+  const marks = (Array.isArray(body.marks) ? body.marks : [])
+    .filter((m) => m && Number.isFinite(Number(m.x)) && Number.isFinite(Number(m.y)) &&
+      Number.isFinite(Number(m.w)) && Number.isFinite(Number(m.h)))
+    .slice(0, 20)
+    .map((m) => {
+      const w = span(m.w, 0.01, 1);
+      const h = span(m.h, 0.01, 1);
+      return {
+        page: Math.max(1, Math.round(Number(m.page) || 1)),
+        x: span(m.x, 0, 1 - w), y: span(m.y, 0, 1 - h), w, h,
+      };
+    });
+
+  if (!marks.length) return json({ error: 'MARK_REQUIRED' }, 400);
+  if (marks.some((m) => m.page > pages)) return json({ error: 'MARK_OFF_PAGE', pages }, 400);
+
+  await sql`DELETE FROM doc_boxes WHERE step_id = ${step.id}`;
+  for (const m of marks) {
+    await sql`
+      INSERT INTO doc_boxes (id, step_id, page, x, y, w, h)
+      VALUES (${newId('box')}, ${step.id}, ${m.page}, ${m.x}, ${m.y}, ${m.w}, ${m.h})`;
+  }
+  // The inline copy of the first box, kept in step with the table for the
+  // sake of anything still reading the older shape.
+  const first = marks[0];
+  await sql`
+    UPDATE doc_steps SET page = ${first.page}, x = ${first.x}, y = ${first.y},
+                         w = ${first.w}, h = ${first.h}
+    WHERE id = ${step.id}`;
+
+  const after = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
+  const stamped = await rebuildSigned(sql, doc.id, after);
+  await sql`UPDATE documents SET updated_at = now() WHERE id = ${doc.id}`;
+
+  const owner = step.signed_by || step.username;
+  await note(sql, doc.id, 'mark_moved', me.username,
+    owner === me.username ? '' : `ลายเซ็นของ ${owner}`);
+
+  /**
+   * The owner of the signature is told when somebody else moves it.
+   *
+   * It is their name on the page; being able to fix a box without re-running
+   * the chain should not mean it can be fixed behind their back.
+   */
+  if (owner !== me.username) {
+    await tellPeople(sql, {
+      usernames: [owner],
+      actor: me.username,
+      docId: doc.id,
+      priority: 'low',
+      title: `ย้ายตำแหน่งลายเซ็น: ${doc.title}`,
+      body: `${me.display_name || me.username} ย้ายตำแหน่งลายเซ็นของคุณบนเอกสารนี้`,
+    });
+  }
+
+  return json({ ok: true, marks, signaturesPlaced: stamped.placed.length });
 }
 
 /**

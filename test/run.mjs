@@ -7079,5 +7079,134 @@ ok('...and the file that was already there is untouched',
 
 await sql`DELETE FROM documents WHERE id IN (${standId}, ${bigId})`;
 
+
+head('88. Documents: moving a signature after it has gone on');
+
+/**
+ * Asked for on 19 October. A box placed too low is only obvious once the
+ * letter is stamped, and until now the only way out was to ตีกลับ — the whole
+ * chain approving again a letter whose words nobody disputed.
+ */
+const moveSteps = ((await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps)
+  .map((x) => ({
+    role: x.role, username: x.username,
+    mark: x.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.25, h: 0.07 } : null,
+  }));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือทดสอบย้ายลายเซ็น',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: moveSteps },
+});
+const moveId = r.data.id;
+ok('a letter whose signature will need moving', r.status === 201 && Boolean(moveId),
+  JSON.stringify(r.data).slice(0, 70));
+
+// Whoever it is sitting with signs it, so there is a stamped signature to move.
+let mvState = await call(docsApi, `/api/documents?id=${moveId}`, { as: 'admin' });
+const mvWaiting = mvState.data.steps.find((s) => s.state === 'waiting');
+const mvSigner = WHO[mvWaiting.username];
+await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: mvSigner, body: { png: sigPng } });
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: mvSigner, body: { id: moveId },
+});
+ok('...and it is signed', r.status === 200, JSON.stringify(r.data).slice(0, 70));
+
+mvState = await call(docsApi, `/api/documents?id=${moveId}`, { as: mvSigner });
+const moveStep = mvState.data.steps.find((s) => s.id === mvWaiting.id);
+ok('the person who signed may move their own signature',
+  moveStep.mayMove === true, JSON.stringify({ state: moveStep.state, mayMove: moveStep.mayMove }));
+const writerView = (await call(docsApi, `/api/documents?id=${moveId}`, { as: 'content' }))
+  .data.steps.find((s) => s.id === mvWaiting.id);
+ok('...and so may the person who wrote the letter and placed the box',
+  writerView.mayMove === true, JSON.stringify({ mayMove: writerView.mayMove }));
+const mvAdminView = (await call(docsApi, `/api/documents?id=${moveId}`, { as: 'admin' }));
+ok('...a step still waiting has nothing to move',
+  mvState.data.steps.filter((s) => s.state === 'waiting').every((s) => !s.mayMove),
+  JSON.stringify(mvState.data.steps.map((s) => [s.state, s.mayMove])));
+
+// ---- the move itself ----------------------------------------------------
+const signedBefore = (mvState.data.files.find((f) => f.kind === 'signed') || {}).size || 0;
+const actedBefore = moveStep.actedAt;
+r = await call(docsApi, '/api/documents?do=move-mark', {
+  method: 'POST', as: mvSigner,
+  body: { id: moveId, stepId: moveStep.id, marks: [{ page: 2, x: 0.1, y: 0.2, w: 0.3, h: 0.08 }] },
+});
+ok('the signature moves', r.status === 200, JSON.stringify(r.data).slice(0, 90));
+
+const mvMoved = await call(docsApi, `/api/documents?id=${moveId}`, { as: 'content' });
+const mvMovedStep = mvMoved.data.steps.find((s) => s.id === moveStep.id);
+ok('...to exactly where it was put',
+  mvMovedStep.marks.length === 1 && mvMovedStep.marks[0].page === 2 &&
+  Math.abs(mvMovedStep.marks[0].x - 0.1) < 0.001 && Math.abs(mvMovedStep.marks[0].y - 0.2) < 0.001,
+  JSON.stringify(mvMovedStep.marks));
+ok('...without disturbing the approval itself',
+  mvMovedStep.state === 'approved' && mvMovedStep.actedAt === actedBefore,
+  JSON.stringify({ state: mvMovedStep.state, same: mvMovedStep.actedAt === actedBefore }));
+ok('...and the letter is where it was in its chain',
+  mvMoved.data.document.stage === mvAdminView.data.document.stage,
+  `${mvMoved.data.document.stage} / ${mvAdminView.data.document.stage}`);
+ok('...with the stamped copy built again',
+  (mvMoved.data.files.find((f) => f.kind === 'signed') || {}).size > 0 && signedBefore > 0,
+  JSON.stringify(mvMoved.data.files.map((f) => [f.kind, f.size])));
+ok('...and the move written into the history',
+  mvMoved.data.events.some((e) => e.kind === 'mark_moved'),
+  JSON.stringify(mvMoved.data.events.map((e) => e.kind)));
+
+// Several spots at once, because a signer may initial every page.
+r = await call(docsApi, '/api/documents?do=move-mark', {
+  method: 'POST', as: 'content',
+  body: { id: moveId, stepId: moveStep.id, marks: [
+    { page: 1, x: 0.55, y: 0.7, w: 0.28, h: 0.07 },
+    { page: 2, x: 0.55, y: 0.7, w: 0.28, h: 0.07 },
+  ] },
+});
+const mvTwoSpots = (await call(docsApi, `/api/documents?id=${moveId}`, { as: 'content' }))
+  .data.steps.find((s) => s.id === moveStep.id);
+ok('the writer may put it in two places at once',
+  r.status === 200 && mvTwoSpots.marks.length === 2, JSON.stringify(mvTwoSpots.marks));
+
+// ---- what is refused ----------------------------------------------------
+r = await call(docsApi, '/api/documents?do=move-mark', {
+  method: 'POST', as: 'member',
+  body: { id: moveId, stepId: moveStep.id, marks: [{ page: 1, x: 0.1, y: 0.1, w: 0.2, h: 0.06 }] },
+});
+ok('somebody with nothing to do with the letter cannot move it',
+  r.status === 403 || r.status === 404, `${r.status} ${JSON.stringify(r.data)}`);
+r = await call(docsApi, '/api/documents?do=move-mark', {
+  method: 'POST', as: mvSigner,
+  body: { id: moveId, stepId: moveStep.id, marks: [{ page: 9, x: 0.1, y: 0.1, w: 0.2, h: 0.06 }] },
+});
+ok('a spot on a page that does not exist is refused',
+  r.status === 400 && r.data.error === 'MARK_OFF_PAGE', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=move-mark', {
+  method: 'POST', as: mvSigner, body: { id: moveId, stepId: moveStep.id, marks: [] },
+});
+ok('...and taking every spot away is refused too',
+  r.status === 400 && r.data.error === 'MARK_REQUIRED', JSON.stringify(r.data));
+const mvStillThere = (await call(docsApi, `/api/documents?id=${moveId}`, { as: 'content' }))
+  .data.steps.find((s) => s.id === moveStep.id);
+ok('...with the letter left exactly as it was', mvStillThere.marks.length === 2,
+  JSON.stringify(mvStillThere.marks.length));
+
+/**
+ * And not once it has gone out: from that moment the recipient holds the
+ * record, and this copy has to match the one they were sent.
+ */
+await sql`UPDATE documents SET sent_at = now(), stage = 'sent' WHERE id = ${moveId}`;
+const mvPosted = (await call(docsApi, `/api/documents?id=${moveId}`, { as: 'content' }))
+  .data.steps.find((s) => s.id === moveStep.id);
+ok('a letter that has been sent is settled', mvPosted.mayMove === false,
+  JSON.stringify({ mayMove: mvPosted.mayMove }));
+r = await call(docsApi, '/api/documents?do=move-mark', {
+  method: 'POST', as: mvSigner,
+  body: { id: moveId, stepId: moveStep.id, marks: [{ page: 1, x: 0.2, y: 0.2, w: 0.2, h: 0.06 }] },
+});
+ok('...and the server says so, not only the button',
+  r.status === 403, `${r.status} ${JSON.stringify(r.data)}`);
+
+await sql`DELETE FROM documents WHERE id = ${moveId}`;
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
