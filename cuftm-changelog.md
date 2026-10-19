@@ -1,6 +1,39 @@
-# CUFTM changelog — entry for 2026-10-19c
+# CUFTM (cu-ftm.vercel.app) — change log
 
-> This repository has no `cuftm-changelog.md`, so this file holds only the new entry. Paste it at the top of your own changelog.
+Ship complete folders (api/ lib/ public/ test/ dev-tests/), never partial zips, and give every package a **dated filename**. A half-copied update broke tasks.js on 2026-10-08; reusing the filename `cuftm-complete-update.zip` for two different packages meant the 10-09 documents work was never deployed (10-10).
+
+**Checking what is live:** Profile → เวอร์ชันที่ใช้งานอยู่ shows the page's version and the server's. They must match; if they differ the deploy was incomplete. The string lives in `lib/version.js` (server), as `var APP_VERSION` near the top of `public/app.js` (page), and in every `?v=` in `public/index.html` — bump all three with each package; run.mjs §77 fails if they drift apart.
+
+**Posts are read from the roster's ตำแหน่ง column, not from Access.** ต๊อดติ is a Co-Admin because he manages people, which is not a reason to offer him as ประธานโครงการ. If a post ever stops being offered to the right person, look at that column first.
+
+**Working on this in a new container:** restore from the latest zip, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
+
+
+## 2026-10-19d — the two 2026-10-19c builds, merged · version `2026-10-19d`
+No schema change (`2026-10-18a` still). Still 12 functions.
+
+**Two different packages were both called `2026-10-19c`** and neither contained the other. This repository held the audit pass — readable colours, the first-day home, the lighter page, the i18n split, the move to `dev-tests/`. The package shipped from the document work held the ลงลายเซ็น fix. `2026-10-19d` is this repository plus that fix, and it is the only build that has both. Anything still labelled `2026-10-19c` is half of it.
+
+### The ลงลายเซ็น fix, brought across
+The form has a **ลงลายเซ็น** tick beside every step — a head may approve a letter without their name appearing on its face. Taking the tick off removed that person from the marks page, which is right. But the tick was never sent to the server, and `createDocument` demanded a box from every step whose ROLE signs, regardless. So the form stopped asking for a box the server would not submit without, and ส่งเรื่อง answered **ต้องวางช่องลงนามอย่างน้อยหนึ่งจุด** forever, naming nobody.
+
+- The tick is sent (`signs` per step) and honoured: a box is required from a step that is actually signing, not from a role. A step that is not signing stores no boxes.
+- `MARK_REQUIRED` already carried `who`; the page now says *ยังไม่ได้วางช่องลงนามของ: …* and jumps back to that person with their tick restored.
+- A letter **nobody** signs is a valid letter — approvals without stamps — and now submits.
+- On the same page, two hint lines said the same thing in different words. One instruction now, above the name picker.
+
+### Dev tooling that the move to `dev-tests/` had broken
+None of this ships to users; all of it stopped the suites running at all.
+- `dev-tests/srv2.mjs` resolved `./api/*` against its own folder and `test/sheet.csv` against the shell's, so it worked from no directory at all. Both now resolve against the repository.
+- `dev-tests/docchain.mjs` and `dev-tests/guide.mjs` imported `./lib/db.js` — now `../lib/db.js`.
+- `dev-tests/links.mjs` loaded `node_modules/jsqr/...` from the shell's directory — now from the repository.
+- `dev-tests/phone.mjs` asked for the size of an RSVP button on a meeting that had already started; since 18 October there are none, so it waited thirty seconds and threw.
+- `dev-tests/polish.mjs` assumed Fah had no tasks, which `phonesweep.mjs` quietly makes untrue. It now empties her first, so run order stops mattering.
+- `test/e2e.mjs` is left alone but is dead: it imports `@slack/bolt` and `../src/listeners/index.js` from the old Slack project, neither of which exists here. It cannot run and it ships inside the deployment. **Worth deleting.**
+- New suites: `dev-tests/movesig.mjs`, `dev-tests/revive.mjs`, `dev-tests/signsoff.mjs`.
+
+### Tests
+1283 API checks, 27 browser suites, all passing against this tree.
 
 ## 2026-10-19c — readable colours, a first-day home, a lighter page
 
@@ -72,3 +105,267 @@ Built from the audit of 2026-10-19. All 15 findings were addressed; #13 only par
   - API suite: 1,277 checks pass.
   - Every browser suite passes. Each ran on its own against a freshly reset database, never at the same time as `run.mjs`.
   - `avail.mjs` failed one check when it ran straight after other suites, because of data they left behind. It passes run alone after a reset.
+
+---
+
+# Running history (from the document work)
+
+The entries below were written against the packaged zips rather than this repository, so their file layout differs — the code they describe is in here.
+
+## 2026-10-19 — cuftm-2026-10-19c-signs-tick.zip · version `2026-10-19c`
+No schema change (`2026-10-18a` still). Still 12 functions. Includes 10-19a and 10-19b.
+
+### Bug: unticking ลงลายเซ็น made a letter impossible to submit
+Reported from the committee with a screenshot: **ต้องวางช่องลงนามอย่างน้อยหนึ่งจุด** on a form where every signer shown already had a box (✓2), and pressing ส่งเรื่อง again never helped.
+
+The form has a **ลงลายเซ็น** tick beside every step — a head may approve a letter without their name appearing on its face. Taking the tick off removed that person from the marks page, which is right. But the tick was never sent to the server, and `createDocument` demanded a box from every step whose ROLE signs, regardless. So the form stopped asking for a box the server would not submit without, and the dialog was a dead end with no way out but going back and re-ticking — which nobody would guess, because the message named nobody.
+
+Three parts to the fix:
+- **The tick is sent** (`signs` on each step) and the server honours it: a box is required from a step that is actually signing, not from a role. A step that is not signing stores no boxes at all.
+- **The refusal names people.** `MARK_REQUIRED` already carried `who`; the page now says *ยังไม่ได้วางช่องลงนามของ: …* and jumps back to that person with their tick restored, instead of a sentence pointing at nobody.
+- A letter **nobody** signs is a valid letter — approvals without stamps — and now submits.
+
+Also on that page: the two hint lines said the same thing in different words. One instruction now, above the name picker, and the "tap again to remove" note sits under it.
+
+### Tests
+- run.mjs: six new checks on the ลงลายเซ็น tick — a step told not to sign needs no box and keeps none, a signing step with no box is still refused *and named*, and a letter nobody signs goes through. 1271 checks.
+- `signsoff.mjs` is new — the browser side of exactly what was reported: untick one signer in the real form, place the remaining box, press ส่งเรื่อง, and the letter is submitted with that step recorded as approving without a signature.
+
+## 2026-10-19 — cuftm-2026-10-19b-revive-rejected.zip · version `2026-10-19b`
+No schema change (`2026-10-18a` still). Still 12 functions. Includes everything in 10-19a.
+
+### The signature on a letter belongs to the printed name — always
+**This reverses yesterday's rule, and yesterday's rule was wrong.** When somebody stood in on another person's step, their own signature was stamped. The name under the box is typed into the letter by whoever wrote it, so one admin pressing for four ประธานฝ่าย produced the same handwriting under four different names — a letter reading "(นายปรเมศวร์ เอื้อวุฒิเกริก)" over somebody else's signature is not a letter anybody can send.
+
+So `approve()` now stamps `step.username`'s signature, with no fallback: if that person has not saved one, the press is refused and says whose signature is missing, rather than quietly substituting the presser's.
+
+Who really pressed is still recorded and still shown — **ดำเนินการโดย …** in the history, with their face — which is where that fact belongs. **มอบอำนาจให้เซ็นแทน** no longer decides the image (nothing does but the printed name); it is now the owner saying in advance who may act for them, and the history notes whether there was an authorisation. The wording on the profile says so.
+
+**Letters already signed the wrong way fix themselves.** The mismatch between the recorded signer and the step's own person is the only way to find them, so the migration deliberately leaves it alone: the first time anybody opens such a letter, the record is corrected and the PDF re-stamped from the untouched original, once, and the history gets a `signature_corrected` line.
+
+
+### A rejected letter can be brought back, with the signatures it already had
+A **ตีกลับ** used to be the end of a letter. The PDFs are deleted, so a correction meant a brand-new document and a brand-new chain — which meant everybody who had already signed signed the same page a second time, over a wrong date.
+
+What the rejection never deleted is the part that matters: the chain, who had already approved, and the exact rectangle each signature sits in. So reviving is just **putting the corrected PDF in**: `?do=revive` writes the new original, re-stamps the signatures already given from that record (`rebuildSigned`, same as everywhere else), and hands the letter back to its chain. The button is on the rejected letter itself — **อัปโหลดไฟล์ที่แก้แล้ว (กู้ลายเซ็นเดิม)** — with a line under it naming whose signatures are coming back, so it is not a leap of faith.
+
+- **The step that said no is asked again.** It goes back to `waiting` with its comment cleared: it is a question about a file that did not exist when it was answered. The reason stays in the letter's history for good.
+- **Nothing before it moves.** Those people approved this letter and are not asked twice — that is the whole point.
+- **Who may:** เลขานุการ and whoever sends that particular letter, Co-Admins, Admins, and the person who wrote it (they are holding the corrected file). `canRevive` in lib/approval.js.
+- **A file too short is refused before anything is written**, naming the page it needs — a signature silently dropped off the letter would be worse than being told to fix the file.
+- A **เลขรันเอกสาร** already handed out goes back to อยู่ระหว่างอนุมัติ / รอเลขานุการ in the register rather than being left saying ตีกลับ for a letter that is being signed again.
+
+### Tests
+- run.mjs §89 is new (21 checks): the rejection deleting the PDFs, all four kinds of person who may revive and one who may not, the signatures coming back, the rejecting step clean and waiting while the approvals before it stand, the reason still in the history, the letter approvable for real afterwards, and a too-short file refused without half-reviving anything. 1258 checks.
+- `revive.mjs` is new — the browser side, end to end: the director sends a letter back, the writer sees the button and the line saying whose signature returns, uploads the corrected PDF, and the letter is signed and back with the director.
+- §87 rewritten for the new signing rule: pressing for somebody who has saved no signature is refused and names them, and the signature that lands is the step owner's. Four new checks cover the self-healing of a letter signed under the old rule — record, file and history. 1265 checks.
+
+## 2026-10-19 — cuftm-2026-10-19a-move-signature.zip · version `2026-10-19a`
+No schema change (`2026-10-18a` still). Still 12 functions.
+
+### A signature can be moved after it has been stamped
+Asked for on 19 October. A box is placed before anybody has seen the finished page, so the first time it is obvious that a signature sits across a line of text is *after* it has gone on — and until now the only way out was **ตีกลับ**: four people re-approving a letter whose words nobody disputed, because a box was two centimetres too low.
+
+On an approved signing step the history now carries **ย้ายตำแหน่งลายเซ็น**. It opens the same canvas the boxes were placed on at upload, on that one signer: tap to move it, tap the box to take it away, the slider resizes it, and the pager walks the pages. Saving posts `?do=move-mark`.
+
+Why this is safe in a way that re-approving is not: the signed copy is **always rebuilt from the untouched original** (`rebuildSigned`), so nothing about who agreed to what changes — the state, the time and the author of every approval are left exactly as they were, and the letter ends up as it would have if the box had been right the first time. Checked in both suites.
+
+Who may: the owner of the signature, whoever stood in for them, the person who **wrote** the letter (they placed the boxes and are the one chased to fix them), and admins — `canMoveMark` in lib/approval.js. Never once the letter has been **sent**: from that moment the recipient holds the record and this copy has to match it. Never on a step still waiting, or one that approved without stamping.
+
+The record keeps up: the move is written into the letter's history as `mark_moved` with the name of whoever did it, and if somebody else moves **your** signature you get a bell about it. It is your name on the page; being able to fix a box without re-running the chain should not mean it can be fixed behind your back.
+
+### Tests
+- run.mjs §88 is new (18 checks): the button appearing only on a stamped step, the move landing exactly where it was put, the approval and the letter's position in its chain untouched, the stamped copy rebuilt, the history line, several spots at once, a stranger refused, a page that does not exist refused, emptying every spot refused without disturbing the letter, and a sent letter closed to it on the server as well as in the page. 1237 checks.
+- `movesig.mjs` is new — the browser side: the button on the right step and not on a waiting one, the editor showing the real signature with slider and pager, a tap moving it, and saving re-stamping the letter for real.
+- Two suites that only failed depending on the clock and the calendar, both fixed rather than worked around: `phone.mjs` asked for the size of an RSVP button on a meeting that had already started, and since 18 October there are none to ask about, so it waited thirty seconds and threw; `redesign.mjs` picked the office-hours column with `/12|13|…|19/`, which on a day that is itself a Monday picks **today** instead of next Monday — it now finds the column by its date.
+
+## 2026-10-18 — cuftm-2026-10-18a-approvals-word5mb.zip · version `2026-10-18a`
+Schema **`2026-10-18a`** (migrates itself: two columns on `doc_steps`, one new table). Still 12 functions.
+
+### Anybody in a letter's chain may approve or bounce it, at any stage
+`canAct` (lib/approval.js) used to mean "the person whose step it is". It now means **anybody named anywhere in that letter's own chain**. A letter that had to go out on Friday sat waiting on one ประธานฝ่าย who was in an exam, and the people above and below them — all of whom were going to approve it anyway — could only watch.
+
+Two things this is not. It is **not open to the committee**: somebody with no part in the letter is still nobody's approver (run.mjs §43 checks that). And it is **not skipping ahead**: the chain still advances one step at a time, in order, and is signed the same number of times.
+
+What the record says, because this is the part that matters:
+- `doc_steps.acted_by` — who actually pressed, when that was not the person named on the step. The history shows it: **ดำเนินการโดย …** under the step, with their face.
+- `doc_steps.signed_by` — whose signature went on. Normally the presser's own: the letter should show who really approved it.
+
+### Signing as somebody else, arranged in advance
+Profile → ลายเซ็น → **มอบอำนาจให้เซ็นแทน**. The owner of a signature names up to five people who may sign **as them**, for every letter, until they take it back (`signature_delegates`; `?do=delegates`). A ประธานฝ่าย going abroad arranges it once instead of per document. When a delegate presses, the owner's signature is stamped and the history still records who pressed — "ดำเนินการโดย กุ๊งกิ๊ง · ลงนามแทน เจตน์". Only the owner can hand it out, and only to an active account.
+
+### The Word file goes to 5 MB
+`MAX_SOURCE` is 5 MB. It cannot arrive in one request — Vercel refuses a body over about 4.5 MB and base64 adds a third — so anything over 2 MB is **sliced and sent in pieces** (`?do=source-part`, 1.4 MB each), appended into one row with `bytes = bytes || …`. The pieces live under `kind = 'source-part'` and only become the real `source` when the last one lands, so an interrupted upload leaves a stub nobody can open rather than half a document. Going over 5 MB part-way is refused and the previous file is left untouched. The PDF is unchanged at 3 MB.
+
+### "กด จะเข้าร่วม ไม่ได้"
+The server stops taking RSVPs the moment a meeting starts — that rule is from 11 October and has not changed. What was wrong is that the page kept offering **จะเข้าร่วม** on a meeting from last night and answered the press with "เกิดข้อผิดพลาด กรุณาลองใหม่", because `TOO_LATE_TO_REPLY` was not in `ERROR_KEYS` and fell through to the generic message. The buttons now disappear when the meeting starts, replaced by a line saying so, and the error codes are mapped for the case of a page left open since yesterday.
+
+### Two things found while rebuilding the dev environment
+Both are real, both would have bitten a fresh deployment:
+- **A brand-new database could not build its own schema.** `applySchema` is written in the order the app grew, so an ALTER on `doc_steps` sits above the CREATE TABLE that first made it — which never mattered against a database that already had the tables, and stops the very first request against an empty one. `migrate` now runs the file once leniently on a fresh database (anything referring to a table that does not exist yet is skipped, which leaves every CREATE TABLE applied) and then again for real. Every statement is idempotent, so the second pass costs nothing.
+- **`dev-tests/neon-local.mjs`** is new. lib/db.js talks to Neon over HTTP, which on a laptop turns `postgres://…@127.0.0.1:5432/…` into `https://api.0.0.1/sql`; the shim serves Neon's own protocol from a local `pg` pool, so srv2 and the suites run against Postgres unchanged. Development scaffolding only — nothing in api/ or lib/ imports it.
+
+### Tests
+- run.mjs §87 is new: standing in on somebody's step (and the history naming who pressed), lending a signature and the owner's signature coming out on the page, taking it back, a 4.4 MB Word file going up in pieces and downloading back byte for byte, and an over-size upload refused without disturbing the file already there. §43 rewritten for the new rule. 1212 checks.
+- Two fixtures that lived in `/tmp` and died with it are now made by the suites that need them — the signature PNG in run.mjs, and sigsize's letter (it used to borrow docchain's, so a docchain failure took sigsize with it).
+## 2026-10-16 — cuftm-2026-10-16a-qr-download.zip · version `2026-10-16a`
+Schema unchanged (`2026-10-15a`). Still 12 functions.
+
+### The QR download
+The PNG itself was always centred — 64px of quiet zone on all four sides, measured. What was wrong was the **download**: `a.href = canvas.toDataURL()` on an anchor that was never added to the document works in Chrome on a computer and in almost nothing else. Safari opens the data URL as a page instead, showing the code on a white background flush to the top-left corner, which is what "not centred when downloaded" was. It now saves through a blob, a real anchor in the document, and `revokeObjectURL` afterwards, which behaves the same everywhere.
+
+And since what people do with these is print them: a second button, **แผ่นพร้อมพิมพ์ A4** — A4 at 300 dpi (2480×3508) with the link's name above, the code in the middle at about 13 cm, and the full address under it. The whole block is centred, not the code alone; centring the code and hanging the text off it left 595px of paper above and 855px below, which prints bottom-heavy. Now 715 / 735.
+
+### Tests
+- `links.mjs` downloads both files and measures where the ink actually sits: the plain PNG's quiet zone equal on all sides, the sheet A4-sized, centred across and down the page, and the printed code still readable by a real decoder.
+- That decode runs **inside the page**. Handing an 8.7-megapixel sheet to Node as an array of 35 million numbers ran past the suite's time limit and the process was killed — every check passed, no summary printed, and the fixture left behind for the next run to trip over.
+- Which was the other fix: the suite now deletes its VOLUNTEER and LOCAL codes at the end, win or lose. A leftover code made the NEXT run fail at "making one opens its QR code straight away", which is a confusing way to be told that the last run crashed.
+- `api/cron.js` gained `CRON_QUIET_HOURS=off`, a seam for the tests: day-window reminders wait for 07:00 Bangkok, so run.mjs §86 passed in the afternoon and failed after midnight until the suite could lift it.
+
+## 2026-10-15 — cuftm-2026-10-15b-meeting-alerts.zip · version `2026-10-15b`
+Schema **`2026-10-15a`** (migrates itself: one new column). Still 12 functions.
+
+### Meetings now tell people
+Meetings were the one thing in the app that never said anything — an invitation appeared on the page and that was it.
+- **When you are invited**, and when somebody is added to a meeting that already existed.
+- **When it moves**: the day, the time or the place. The notice names which of the three changed and says "was → now". Editing the note or the agenda buzzes nobody.
+- **When it is cancelled or deleted** — told before the row is removed, because afterwards there is nobody left to tell.
+- **Before it happens**: 3 days / 1 day / 1 hour, ticked per meeting (a day and an hour are on by default), in the meeting form under เตือนก่อนประชุม. Day windows wait for 07:00 Bangkok; the hour one fires in the hour before. A meeting with no time set cannot use the hour window. Reminders go once per person per window (`reminders_sent`, shared with tasks and events).
+- New **ประชุม** category in notification settings, and a per-meeting notification control in the meeting's summary — the same one tasks and documents have.
+- The column: `meetings.notify`, default `'1d,1h'`. An empty string means "no reminders", which is why the code reads it with `??` and not `||` — `|| '1d,1h'` turned "none" back into the default, and the test caught it.
+- Everything goes through `sortRecipients`, so somebody who has turned ประชุม down to the bell gets the bell and no buzz.
+- **The bell row is always 'normal'**; only the push is raised for a cancellation. An urgent row opens a dialog over whatever the person is doing the next time they load the page — that is for an announcement somebody chose to send urgently, not for a meeting being moved. Four browser suites failed with "intercepts pointer events" before this was fixed, which is what that mistake looks like from the outside.
+
+### The LINE morning summary is off
+`sendDigests` returns immediately unless `LINE_DIGEST=on` is set. It was the only message this app ever paid LINE for, and between the bell, push and the bot answering "งานของฉัน" on demand it was one channel too many. The code and everybody's saved preference are untouched, so setting that variable brings it back exactly as it was. The switch is gone from the profile page (it promised a message that would not arrive) and the bot's เปิด/ปิดสรุป commands now say plainly that nothing is being sent.
+
+### Tests
+- run.mjs §86 is new — invitation, what-moved wording, a silent save, somebody added later, the day-before reminder firing once for everybody, reminders switched off per meeting, cancelling, deleting, and somebody who has silenced ประชุม hearing nothing. 1200 checks.
+- §33 keeps the digest machinery under test by turning it on with `LINE_DIGEST=on`, after first checking that it sends nothing with the switch off.
+- `oct14.mjs` §11 covers the form's reminder checkboxes and the invitation landing in the bell.
+
+## 2026-10-15 — cuftm-2026-10-15a-task-permissions.zip · version `2026-10-15a`
+Schema unchanged (`2026-10-11b`). Still 12 functions. Who may do what to a task changed, so this one is worth reading before deploying.
+
+### ผู้รับผิดชอบ may edit the task
+`canEditTask` (lib/scope.js) is now **the creator, the people it was given to, and the admins**. The people doing the work were left out and it was wrong: they are the ones who find out that the deadline moved or that half the description is missing, and routing that back through whoever typed the task is how a tracker stops matching the work.
+
+What did **not** move, deliberately — these all sit on a new `runsTask` (creator + admins):
+- **Deleting.** It takes the work off everybody else's list and there is no undo. The button only shows for whoever may actually do it (`mayDelete`, new on every task the API returns).
+- **Sub-tasks.** Cutting the work into pieces is deciding what the work is; somebody handed one piece should not be re-cutting the others.
+- **Ticking off somebody else's piece**, and **removing somebody else's attachment**.
+
+**ผู้ติดตาม (viewers) are unchanged**: they see it, they may move the status if they are tagged, and they may not edit. Being asked to follow something is the opposite of being asked to do it.
+
+A member who is on a task may now rewrite it — but still cannot create work, and still cannot change who is on it (`cannotAssign` is a separate lock and did not move).
+
+### An Editor sees งานทั้งหมด
+`canSeeTask` now returns true for anybody at Editor level or above. A ประธานฝ่าย needs to know what the other ฝ่าย are doing to the same deadline, and "your own departments only" meant asking in LINE for something the tracker already knew.
+- It is **visibility only**. Editing still follows `canEditTask`, so seeing another ฝ่าย's task comes with no power over it — run.mjs §85 checks exactly that.
+- Below Editor nothing changed: a unit editor and a member still see their own department, their own work and what they were tagged in.
+- The page follows: the sidebar lists every ฝ่าย for them, the department filter on งานและกิจกรรม offers every ฝ่าย, and the "you only see your own departments" line is gone for them. Filing is still restricted — `myDepartments()` decides where work may be put, and that did not change.
+
+### Tests
+- run.mjs is 1184 checks. §11 now reads as "department access decides where you may FILE, and what a unit editor or member SEES" and measures the umbrella grants through `myDepartments` rather than through what is visible; §20 asserts the new editing circle and the watcher's lack of it; §85 is new.
+- `oct14.mjs` gained sections 9 and 10 for both rules, including the edit button appearing and the delete button not, and is midnight-proof now (its "finished meeting" fixture is worked out in minutes — run at 00:20 the old one produced a meeting that had not started).
+
+## 2026-10-14 — cuftm-2026-10-14a-notice-ui.zip · version `2026-10-14a`
+Schema unchanged (`2026-10-11b`). Still 12 functions. New runtime dependency: **pdfkit**.
+
+### หนังสือนัดประชุม, generated
+A meeting's own page now makes the notice: **สรุปการประชุม → หนังสือนัดประชุม → สร้างไฟล์ PDF** (`/api/events?do=notice&id=…`, anybody who can see the meeting; 403 for anybody who cannot).
+- Organisation, ที่/วันที่, เรื่อง, เรียน, when and where, the **whole ระเบียบวาระ** with its numbering, durations, details and who proposed each item, the closing line, a signature block, and the invitation list including outside guests.
+- Dates are written in full Thai with the Buddhist year ("วันพฤหัสบดีที่ 15 ตุลาคม 2569").
+- Set in **TH Sarabun New** — the free national font, subsetted to Latin + Thai in `lib/fonts.js`.
+- Two traps, both hit and both worth knowing. **pdf-lib cannot do this**: it draws the glyphs a string maps to and applies no layout, so every Thai tone mark lands in the high position and "ผู้เข้าร่วม" prints as "ผูเขารวม" with the marks floating a line above. pdfkit runs text through fontkit's shaper, which is why the notice uses it while the signing code stays on pdf-lib. And the **TH Sarabun New on npm is a webfont conversion with the Thai GSUB stripped** (`latn` only), which fails the same way in any engine — the font here is the original, subsetted with `pyftsubset --layout-features='*' --no-hinting` (830 KB → 62 KB).
+
+### The UI round
+- **Document page time zone.** The server sends UTC and the page read the date and clock straight out of that string, so a letter signed at 17:05 showed 10:05 and anything after 7pm was filed under the day before. New `bkkStamp` / `stampDate` / `fmtStamp` in app.js; every stamp on the เอกสาร page and the notification popup is Bangkok wall time now, whatever the laptop's clock says.
+- **ที่กำลังจะถึง drops things that have finished.** It compared dates only, so the 17:00 meeting sat at the top of the page all evening. A meeting or event is "coming up" until its end time (or an hour after it starts, when no end was given); all-day things stay all day. A page left open redraws itself every five minutes, so a tab opened in the afternoon is right at nine — it never re-fetches, it only re-reads what it has.
+- **Long people lists fold on a computer too.** Eight watchers were four wrapped lines above the thing the task was opened for. Over six (four on a phone) collapse to a row of faces and a count, opening on a tap — the control existed but its CSS was phone-only.
+- **One bar for เสนอวาระ.** Five standing วาระ meant five identical "title · minutes · เสนอวาระ" rows down the dialog, and which one you were typing into was worked out from how far down it was. One bar at the end, with the วาระ as its first field. Both the new-meeting form and a saved meeting.
+- **A LINE OA step in the guide.** Between installing and notifications when LINE is configured: the Official Account's QR (drawn by LINE), its @id, an add-friend button, and the linking code — all in one card. `lib/line.js` gained `botProfile()`, which asks LINE for its own basicId rather than needing another env var.
+- **เวลาของสัปดาห์นี้** fits its card: "8 ชม. 30 นาที" ran over the ring and into the legend on a computer. The ring holds the number, the line below says what it is, and the legend's labels wrap with the figure aligned right.
+- **The profile uses the page.** It was a 34rem column with two thirds of the window empty beside it and nine settings boxes stacked below the fold. Two columns on anything over 1000px — who you are on the left, what the app does for you on the right.
+- **จัดการผู้ใช้: order and filters.** The list was alphabetical, which put a สมาชิก above the ประธานโครงการ. It now sorts by access level, then board-wide access, then whether they head a ฝ่าย, then the department's place in the org chart, then the name — and anybody inactive or suspended sinks to the bottom. Three dropdowns beside the search box (ฝ่าย, สิทธิ์, สถานะ) with a count of what is showing.
+
+### Tests
+- New browser suite `dev-tests/oct14.mjs` — all eight sections above — added to the suite list. 1177 API checks still pass.
+- `agenda.mjs` rewritten for the single bar, `guide.mjs` for the LINE step, `features.mjs`'s height limit raised by one day heading. `jsqr` is back in devDependencies — an `npm install` had pruned it and `links.mjs` could not start.
+- Watch out: a crashed suite leaves its fixture behind (`links.mjs` and the VOLUNTEER code, `redesign.mjs` and its bookings). A failure that makes no sense is worth checking against the database before it is treated as a regression.
+
+## 2026-10-11 — cuftm-2026-10-11c-signatures-scheduling.zip · version `2026-10-11c`
+Schema unchanged (`2026-10-11b`). Still 12 functions.
+
+### The pink box is the signature now
+Placing a signature meant dragging a flat pink rectangle and hoping. Both sides can see the real thing instead.
+- The placement boxes draw the signer's **actual signature image**, at its own proportions: `sigBoxSize()` solves the box height from the saved PNG's aspect and the page's, so what is on screen is exactly what `stampSignatures` will print (`fit()` centres it the same way `object-fit: contain` does). A box set at 26 % of the page width for a 3.5:1 signature comes out 3.5:1 — measured in the test, not assumed.
+- A **size slider** (8–45 % of the page width) resizes every box belonging to the selected signer about its own centre, so a signature that comes out too big is one drag to fix.
+- Signers with no saved signature get a `!` badge and are named in a notice, because an unsigned name is the thing nobody notices until the letter is out.
+- **ดูลายเซ็นของฉันบนเอกสาร** — a fold-out on the letter itself, for the signer, rendering the real page with their own signature overlaid where it will land, before they approve. If it does not fit they can ask the sender to move it, or bounce it.
+- Served by `?do=sigimg&user=…` (`image/png`, `private, no-store`). Any signed-in member may fetch any active member's — it appears on the circulated PDF anyway, and hiding it from the people placing it was the thing causing the problem.
+- `oneDocument` now returns every box per step (`marks`) plus `hasSignature` / `sigW` / `sigH`.
+
+### Scheduling warns instead of refusing
+- **A time somebody is not free for can still be booked.** `freeSlots` returns every slot inside the host's office hours with `taken` and `reason`, rather than quietly dropping the busy ones — the guest sees ไม่ว่าง on the slot, a hint above the list, and a warning in the confirm step, and books anyway if they mean to (`anyway: true`). The host's notice says plainly that it lands on something they already had. An hour the host never offered is still refused (`NOT_OFFERED`) — this loosens *their availability*, not their office hours.
+- **Find a time** keeps the clashing slots on the list too, marked and selectable, with a chip naming who is not free.
+- **Office hours and availability take several days at once.** One row, day chips (จ อ พ พฤ ศ ส อา), the same hours saved on each day ticked; identical windows are folded back into one row when the form is reopened, so "every weekday 15:00–17:00" is one line rather than five.
+- **ใช้เวลาว่างประจำสัปดาห์** copies the weekly free time from the profile straight into office hours, to trim — most people's office hours *are* their free time, and typing it twice was why many never set any.
+
+### Tests
+- run.mjs §82 rewritten for the new booking behaviour; 1177 checks, all passing.
+- New browser suite `dev-tests/sigsize.mjs` (signature box proportions, the slider, the signer's check, multi-day office hours, booking over a clash). Added to the suite list.
+- `avail.mjs` and `redesign.mjs` updated for the day chips — both suites had been driving a `<select>` that no longer exists — and `redesign.mjs` now clears the host's leftover appointments before section 5, since a crashed run's stale booking made a correct slot list look wrong.
+
+## 2026-10-11 — cuftm-2026-10-11b-announce-docs.zip · version `2026-10-11b`
+Schema `2026-10-11b`. Still 12 functions.
+
+### The bug ต๊อดติ found: a ฝ่าย announcement went to the whole board
+`resolveAudience` in api/push.js matched **anyone who could SEE the department**, not the people **in** it — the clause was `OR u.all_departments = true`, added deliberately on the theory that a ฝ่าย's notice is committee business the directors should see. In practice ต๊อดติ sent one to อำนวยการ 1–3 and it reached ประธานโครงการ, both รองประธาน, two ผู้ช่วย and the เลขานุการ, because the roster gives all of them "All". Reproduced on the fixture: 8 recipients, 6 of them wrong.
+- Department announcements now reach department members only. (Tasks always did this correctly — `expandPeople` in api/tasks.js has excluded all-department people from the start, which is what made the two behave differently.)
+- "All" in the roster means **no ฝ่าย at all** (`departments[0] ?? null`), so the board cannot be reached by ticking departments however many you tick. Two new ways in: a **บอร์ด** audience of its own, and a **ส่งถึงบอร์ดด้วย** tick under the department list, off by default and showing the count.
+- The "จะส่งถึง N คน" line on the page mirrors the server exactly, umbrella expansion included.
+- run.mjs §16 covers it: the board is out by default, in when ticked, ฝ่ายอำนวยการใหญ่ still covers อำนวยการ 1–3, and the sender is still left out of their own announcement.
+
+### What เลขานุการ asked for
+- **ตีกลับได้แล้ว.** `canAct` returns false on a sending step, so once a letter reached เลขานุการ their only button was ส่งแล้ว — the last people to read a letter had no way to send it back. New `canBounce` (lib/approval.js) = `canAct || canSend`, so whoever is **holding** the letter can bounce it with a reason, เลขานุการ included. It is not gated on `stage === 'approving'`: at the sending step the stage is `secretary`, which is exactly when this matters. A head secretary standing in for an absent secretary can too, by the same rule as posting it.
+- **A Word file beside the PDF, from the upload form.** `doc_files` gained `kind = 'source'` with `file_name` and `mime`. Optional; .docx .doc .odt .rtf .pages, 3 MB (5 MB since 10-18). The PDF is still what gets signed and sent — the source is the copy to correct from.
+  - It downloads as an attachment under its own name (`filename*=UTF-8''…`); the PDFs still open inline.
+  - `?do=source` adds, replaces or removes it later — same permission as replacing the PDF, plus the writer of a letter that was just sent back.
+  - **A rejection now keeps the source and deletes only the PDFs**, because the whole point is that somebody is about to edit it. A letter with nothing attached still loses every file, as before.
+  - Archiving puts the source in Drive beside the PDF (`archiveFile` with its own mime), since the database copy is purged days later and it would otherwise simply vanish. The PDF picker is now explicitly `kind IN ('signed','original')`.
+- The two file inputs have ids (`#doc-pdf`, `#doc-source`) and their labels point at them.
+- `docOriginal` was "ไฟล์ต้นฉบับ" for the unsigned PDF, which now collides: renamed to "PDF ที่อัปโหลด" / "Uploaded PDF". The Word file is "ไฟล์ Word (แก้ไขได้)".
+- run.mjs §84 and a new browser suite `dev-tests/docsrc.mjs`, which fills the real form in rather than posting to the API — the first version of it posted to the API and passed while the form was broken by a `var` declared in the wrong scope (`sourceFile` was not visible to `submit()`), which only docchain caught.
+
+**Watch out when testing:** `test/run.mjs` wipes and re-syncs the users table, so running it while the browser suites are running signs everybody out mid-suite. Run one or the other.
+
+## 2026-10-11 — cuftm-2026-10-11a-redesign.zip · version `2026-10-11a`
+The whole-UI redesign. Schema `2026-10-11a` (migrates itself). Still 12 functions.
+- **Look.** Chula pink leads (#e0457b) with indigo, teal, amber and violet. Dark plum sidebar (#2a1530). White cards, 14px radius, soft shadows. Font: Anuphan (Google Fonts), falling back to IBM Plex Sans Thai. All of it lives in `public/theme.css`, loaded last. `styles.css` and `phone.css` are untouched underneath.
+- **Status colours, used everywhere a status appears:** ยังไม่เริ่ม grey, กำลังทำ blue, รอตรวจ amber, ตรวจแล้ว violet, เสร็จแล้ว green. They show as the card's left stripe, list group headers, board column tops, timeline bars and calendar chips. Urgency moved to the due chip.
+- **Sidebar.** On a computer it has three modes, remembered per device in localStorage `fair-sb`: docked, icons only, or detached and floating (opened from ☰). It holds nav, Spaces, then departments (folded when there are more than 8). On a phone the same element is the drawer behind เมนู. `placeNav()` moves `#tabs` into the bottom bar, which holds หน้าแรก / ตาราง / งาน / เอกสาร / เมนู. Calendar, announcements, admin, profile and links are in the drawer.
+- **หน้าแรก** (now the landing page, `#/home`) is built from data already loaded (`homeStats()`): a gradient greeting with a one-line brief and a "done this week" ring; four numbers (open, due within 7 days, overdue, done in 30 days); today's timeline including appointments; charts (finished per week, my tasks by status, on-time rate, best weekday); coming deadlines, 7 badges, the people I work with most, and my Spaces.
+- **Work page.** The **list** is the default view (`fair-work-view2`): groups by status in their colour, foldable, rows about 44px, columns for who / due / priority / ฝ่ายหรือ Space. Board cards restyled. New **ไทม์ไลน์ (Gantt)** view with bars from `start_date` to `due_date`, a diamond when there is no start, and a today line; zoom by week or month; group by status, by ฝ่าย/Space, or none; dragging a bar moves both dates, dragging its grip moves only the deadline (desktop, editors only).
+- **Tasks.** New `start_date` and `done_at`, stamped on reaching done and cleared on reopen; tasks already done were backfilled from updated_at. Plus `space_id`.
+- **Spaces** (`lib/spaces.js`, riding `/api/tasks?do=space|spaces|space-leave`): anyone can create one; a space has a name, colour, a letter or emoji, named members, and optionally whole departments or sections. Being a member widens what you can see (`canSeeTask` checks `user.spaceIds`) and never hides anything. The owner or an admin can manage it; anyone else can leave. Archiving keeps the tasks and unfiles them. Each space has its own page `#/space/<id>`.
+- **Repeating meetings**: every day, weekdays, weekly, every two weeks, or monthly, with a count or an end date; capped at 52 occurrences and a year ahead. Each occurrence is a real meeting row sharing `series_id`, copied set-wise in 4 statements (`copyMeeting`). Editing or deleting offers "เฉพาะครั้งนี้" or "ครั้งนี้และครั้งถัดไป". Meetings also gained an end time (`ends_at`).
+- **ตารางของฉัน** (`#/schedule`, `lib/schedule.js`, riding `/api/calendar?do=…` with cookie auth): week grid on a computer, day view with a 7-day strip on a phone; meetings, events, deadlines, appointments, focus blocks, office hours and Google events; a time-allocation donut. **Office hours** are weekly windows split into 15–90 minute slots others can book, with a shareable link `#/schedule?book=<username>`; a booking is two `appointments` rows sharing `booking_id`. **Find a time** works like Outlook's scheduling assistant. Others only ever see "busy", never titles.
+- **Google Calendar, two-way, connected by each person** (`lib/googlecal.js`, scope `calendar.events` + email). Their Google events show on their schedule and count as busy; appointments and bookings are written into Google and removed on cancel; an opt-in also pushes meetings and events using deterministic ids. Refresh tokens are AES-256-GCM encrypted in `google_links` and never reach the page. Env: optional `GOOGLE_SIGNIN_CLIENT_ID`/`_SECRET`, optional `GOOGLE_TOKEN_KEY`. Redirect URI `https://cu-ftm.vercel.app/api/auth?do=google-callback`.
+- **User access list** (patch `2026-10-10c`): one line per person, tap to open, plus a search box.
+- **Cache-busting:** every `?v=` in index.html must equal APP_VERSION (run.mjs §77).
+- **Tests:** run.mjs §79 spaces, §80 start/done dates, §81 repeats, §82 schedule, §83 Google link (stubbed); new browser suite `dev-tests/redesign.mjs`; `quiet.mjs` sends a bare `/` to `#/work` for the older suites. Dev data for screenshots: `dev-tests/seed-redesign.mjs`.
+
+## 2026-10-10 — cuftm-2026-10-10b-hierarchy.zip · version `2026-10-10b`
+- **ประธานโครงการ is เจตน์, แก้ว and กร, nobody else.** `isDirector` reads the ตำแหน่ง column (`^ประธานโครงการ|^รองประธานโครงการ`) or a home department of `exec`, falling back to admins/co-admins when nothing matches. `isTopDirector` drives `rankOf`. Candidates sorted by `bySeniority`. Role dropdowns filtered via `roles[].options` / `pickList()`. run.mjs §78.
+
+## 2026-10-09 — the เอกสาร page
+Co-chairs (one deptHead step each, max 4); ประธานฝ่ายอำนวยการใหญ่ (`divisionHead`) for oper1/2/3; editable chain; `send_mode` secretary/self; `recipient_email` + `internal_unit`; เลขรันเอกสาร issued at submit. Schema `2026-10-09a`. run.mjs §76.
+
+## 2026-10-08 — roles, notification settings, compact UI, LINE
+Role labels from `task_people.via`; แจ้งเตือน/เงียบ/ปิด in `notify_prefs`; compact ที่กำลังจะถึง; LINE `sanitizeMessage` + `lineSafeUri`, text fallback, six-button rich menu (2500×1686).
+
+## 2026-10-08 — task viewers; board, LINE cards, getting-started guide
+
+## Earlier
+Meeting colour/description/attachments; availability and clash warnings; open assignment across departments; phone UI rebuild.

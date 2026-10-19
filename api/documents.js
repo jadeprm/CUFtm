@@ -682,8 +682,22 @@ async function createDocument(sql, me, body) {
     return list.filter((m) => m && Number.isFinite(Number(m.x)) && Number.isFinite(Number(m.y)));
   };
 
-  // Every signing step needs somewhere for the signature to go.
-  const missing = steps.filter((s) => signsPdf(s.role) && !boxesOf(s).length);
+  /**
+   * Whether this step will actually put a signature on the page.
+   *
+   * The ROLE is only the default. The form has a ลงลายเซ็น tick beside every
+   * step — a ประธานฝ่าย may approve a letter without their name appearing on
+   * its face — and until now the server ignored it and demanded a box from
+   * every signing role regardless. Unticking it therefore made the letter
+   * impossible to submit: the form stopped asking for that person's box, the
+   * server kept insisting on one, and there was no way out of the dialog.
+   */
+  const willSign = (s) => (s.signs === undefined || s.signs === null
+    ? signsPdf(s.role)
+    : s.signs === true);
+
+  // Every step that IS signing needs somewhere for the signature to go.
+  const missing = steps.filter((s) => willSign(s) && !boxesOf(s).length);
   if (missing.length) {
     return json({ error: 'MARK_REQUIRED', who: missing.map((s) => s.username) }, 400);
   }
@@ -712,7 +726,9 @@ async function createDocument(sql, me, body) {
   for (const step of steps) {
     position += 1;
     const role = clean(step.role, 20);
-    const boxes = boxesOf(step);
+    // A step that is not signing carries no boxes, whatever was drawn before
+    // the tick came off.
+    const boxes = willSign(step) ? boxesOf(step) : [];
     const first = boxes[0] || {};
 
     /**
