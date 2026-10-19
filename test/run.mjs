@@ -6965,6 +6965,23 @@ const standBy = WHO[standName];
 ok('...with somebody else from the same chain to hand',
   Boolean(standBy), `${standName || '-'} for ${waitingOn.username}`);
 await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: standBy, body: { png: sigPng } });
+
+/**
+ * The signature that goes on is the NAMED person's, so they have to have one
+ * saved — the presser's own is no longer a fallback (19 October). Tried
+ * before they have one, so the refusal is checked rather than assumed.
+ */
+await sql`DELETE FROM signatures WHERE username = ${waitingOn.username}`;
+r = await call(docsApi, '/api/documents?do=approve', {
+  method: 'POST', as: standBy, body: { id: standId },
+});
+ok('pressing for somebody with no signature saved is refused, naming them',
+  r.status === 400 && r.data.error === 'NO_SIGNATURE' && r.data.who === waitingOn.username,
+  JSON.stringify(r.data));
+await call(docsApi, '/api/documents?do=signature', {
+  method: 'POST', as: WHO[waitingOn.username], body: { png: sigPng },
+});
+
 r = await call(docsApi, '/api/documents?do=approve', {
   method: 'POST', as: standBy, body: { id: standId, comment: 'กดแทนเพราะเจ้าตัวติดสอบ' },
 });
@@ -6975,9 +6992,14 @@ const afterStand = await call(docsApi, `/api/documents?id=${standId}`, { as: 'ad
 const doneStep = afterStand.data.progress.find((p) => p.state === 'approved' && p.actedBy);
 ok('...and the history says who really pressed',
   Boolean(doneStep && doneStep.actedBy === standName), JSON.stringify(doneStep || {}));
-ok('...with their own signature on the page, not the absent person\u2019s',
-  doneStep && (doneStep.signedBy === standName || doneStep.signs === false),
-  JSON.stringify({ signedBy: doneStep && doneStep.signedBy }));
+/**
+ * And the signature is the one belonging to the name printed under the box —
+ * the step's own person, never the presser's. One admin pressing for four
+ * ประธานฝ่าย used to draw the same handwriting under four different names.
+ */
+ok('...while the signature is the one belonging to the printed name',
+  doneStep && (doneStep.signedBy === waitingOn.username || doneStep.signs === false),
+  JSON.stringify({ signedBy: doneStep && doneStep.signedBy, step: waitingOn.username }));
 
 // ---- a signature lent in advance ----------------------------------------
 r = await call(docsApi, '/api/documents?do=delegates', {
@@ -7010,11 +7032,19 @@ const lentDoc = await call(docsApi, '/api/documents?do=create', {
 r = await call(docsApi, '/api/documents?do=approve', {
   method: 'POST', as: 'content', body: { id: lentDoc.data.id, comment: 'เซ็นแทนตามที่มอบอำนาจ' },
 });
-ok('a delegate signing uses the owner\u2019s signature', r.status === 200, JSON.stringify(r.data).slice(0, 70));
-const lentStep = (await call(docsApi, `/api/documents?id=${lentDoc.data.id}`, { as: 'admin' }))
-  .data.progress.find((p) => p.state === 'approved' && p.actedBy === 'Kungking_HeadCon');
+ok('a delegate may press on the owner\u2019s step', r.status === 200, JSON.stringify(r.data).slice(0, 70));
+const lentView = await call(docsApi, `/api/documents?id=${lentDoc.data.id}`, { as: 'admin' });
+const lentStep = lentView.data.progress
+  .find((p) => p.state === 'approved' && p.actedBy === 'Kungking_HeadCon');
 ok('...recorded as pressed by them, signed as the owner',
   Boolean(lentStep) && lentStep.signedBy === 'Jade_Pres', JSON.stringify(lentStep || {}));
+/**
+ * The authorisation no longer decides the image — the printed name does —
+ * so what it is worth is the history saying it existed.
+ */
+ok('...and the history says the authorisation was there',
+  lentView.data.events.some((e) => /\u0e21\u0e2d\u0e1a\u0e2d\u0e33\u0e19\u0e32\u0e08/.test(e.detail || '')),
+  lentView.data.events.map((e) => e.detail).filter(Boolean).join(' | ').slice(0, 120));
 await call(docsApi, '/api/documents?do=delegates', { method: 'POST', as: 'admin', body: { delegates: [] } });
 await sql`DELETE FROM documents WHERE id = ${lentDoc.data.id}`;
 
@@ -7207,6 +7237,163 @@ ok('...and the server says so, not only the button',
   r.status === 403, `${r.status} ${JSON.stringify(r.data)}`);
 
 await sql`DELETE FROM documents WHERE id = ${moveId}`;
+
+
+head('89. Documents: bringing a rejected letter back with its signatures');
+
+/**
+ * Asked for on 19 October. A ตีกลับ used to be the end of a letter — the PDFs
+ * are deleted and a correction meant a new document, so everybody who had
+ * already signed signed the same page a second time over a typo.
+ */
+const revSteps = ((await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps)
+  .map((x) => ({
+    role: x.role, username: x.username,
+    mark: x.signs ? { page: 1, x: 0.6, y: 0.78, w: 0.25, h: 0.07 } : null,
+  }));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือทดสอบกู้คืนหลังตีกลับ',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: revSteps },
+});
+const revId = r.data.id;
+ok('a letter that will be sent back', r.status === 201 && Boolean(revId),
+  JSON.stringify(r.data).slice(0, 70));
+
+let revState = await call(docsApi, `/api/documents?id=${revId}`, { as: 'admin' });
+const revHolder = revState.data.steps.find((s) => s.state === 'waiting');
+const revAs = WHO[revHolder.username];
+await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: revAs, body: { png: sigPng } });
+const signedAlready = revState.data.steps.filter((s) => s.state === 'approved').map((s) => s.username);
+ok('...with a signature already on it', signedAlready.length >= 1, signedAlready.join(', '));
+
+r = await call(docsApi, '/api/documents?do=reject', {
+  method: 'POST', as: revAs, body: { id: revId, comment: 'วันที่ในหนังสือผิด' },
+});
+ok('it is sent back', r.status === 200 && r.data.stage === 'rejected', JSON.stringify(r.data).slice(0, 70));
+revState = await call(docsApi, `/api/documents?id=${revId}`, { as: 'content' });
+ok('...and the PDFs really are gone', !revState.data.files.some((f) => f.kind !== 'source'),
+  JSON.stringify(revState.data.files.map((f) => f.kind)));
+
+// ---- who may bring it back ---------------------------------------------
+ok('the writer may put a corrected file in', revState.data.mayRevive === true);
+ok('...and so may an admin',
+  (await call(docsApi, `/api/documents?id=${revId}`, { as: 'admin' })).data.mayRevive === true);
+ok('...and a เลขานุการ',
+  (await call(docsApi, `/api/documents?id=${revId}`, { as: 'sunday' })).data.mayRevive === true);
+ok('...and it says whose signatures would come back',
+  revState.data.revivable.length >= 1, revState.data.revivable.join(', '));
+r = await call(docsApi, '/api/documents?do=revive', {
+  method: 'POST', as: 'member', body: { id: revId, pdf: await makePdf(2) },
+});
+ok('somebody with no part in it may not', r.status === 403 || r.status === 404,
+  `${r.status} ${JSON.stringify(r.data)}`);
+
+// ---- the correction -----------------------------------------------------
+r = await call(docsApi, '/api/documents?do=revive', {
+  method: 'POST', as: 'content', body: { id: revId, pdf: await makePdf(2), comment: 'แก้วันที่แล้ว' },
+});
+ok('the corrected file brings the letter back', r.status === 200, JSON.stringify(r.data).slice(0, 90));
+ok('...with the signatures already given stamped onto it',
+  r.data.signaturesRestored >= 1, String(r.data.signaturesRestored));
+ok('...waiting on the person who sent it back', r.data.waitingOn === revHolder.username,
+  `${r.data.waitingOn} / ${revHolder.username}`);
+
+const revived = await call(docsApi, `/api/documents?id=${revId}`, { as: 'content' });
+ok('the letter is in its chain again', revived.data.document.stage !== 'rejected',
+  revived.data.document.stage);
+ok('...with both PDFs back',
+  revived.data.files.some((f) => f.kind === 'original') &&
+  revived.data.files.some((f) => f.kind === 'signed' && f.size > 0),
+  JSON.stringify(revived.data.files.map((f) => [f.kind, f.size])));
+const stillApproved = revived.data.steps.filter((s) => s.state === 'approved').map((s) => s.username);
+ok('...nobody who already approved is asked again',
+  signedAlready.every((u) => stillApproved.includes(u)),
+  `${stillApproved.join(', ')} / was ${signedAlready.join(', ')}`);
+const backStep = revived.data.steps.find((s) => s.username === revHolder.username);
+ok('...and the step that said no is a clean question again',
+  backStep.state === 'waiting' && !backStep.comment, JSON.stringify({ state: backStep.state, comment: backStep.comment }));
+ok('...with the reason still in the letter’s history',
+  revived.data.events.some((e) => e.kind === 'rejected' && /วันที่/.test(e.detail)) &&
+  revived.data.events.some((e) => e.kind === 'revived'),
+  revived.data.events.map((e) => e.kind).join(','));
+ok('...and it cannot be revived twice', revived.data.mayRevive === false);
+
+// It can be approved for real now, which is the point of putting it back.
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: revAs, body: { id: revId } });
+ok('the person who sent it back can now approve the correction', r.status === 200,
+  JSON.stringify(r.data).slice(0, 70));
+
+/**
+ * A corrected file too short for where the signatures sit is refused before
+ * anything is written — a signature silently dropped off the letter would be
+ * worse than being told to fix the file.
+ */
+const shortDoc = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือทดสอบไฟล์สั้นเกิน',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(3),
+          department: 'content',
+          steps: revSteps.map((s) => (s.mark ? { ...s, mark: { ...s.mark, page: 3 } } : s)) },
+});
+const shortId = shortDoc.data.id;
+const shortHolder = (await call(docsApi, `/api/documents?id=${shortId}`, { as: 'admin' }))
+  .data.steps.find((s) => s.state === 'waiting');
+await call(docsApi, '/api/documents?do=reject', {
+  method: 'POST', as: WHO[shortHolder.username], body: { id: shortId, comment: 'ขอแก้' },
+});
+r = await call(docsApi, '/api/documents?do=revive', {
+  method: 'POST', as: 'content', body: { id: shortId, pdf: await makePdf(1) },
+});
+ok('a corrected file with too few pages is refused',
+  r.status === 400 && r.data.error === 'MARK_OFF_PAGE' && r.data.needs === 3, JSON.stringify(r.data));
+ok('...and the letter is left sent back, not half-revived',
+  (await call(docsApi, `/api/documents?id=${shortId}`, { as: 'content' })).data.document.stage === 'rejected');
+
+await sql`DELETE FROM documents WHERE id IN (${revId}, ${shortId})`;
+
+/**
+ * A letter signed under the old rule, put right the first time it is opened.
+ * Faked here the way the old code left them: the row says somebody else's
+ * signature went into a box whose printed name is the step's own person.
+ */
+const crossSteps = ((await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps)
+  .map((x) => ({
+    role: x.role, username: x.username,
+    mark: x.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+  }));
+const crossDoc = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือลายเซ็นผิดชื่อ (ของเก่า)',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: crossSteps },
+});
+const crossId = crossDoc.data.id;
+const crossStep = (await call(docsApi, `/api/documents?id=${crossId}`, { as: 'admin' }))
+  .data.steps.find((st) => st.state === 'approved');
+await sql`UPDATE doc_steps SET signed_by = 'Jade_Pres' WHERE id = ${crossStep.id}`;
+const beforeHeal = await sql`SELECT signed_by FROM doc_steps WHERE id = ${crossStep.id}`;
+ok('a letter from before the rule, with the wrong name against the signature',
+  beforeHeal[0].signed_by === 'Jade_Pres' && crossStep.username !== 'Jade_Pres',
+  `${beforeHeal[0].signed_by} on ${crossStep.username}'s step`);
+
+const healed = await call(docsApi, `/api/documents?id=${crossId}`, { as: 'content' });
+const healedStep = healed.data.steps.find((st) => st.id === crossStep.id);
+ok('...is put right the moment somebody opens it',
+  (await sql`SELECT signed_by FROM doc_steps WHERE id = ${crossStep.id}`)[0].signed_by === crossStep.username,
+  JSON.stringify({ state: healedStep.state }));
+ok('...with the file re-stamped, not only the record',
+  (healed.data.files.find((f) => f.kind === 'signed') || {}).size > 0,
+  JSON.stringify(healed.data.files.map((f) => [f.kind, f.size])));
+ok('...and said so in the history',
+  healed.data.events.some((e) => e.kind === 'signature_corrected'),
+  healed.data.events.map((e) => e.kind).join(','));
+await sql`DELETE FROM documents WHERE id = ${crossId}`;
+
+
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

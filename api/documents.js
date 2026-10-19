@@ -13,7 +13,7 @@ import {
   progressOf, progressFraction, signsPdf, isSecretary, ROLE_TH,
   isHeadSecretary, canManageSecretaries, canDeleteDocument, pickSecretary,
   canSend, canBounce, isSendingRole, APPROVAL_ROLES, candidatesFor,
-  canMoveMark,
+  canMoveMark, canRevive,
 } from '../lib/approval.js';
 import {
   stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
@@ -33,6 +33,7 @@ import { flex, listBubble } from '../lib/lineflex.js';
  *   POST /api/documents?do=approve   sign it, and stamp it if the role signs
  *   POST /api/documents?do=reject    send it back with a reason
  *   POST /api/documents?do=move-mark move a signature that is already stamped
+ *   POST /api/documents?do=revive    put a corrected file in a rejected letter
  *   POST /api/documents?do=replace   put a corrected file in, keeping the chain
  *   POST /api/documents?do=send      the secretary marks it sent
  *   POST /api/documents?do=signature save my own signature
@@ -171,6 +172,7 @@ async function handler(request) {
     case 'approve':   return approve(sql, me, body);
     case 'reject':    return reject(sql, me, body);
     case 'move-mark': return moveMark(sql, me, body);
+    case 'revive':    return revive(sql, me, body);
     case 'replace':   return replaceFile(sql, me, body);
     case 'source':    return putSourceFile(sql, me, body);
     // A Word file too big for one request — see putSourcePart.
@@ -288,8 +290,27 @@ async function listDocuments(sql, me) {
 async function oneDocument(sql, me, id) {
   const [doc] = await sql`SELECT * FROM documents WHERE id = ${id}`;
   if (!doc) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
-  const steps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
+  let steps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
   if (!canSeeDocument(me, doc, steps)) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  /**
+   * Letters signed under the old rule, put right the first time anybody opens
+   * them.
+   *
+   * Until 19 October a stand-in's own signature was stamped into a box whose
+   * printed name belonged to somebody else, so there are letters in the
+   * system showing one person's handwriting under four different names. The
+   * record is corrected and the letter re-stamped from the untouched
+   * original, which costs one rebuild, once, per affected letter.
+   */
+  const crossed = steps.filter((st) => st.signed_by && st.signed_by !== st.username);
+  if (crossed.length && doc.stage !== 'rejected') {
+    await sql`UPDATE doc_steps SET signed_by = username WHERE id = ANY(${crossed.map((st) => st.id)})`;
+    steps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
+    await rebuildSigned(sql, id, steps);
+    await note(sql, id, 'signature_corrected', null,
+      crossed.map((st) => st.username).join(', '));
+  }
 
   const events = await sql`SELECT * FROM doc_events WHERE doc_id = ${id} ORDER BY at`;
   const files = await sql`SELECT kind, byte_size, pages, file_name, mime, updated_at FROM doc_files WHERE doc_id = ${id}`;
@@ -344,6 +365,13 @@ async function oneDocument(sql, me, id) {
     // Sending it back for a correction — see canBounce in lib/approval.js.
     mayBounce: canBounce(me, doc, steps),
     mayDelete: canDeleteDocument(me, doc, steps),
+    // Putting a corrected file into a letter that was sent back, and getting
+    // the signatures already given stamped onto it — see canRevive.
+    mayRevive: canRevive(me, doc, steps),
+    // How many signatures would come back with it, so the button can say so
+    // rather than being a leap of faith.
+    revivable: steps.filter((s) => s.state === 'approved' && s.signs !== false &&
+      signsPdf(s.role)).map((s) => s.username),
     mayAssign: canManageSecretaries(me) && doc.stage !== 'sent',
   });
 }
@@ -952,26 +980,32 @@ async function approve(sql, me, body) {
    * name should be.
    */
   /**
-   * Whose signature goes on, when somebody stands in.
+   * Whose signature goes on: the person the step names. Always.
    *
-   * Their own, normally: the letter should show who actually approved it,
-   * not a signature its owner never pressed for. The exception is a standing
-   * authorisation — the owner of the signature has said in advance that this
-   * person may sign as them (?do=delegates) — and then it is the owner's
-   * signature, because that is the whole point of arranging it.
+   * It used to be the presser's own, on the reasoning that the letter should
+   * show who actually approved it. That was wrong, and the letters showed why
+   * — the NAME is printed under the box by whoever wrote the letter, so one
+   * admin pressing for four ประธานฝ่าย produced four different names with the
+   * same signature drawn over each of them. A letter cannot say
+   * "(นายปรเมศวร์ เอื้อวุฒิเกริก)" above somebody else's handwriting.
+   *
+   * Who really pressed is recorded, in `acted_by` and in the history, which
+   * is where that fact belongs. A standing authorisation (?do=delegates) no
+   * longer decides the image — it is the owner saying in advance that this
+   * person may act for them, and the history says whether there was one.
    */
-  let signer = me.username;
-  if (standingIn) {
-    const [allowed] = await sql`
-      SELECT 1 FROM signature_delegates
-      WHERE owner = ${step.username} AND delegate = ${me.username}`;
-    if (allowed) signer = step.username;
-  }
+  const signer = step.username;
+  const [standing] = standingIn
+    ? await sql`SELECT 1 FROM signature_delegates
+                WHERE owner = ${step.username} AND delegate = ${me.username}`
+    : [];
 
   let signature = null;
   if (willSign && signsPdf(step.role)) {
     const [row] = await sql`SELECT png FROM signatures WHERE username = ${signer}`;
     signature = toBuffer(row?.png);
+    // No falling back to the presser's own — that is the bug this fixes. The
+    // named person has to have saved a signature before anybody signs for them.
     if (!signature) return json({ error: 'NO_SIGNATURE', who: signer }, 400);
   }
 
@@ -992,8 +1026,15 @@ async function approve(sql, me, body) {
       finished_at = ${stage === 'done' ? new Date().toISOString() : null}
     WHERE id = ${doc.id}`;
 
+  /**
+   * The history carries who pressed and under what authority, because the
+   * signature itself can no longer tell you — it is always the step owner's.
+   */
+  const standIn = standingIn
+    ? `ดำเนินการแทน ${step.username}${standing ? ' (ได้รับมอบอำนาจไว้ล่วงหน้า)' : ''}`
+    : '';
   await note(sql, doc.id, willSign && signsPdf(step.role) ? 'signed' : 'approved', me.username,
-    clean(body.comment, 1000));
+    [clean(body.comment, 1000), standIn].filter(Boolean).join(' · '));
 
   /**
    * The committee's เลขรันเอกสาร, issued once every signature is in.
@@ -1182,6 +1223,111 @@ async function moveMark(sql, me, body) {
   }
 
   return json({ ok: true, marks, signaturesPlaced: stamped.placed.length });
+}
+
+/**
+ * Brings a rejected letter back, with the corrected file.
+ *
+ * Everything about the letter survived the ตีกลับ except the PDF itself — the
+ * chain, who had already approved, and the exact rectangle each signature sits
+ * in are all still on record. So reviving is: put the corrected file in, stamp
+ * the signatures that were already given back onto it, and hand the letter to
+ * the person who sent it back. See canRevive for who may, and why the
+ * rejecting step is the one that has to look again.
+ */
+async function revive(sql, me, body) {
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+  if (!canRevive(me, doc, steps)) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  const got = fromBase64(body.pdf, MAX_PDF);
+  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, 400);
+  if (!looksLikePdf(got.buffer)) return json({ error: 'NOT_A_PDF' }, 400);
+  const pages = await pageCount(got.buffer);
+  if (!pages) return json({ error: 'UNREADABLE_PDF' }, 400);
+
+  /**
+   * The corrected letter has to be at least as long as the old one where
+   * signatures were placed, or a signature would be stamped onto a page that
+   * is not there. Said before anything is written, with the page in question,
+   * rather than silently dropping somebody's name off the letter.
+   */
+  const marks = steps.length
+    ? await sql`SELECT step_id, page FROM doc_boxes WHERE step_id = ANY(${steps.map((s) => s.id)})`
+    : [];
+  const highest = Math.max(
+    0,
+    ...marks.map((m) => Number(m.page) || 1),
+    ...steps.filter((s) => s.x !== null && s.x !== undefined).map((s) => Number(s.page) || 1),
+  );
+  if (highest > pages) return json({ error: 'MARK_OFF_PAGE', pages, needs: highest }, 400);
+
+  await sql`
+    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, updated_at)
+    VALUES (${doc.id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages}, now())
+    ON CONFLICT (doc_id, kind) DO UPDATE
+      SET bytes = EXCLUDED.bytes, byte_size = EXCLUDED.byte_size,
+          pages = EXCLUDED.pages, updated_at = now()`;
+
+  /**
+   * The step that said no goes back to waiting, and nothing before it moves.
+   *
+   * Its reason stays in the letter's history — that is the record of what was
+   * wrong — but the step itself is clean again, because it is a question that
+   * has not been answered about the file that is now there.
+   */
+  const bounced = steps.filter((s) => s.state === 'rejected');
+  if (bounced.length) {
+    await sql`
+      UPDATE doc_steps SET state = 'waiting', acted_at = NULL, acted_by = NULL,
+                           signed_by = NULL, comment = ''
+      WHERE id = ANY(${bounced.map((s) => s.id)})`;
+  }
+
+  const after = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
+  // The signatures already given, put back on the new file from the record.
+  const stamped = await rebuildSigned(sql, doc.id, after);
+
+  const next = pendingStep(after);
+  const stage = next ? (isSendingRole(next.role) ? 'secretary' : 'approving') : 'done';
+  await sql`
+    UPDATE documents SET stage = ${stage}, updated_at = now(),
+      finished_at = ${stage === 'done' ? new Date().toISOString() : null}
+    WHERE id = ${doc.id}`;
+
+  await note(sql, doc.id, 'revived', me.username, clean(body.comment, 1000));
+
+  /**
+   * A number that was already handed out is still this letter's number, so the
+   * book is put back to where the letter actually is rather than left saying
+   * ตีกลับ for a letter that is being signed again.
+   */
+  if (doc.doc_number) {
+    await updateRegisterStatus({
+      tab: doc.doc_tab, number: doc.doc_number,
+      status: stage === 'secretary' ? REGISTER_STATUS.secretary : REGISTER_STATUS.approving,
+    });
+  }
+
+  const restored = after.filter((s) => s.state === 'approved' && s.signs !== false).map((s) => s.username);
+  const watchers = await secretaries(sql);
+  await tellPeople(sql, {
+    usernames: [doc.created_by, next?.username, ...restored, ...watchers],
+    actor: next?.username,
+    docId: doc.id,
+    priority: doc.priority,
+    title: `เอกสารถูกแก้ไขและส่งกลับเข้าสาย: ${doc.title}`,
+    body: `${me.display_name || me.username} อัปโหลดไฟล์ที่แก้แล้ว` +
+      (stamped.placed.length ? ` · ประทับลายเซ็นเดิม ${stamped.placed.length} จุดกลับให้แล้ว` : ''),
+  });
+
+  return json({
+    ok: true, pages, stage,
+    signaturesRestored: stamped.placed.length,
+    couldNotPlace: stamped.skipped,
+    waitingOn: next ? next.username : null,
+  });
 }
 
 /**

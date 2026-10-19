@@ -87,7 +87,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-19a';
+  var APP_VERSION = '2026-10-19b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -2837,6 +2837,54 @@
         footer.appendChild(h('button', {
           class: 'btn', text: t('docReplace'), onclick: function () { replaceInput.click(); },
         }));
+      }
+
+      /**
+       * Bringing a letter back after it was sent back.
+       *
+       * A ตีกลับ used to be the end of it: the PDFs go, and a corrected letter
+       * meant a new document and everybody signing the same page twice. The
+       * chain and every signature's place survived the rejection, so putting
+       * the corrected file in is enough — the signatures already given are
+       * stamped back onto it and the person who sent it back gets it again.
+       */
+      if (data.mayRevive) {
+        var revivePick = h('input', { type: 'file', accept: 'application/pdf,.pdf', style: 'display:none' });
+        var reviveBtn = h('button', {
+          class: 'btn primary', text: t('docRevive'),
+          onclick: function () { revivePick.click(); },
+        });
+        revivePick.addEventListener('change', function () {
+          var file = revivePick.files && revivePick.files[0];
+          if (!file) return;
+          if (file.size > 3 * 1024 * 1024) { alert(t('docTooBig')); return; }
+          reviveBtn.disabled = true;
+          reviveBtn.textContent = t('docSending');
+          fileToBase64(file).then(function (b64) {
+            return api('/api/documents?do=revive', { method: 'POST', body: { id: doc.id, pdf: b64 } });
+          }).then(function (res) {
+            // Said out loud: the whole point is that the signatures came back.
+            if (res && res.signaturesRestored) {
+              alert(t('docReviveDone').replace('%n', String(res.signaturesRestored)));
+            }
+            load();
+          }).catch(function (err) {
+            reviveBtn.disabled = false;
+            reviveBtn.textContent = t('docRevive');
+            var code = err.data && err.data.error;
+            alert(code === 'MARK_OFF_PAGE'
+              ? t('docReviveShort').replace('%n', String((err.data && err.data.needs) || '?'))
+              : errText(err.code));
+          });
+        });
+        footer.appendChild(revivePick);
+        footer.appendChild(reviveBtn);
+        // What is waiting to come back, so the button is not a leap of faith.
+        if ((data.revivable || []).length) {
+          footer.appendChild(h('span', { class: 'hint',
+            text: t('docReviveKeeps').replace('%s',
+              data.revivable.map(function (u) { return nameOf(u); }).join(', ')) }));
+        }
       }
 
       /**
