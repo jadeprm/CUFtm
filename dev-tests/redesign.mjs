@@ -109,7 +109,15 @@ ok('the list is grouped by status, in the order work moves', groups.length >= 2 
   groups.every((st, i) => i === 0 || ['todo', 'doing', 'review', 'feedback', 'done'].indexOf(st) > ['todo', 'doing', 'review', 'feedback', 'done'].indexOf(groups[i - 1])), groups.join());
 const doingHead = await jade.locator('.lgroup[data-st="doing"] .lg-head .st-pill').evaluate((n) => getComputedStyle(n).backgroundColor).catch(() => '');
 const reviewHead = await jade.locator('.lgroup[data-st="review"] .lg-head .st-pill').evaluate((n) => getComputedStyle(n).backgroundColor).catch(() => '');
-ok('each group wears its status colour — กำลังทำ blue, รอตรวจ amber', /47, 127, 240/.test(doingHead) && /240, 160, 32/.test(reviewHead), `${doingHead} / ${reviewHead}`);
+/**
+ * Since 2026-10-19c the header is the soft pill in the status's ink, ringed in
+ * the status colour: white on the solid amber was 2.15:1.
+ */
+const doingInk = await jade.locator('.lgroup[data-st="doing"] .lg-head .st-pill').evaluate((n) => getComputedStyle(n).color).catch(() => '');
+const reviewInk = await jade.locator('.lgroup[data-st="review"] .lg-head .st-pill').evaluate((n) => getComputedStyle(n).color).catch(() => '');
+ok('each group wears its status colour — กำลังทำ blue, รอตรวจ amber',
+  /229, 239, 255/.test(doingHead) && /29, 95, 199/.test(doingInk) && /255, 242, 217/.test(reviewHead) && /154, 93, 0/.test(reviewInk),
+  `${doingHead} ${doingInk} / ${reviewHead} ${reviewInk}`);
 const rowH = await jade.locator('.lgroup li.lrow').first().boundingBox();
 ok('rows are slim', rowH.height <= 52, String(rowH.height));
 await jade.locator('.lgroup[data-st="review"] .lg-head').click(); await jade.waitForTimeout(200);
@@ -196,7 +204,9 @@ await kk.locator('.modal footer .btn.primary').click(); await kk.waitForTimeout(
 await go(jade, '#/schedule', 1500);
 await jade.locator('.sched-actions .btn', { hasText: /จองเวลา|Book/ }).click(); await jade.waitForTimeout(900);
 await jade.locator('.host', { hasText: 'Kungking' }).click(); await jade.waitForTimeout(1200);
-const times = await jade.locator('.slot-day', { hasText: /12|13|14|15|16|17|18|19/ }).first().locator('.slot').allInnerTexts().catch(() => []);
+// The column for the Monday booked above. This matched the literal dates 12–19, so it failed every week after the one it was written in.
+const mondayNum = new RegExp('(^|\\D)' + Number(nextMonday.slice(8)) + '(\\D|$)');
+const times = await jade.locator('.slot-day', { hasText: mondayNum }).first().locator('.slot').allInnerTexts().catch(() => []);
 /**
  * Busy slots are shown now rather than hidden — the guest may invite anyway —
  * so the half hour his own appointment covers is on the list, marked.

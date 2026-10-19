@@ -141,9 +141,10 @@ npm test          # needs a Postgres; set DATABASE_URL
 
 ```
 public/index.html     page shell
-public/styles.css     all styling, both themes
+public/styles.css     base styling (colour tokens live in theme.css)
 public/app.js         the whole client
-public/i18n.js        every visible string, th + en
+public/i18n.js        every visible string, in Thai
+public/i18n-en.js     the same strings in English, loaded only for English users
 api/auth.js           sign in, first password, reset
 api/users.js          directory, profile, account management, sheet sync
 api/tasks.js          tasks, sub-tasks, attached work, tagging

@@ -3838,7 +3838,9 @@ head('60. Every visible string exists, once, in both languages');
  * "กล่อง/หน่วยงาน" while the string somebody wrote for it sat unused higher up
  * the file. A parse of the source catches what running the file cannot.
  */
-const i18nSource = (await import('node:fs')).readFileSync('public/i18n.js', 'utf8');
+// English moved to its own file (loaded only for English users); the checks read the two together.
+const i18nSource = (await import('node:fs')).readFileSync('public/i18n.js', 'utf8') + '\n' +
+  (await import('node:fs')).readFileSync('public/i18n-en.js', 'utf8');
 const langKeys = {};
 for (const lang of ['th', 'en']) {
   const block = i18nSource.split(`  ${lang}: {`)[1].split('\n  },')[0];
@@ -7392,6 +7394,77 @@ ok('...and said so in the history',
   healed.data.events.some((e) => e.kind === 'signature_corrected'),
   healed.data.events.map((e) => e.kind).join(','));
 await sql`DELETE FROM documents WHERE id = ${crossId}`;
+
+head('90. One source for colour, and colours people can read');
+/**
+ * The 2026-10-19c pass. Colour tokens used to be declared in three sheets, and
+ * some dark values only applied because one selector out-ranked another; the
+ * due chips used literal light colours and stayed pastel in dark mode; and
+ * several text colours sat under 4.5:1. These read the stylesheets as text, the
+ * same way the string checks above read i18n.js.
+ */
+{
+  const fs = await import('node:fs');
+  const themeCss = fs.readFileSync('public/theme.css', 'utf8');
+  const stylesCss = fs.readFileSync('public/styles.css', 'utf8');
+  const phoneCss = fs.readFileSync('public/phone.css', 'utf8');
+  const indexHtml = fs.readFileSync('public/index.html', 'utf8');
+
+  const COLOUR_TOKEN = /--(bg|surface|ink|line|accent|pink|st-|u-|meet|doing|done|danger|sb-bg|prio)[a-z0-9-]*\s*:/;
+  ok('styles.css declares no colour tokens of its own', !COLOUR_TOKEN.test(stylesCss));
+  ok('...nor does phone.css', !COLOUR_TOKEN.test(phoneCss));
+
+  const block = (re) => { const m = themeCss.match(re); return m ? m[1].replace(/\s+/g, ' ').trim() : null; };
+  const lightBlock = block(/tokens -+[\s\S]*?\n:root \{([\s\S]*?)\n\}/);
+  const darkMedia = block(/:root:not\(\[data-theme="light"\]\) \{([\s\S]*?)\n  \}/);
+  const darkChosen = block(/\n:root\[data-theme="dark"\] \{([\s\S]*?)\n\}/);
+  ok('the dark theme is the same whether the phone or the moon button chose it',
+    darkMedia && darkMedia === darkChosen);
+
+  const read = (src, name) => { const m = src && src.match(new RegExp('--' + name + ':\\s*(#[0-9a-f]{6})')); return m && m[1]; };
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const PAIRS = [
+    ['ink-faint', 'surface', 4.5], ['ink-faint', 'bg', 4.5], ['ink-faint', 'surface-3', 4.5],
+    ['accent-ink', 'accent', 4.5],
+    ['st-todo-ink', 'st-todo-soft', 4.5], ['st-doing-ink', 'st-doing-soft', 4.5], ['st-review-ink', 'st-review-soft', 4.5],
+    ['st-feedback-ink', 'st-feedback-soft', 4.5], ['st-done-ink', 'st-done-soft', 4.5],
+    ['u-late', 'u-late-soft', 4.5], ['u-now', 'u-now-soft', 4.5], ['u-soon', 'u-soon-soft', 4.5], ['u-ahead', 'u-ahead-soft', 4.5],
+    ['danger', 'danger-soft', 4.5], ['prio-low', 'surface', 4.5], ['prio-high', 'surface', 4.5], ['prio-highest', 'surface', 4.5],
+    ['line-strong', 'surface-2', 3],
+  ];
+  for (const [theme, src] of [['light', lightBlock], ['dark', darkMedia]]) {
+    const misses = PAIRS.map(([fg, bg, need]) => {
+      const f = read(src, fg) || read(lightBlock, fg), g = read(src, bg) || read(lightBlock, bg);
+      if (!f || !g) return `${fg}/${bg}: missing`;
+      const r = ratio(f, g);
+      return r >= need ? null : `${fg} on ${bg} ${r.toFixed(2)}:1`;
+    }).filter(Boolean);
+    ok(`every text pair reaches its contrast floor in ${theme}`, misses.length === 0, misses.join('; '));
+  }
+
+  const dueRules = themeCss.split('\n').filter((l) => /^\.due-chip\.u-(now|soon|ahead)/.test(l));
+  ok('due chips take their colours from the urgency tokens, so dark mode applies to them',
+    dueRules.length === 3 && dueRules.every((l) => !/#[0-9a-f]{3,6}\b/i.test(l)), dueRules.join(' | '));
+  ok('the list group header no longer puts white on the status colour',
+    /\.lg-head \.st-pill \{[^}]*color: var\(--st-ink\)/.test(themeCss));
+  ok('filled buttons use the deeper pink with its own text colour',
+    /\.btn\.primary \{ background: var\(--accent\);[^}]*color: var\(--accent-ink\)/.test(themeCss));
+  ok('on a phone, the page leaves room under the floating + button',
+    /main \{ padding: 10px 14px calc\(var\(--tabbar-h, 56px\) \+ 56px/.test(themeCss));
+
+  ok('the page does not load the QR library up front', !/<script[^>]+qrcode\.js/.test(indexHtml));
+  ok('...nor the English strings', !/<script[^>]+i18n-en\.js/.test(indexHtml));
+  ok('...and app.js knows where to fetch both',
+    /'\.\/vendor\/qrcode\.js\?v='/.test(appSource) && /'\.\/i18n-en\.js\?v='/.test(appSource));
+
+  const leftovers = ['lib/public', 'lib/api', 'lib/lib', 'lib/test', 'cuftm-viewers'].filter((d) => fs.existsSync(d));
+  ok('no stale second copy of the app sits inside the package', leftovers.length === 0, leftovers.join(', '));
+}
 
 
 

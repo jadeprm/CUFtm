@@ -78,8 +78,44 @@
     }
   }
 
+  /** Adds a classic script to the page and calls done when it loads or fails. */
+  function loadScript(src, done) {
+    var s = document.createElement('script');
+    s.src = src;
+    s.onload = s.onerror = function () { done(); };
+    document.head.appendChild(s);
+  }
+
+  /**
+   * English is a separate file (i18n-en.js), fetched the first time somebody
+   * is in English, so the Thai majority never downloads it. Callers that are
+   * about to draw wait for it here; Thai needs nothing.
+   */
+  var langWaiting = null;
+  function ensureLang(lang, done) {
+    done = done || function () {};
+    if (lang !== 'en' || window.STRINGS.en) { done(); return; }
+    if (langWaiting) { langWaiting.push(done); return; }
+    langWaiting = [done];
+    loadScript('./i18n-en.js?v=' + APP_VERSION, function () {
+      var q = langWaiting; langWaiting = null;
+      q.forEach(function (f) { f(); });
+    });
+  }
+
+  /** The safety net: anything drawn in English before the file arrived is drawn again once it has. */
+  function redrawForLang() {
+    var app = document.getElementById('app-view'), auth = document.getElementById('auth-view');
+    if (S.user && app && !app.hidden) { renderShell(); renderPage(); }
+    else if (!S.user && auth && !auth.hidden) renderAuth();
+  }
+
   var t = function (key) {
-    var table = window.STRINGS[S.lang] || window.STRINGS.th;
+    var table = window.STRINGS[S.lang];
+    if (!table) {
+      table = window.STRINGS.th;
+      if (S.lang === 'en' && !langWaiting) ensureLang('en', redrawForLang);
+    }
     return table[key] !== undefined ? table[key] : key;
   };
   /**
@@ -87,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-19b';
+  var APP_VERSION = '2026-10-19c';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -609,6 +645,7 @@
   }
 
   function renderAuth() {
+    if (S.lang === 'en' && !window.STRINGS.en) { ensureLang('en', renderAuth); return; }
     bootDone();
     /**
      * Before the committee opens the system, strangers get the holding page
@@ -725,10 +762,10 @@
     S.lang = lang === 'en' ? 'en' : 'th';
     try { localStorage.setItem('fair-lang', S.lang); } catch (e) {}
     document.documentElement.lang = S.lang;
-    if (S.user) {
-      api('/api/users?do=me', { method: 'PATCH', body: { lang: S.lang } }).catch(function () {});
-      renderShell(); renderPage();
-    } else renderAuth();
+    if (S.user) api('/api/users?do=me', { method: 'PATCH', body: { lang: S.lang } }).catch(function () {});
+    ensureLang(S.lang, function () {
+      if (S.user) { renderShell(); renderPage(); } else renderAuth();
+    });
   }
   document.querySelectorAll('.lang-toggle button').forEach(function (b) {
     b.addEventListener('click', function () { setLang(b.dataset.lang); });
@@ -1663,8 +1700,12 @@
       clear(list);
       var shown = matching();
       if (!shown.length) {
-        list.appendChild(h('div', { class: 'empty' }, [h('strong', {
-          text: S.docs.length ? t('docNoneMatch') : t('docNone') })]));
+        // With nothing at all, say what this page is for and how to start, not only that it is empty.
+        list.appendChild(h('div', { class: 'empty' }, S.docs.length ? [h('strong', { text: t('docNoneMatch') })] : [
+          h('strong', { text: t('docNone') }),
+          h('p', { class: 'empty-help', text: t('docNoneHelp') }),
+          h('button', { class: 'btn primary', type: 'button', text: t('docNoneAction'), onclick: function () { openDocUpload(); } }),
+        ]));
         return;
       }
       shown.forEach(function (doc) {
@@ -7571,7 +7612,13 @@
     return sheet;
   }
 
+  /** qrcode.js is only needed here, so it is fetched the first time a QR is opened rather than on every page load. */
   function openQr(link) {
+    if (window.qrcode) { openQrNow(link); return; }
+    loadScript('./vendor/qrcode.js?v=' + APP_VERSION, function () { openQrNow(link); });
+  }
+
+  function openQrNow(link) {
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
     var holder = h('div', { class: 'qr-holder' });
     var short = absoluteShort(link);
@@ -11155,49 +11202,71 @@
       .catch(function () {});
     grid.appendChild(todayCard);
 
-    // Finished per week.
-    var wkLabels = st.weeks.map(function (w, i) { return i === st.weeks.length - 1 ? t('thisWeekShort') : fmtDate(w, { day: 'numeric', month: 'short' }); });
-    grid.appendChild(h('section', { class: 'card hc-trend' }, [
-      h('div', { class: 'card-head' }, [icon('chart'), h('h3', { text: t('homeTrend') }), h('span', { class: 'grow' }),
-        h('small', { text: t('homeTrendTotal').replace('%n', String(st.done.length)) })]),
-      h('div', { class: 'chart-box' }, [barChart(st.perWeek, wkLabels, { width: 420, height: 160, highlight: st.perWeek.length - 1, label: t('homeTrend') })]),
-    ]));
-
-    // Where my work stands.
-    var stParts = STATUS_LIST.map(function (s) { return { value: st.statusCount[s], colour: STATUS_HEX[s], label: statusLabel(s) }; });
-    grid.appendChild(h('section', { class: 'card hc-status' }, [
-      h('div', { class: 'card-head' }, [icon('pie'), h('h3', { text: t('homeStatus') })]),
-      h('div', { class: 'donut-row' }, [
-        donut(stParts, { size: 132, stroke: 20, center: st.mine.length, sub: t('homeTasks') }),
-        h('ul', { class: 'legend' }, STATUS_LIST.map(function (s) {
-          return h('li', {}, [h('i', { style: 'background:' + STATUS_HEX[s] }), h('span', { text: statusLabel(s) }), h('b', { text: String(st.statusCount[s]) })]);
-        })),
-      ]),
-    ]));
-
-    // On time.
-    var pct = st.onTimePct;
-    grid.appendChild(h('section', { class: 'card hc-ontime' }, [
-      h('div', { class: 'card-head' }, [icon('target'), h('h3', { text: t('homeOnTime') })]),
-      h('div', { class: 'donut-row' }, [
-        donut([{ value: pct || 0, colour: pct === null ? 'var(--surface-3)' : (pct >= 80 ? '#12a36b' : pct >= 50 ? '#f59e0b' : '#e5484d') },
-          { value: 100 - (pct || 0), colour: 'transparent' }], { size: 132, stroke: 14, center: pct === null ? '—' : pct + '%', sub: t('homeOnTimeSub') }),
-        h('div', { class: 'ot-tx' }, [
-          h('b', { text: pct === null ? t('homeOnTimeNone') : t('homeOnTimeOf').replace('%a', String(st.onTime)).replace('%b', String(st.judged)) }),
-          h('small', { text: pct === null ? '' : pct >= 80 ? t('homeOnTimeGreat') : pct >= 50 ? t('homeOnTimeOk') : t('homeOnTimeLow') }),
+    /**
+     * Somebody with no tasks yet — usually their first day — gets a card that
+     * says where work will appear and what to do now, instead of four charts of
+     * zeros that fill a phone screen and explain nothing.
+     */
+    if (!st.mine.length) {
+      // First in the grid, so on a phone it is the first thing under the numbers.
+      grid.insertBefore(h('section', { class: 'card hc-start' }, [
+        h('div', { class: 'card-head' }, [icon('spark'), h('h3', { text: t('homeStartTitle') })]),
+        h('ol', { class: 'start-list' }, [
+          h('li', {}, [h('span', { text: t('homeStartWork') }),
+            h('a', { class: 'btn sm', href: '#/work', text: t('homeStartWorkBtn') })]),
+          h('li', {}, [h('span', { text: t('homeStartSetup') }),
+            h('button', { class: 'btn sm', type: 'button', text: t('homeStartSetupBtn'),
+              onclick: function () { guideStatus().then(function (steps) { openGuide(steps, true); }); } })]),
+          mayCreate() ? h('li', {}, [h('span', { text: t('homeStartCreate') }),
+            h('button', { class: 'btn sm primary', type: 'button', text: t('homeStartCreateBtn'), onclick: function () { openCreateSheet(); } })]) : null,
         ]),
-      ]),
-    ]));
+      ]), grid.firstChild);
+    } else {
+      // Finished per week.
+      var wkLabels = st.weeks.map(function (w, i) { return i === st.weeks.length - 1 ? t('thisWeekShort') : fmtDate(w, { day: 'numeric', month: 'short' }); });
+      grid.appendChild(h('section', { class: 'card hc-trend' }, [
+        h('div', { class: 'card-head' }, [icon('chart'), h('h3', { text: t('homeTrend') }), h('span', { class: 'grow' }),
+          h('small', { text: t('homeTrendTotal').replace('%n', String(st.done.length)) })]),
+        h('div', { class: 'chart-box' }, [barChart(st.perWeek, wkLabels, { width: 420, height: 160, highlight: st.perWeek.length - 1, label: t('homeTrend') })]),
+      ]));
 
-    // The day things get done.
-    var wdLabels = WEEK_KEYS.map(function (k) { return t('wd_' + k); });
-    var anyDone = st.byWeekday.some(function (v) { return v > 0; });
-    grid.appendChild(h('section', { class: 'card hc-days' }, [
-      h('div', { class: 'card-head' }, [icon('bolt'), h('h3', { text: t('homeBestDay') }), h('span', { class: 'grow' }),
-        anyDone ? h('span', { class: 'chip best-day', text: t('wdl_' + WEEK_KEYS[st.bestDay]) }) : null]),
-      h('div', { class: 'chart-box' }, [barChart(st.byWeekday, wdLabels, { width: 320, height: 140, highlight: anyDone ? st.bestDay : -1,
-        hiColour: '#8b5cf6', colour: 'color-mix(in srgb, #8b5cf6 30%, transparent)', label: t('homeBestDay') })]),
-    ]));
+      // Where my work stands.
+      var stParts = STATUS_LIST.map(function (s) { return { value: st.statusCount[s], colour: STATUS_HEX[s], label: statusLabel(s) }; });
+      grid.appendChild(h('section', { class: 'card hc-status' }, [
+        h('div', { class: 'card-head' }, [icon('pie'), h('h3', { text: t('homeStatus') })]),
+        h('div', { class: 'donut-row' }, [
+          donut(stParts, { size: 132, stroke: 20, center: st.mine.length, sub: t('homeTasks') }),
+          h('ul', { class: 'legend' }, STATUS_LIST.map(function (s) {
+            return h('li', {}, [h('i', { style: 'background:' + STATUS_HEX[s] }), h('span', { text: statusLabel(s) }), h('b', { text: String(st.statusCount[s]) })]);
+          })),
+        ]),
+      ]));
+
+      // On time.
+      var pct = st.onTimePct;
+      grid.appendChild(h('section', { class: 'card hc-ontime' }, [
+        h('div', { class: 'card-head' }, [icon('target'), h('h3', { text: t('homeOnTime') })]),
+        h('div', { class: 'donut-row' }, [
+          donut([{ value: pct || 0, colour: pct === null ? 'var(--surface-3)' : (pct >= 80 ? '#12a36b' : pct >= 50 ? '#f59e0b' : '#e5484d') },
+            { value: 100 - (pct || 0), colour: 'transparent' }], { size: 132, stroke: 14, center: pct === null ? '—' : pct + '%', sub: t('homeOnTimeSub') }),
+          h('div', { class: 'ot-tx' }, [
+            h('b', { text: pct === null ? t('homeOnTimeNone') : t('homeOnTimeOf').replace('%a', String(st.onTime)).replace('%b', String(st.judged)) }),
+            h('small', { text: pct === null ? '' : pct >= 80 ? t('homeOnTimeGreat') : pct >= 50 ? t('homeOnTimeOk') : t('homeOnTimeLow') }),
+          ]),
+        ]),
+      ]));
+
+      // The day things get done.
+      var wdLabels = WEEK_KEYS.map(function (k) { return t('wd_' + k); });
+      var anyDone = st.byWeekday.some(function (v) { return v > 0; });
+      grid.appendChild(h('section', { class: 'card hc-days' }, [
+        h('div', { class: 'card-head' }, [icon('bolt'), h('h3', { text: t('homeBestDay') }), h('span', { class: 'grow' }),
+          anyDone ? h('span', { class: 'chip best-day', text: t('wdl_' + WEEK_KEYS[st.bestDay]) }) : null]),
+        h('div', { class: 'chart-box' }, [barChart(st.byWeekday, wdLabels, { width: 320, height: 140, highlight: anyDone ? st.bestDay : -1,
+          hiColour: '#8b5cf6', colour: 'color-mix(in srgb, #8b5cf6 30%, transparent)', label: t('homeBestDay') })]),
+      ]));
+
+    }
 
     // Coming up.
     var next = st.open.filter(function (x) { return x.dueDate; }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; }).slice(0, phone ? 4 : 6);
@@ -12261,6 +12330,8 @@
   }
 
   function boot() {
+    // Somebody in English waits the moment it takes to fetch the English table, rather than seeing Thai flash first.
+    if (S.lang === 'en' && !window.STRINGS.en) { ensureLang('en', boot); return; }
     return Promise.all([
       api('/api/meta'),
       api('/api/users'),
@@ -12311,6 +12382,8 @@
     var saved = localStorage.getItem('fair-lang');
     if (saved) S.lang = saved;
   } catch (e) {}
+  // Start fetching English now, alongside the sign-in check, so it is usually here before anything draws.
+  if (S.lang === 'en') ensureLang('en');
 
   // Read the theme before the first paint so the page never flashes the wrong one.
   try { applyTheme(localStorage.getItem('fair-theme') || 'system'); } catch (e) { applyTheme('system'); }
