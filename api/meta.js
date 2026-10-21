@@ -5,7 +5,7 @@ import { STATUSES, PRIORITIES } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
 import { currentUser, canEditTasks, canManageAccounts } from '../lib/auth.js';
 import { makeCode, readCode, readTarget, shortUrl } from '../lib/shortlink.js';
-import { siteUrl } from '../lib/line.js';
+import { siteUrl, siteHosts, shortlinkUrl } from '../lib/line.js';
 import { CIRCLES } from '../lib/circles.js';
 import { ACCESS_ORDER } from '../lib/auth.js';
 
@@ -188,6 +188,9 @@ async function links(request, action) {
 
   const url = requestUrl(request);
   const site = siteUrl();
+  // The address printed on posters and encoded in the QR — chulafair.com when
+  // SHORTLINK_URL says so, the app's own address otherwise.
+  const shortSite = shortlinkUrl();
   const shape = (row) => ({
     code: row.code,
     url: row.url,
@@ -197,7 +200,7 @@ async function links(request, action) {
     active: row.active,
     hits: row.hits,
     lastHitAt: row.last_hit_at,
-    shortUrl: shortUrl(site, row.code),
+    shortUrl: shortUrl(shortSite, row.code),
     mine: row.created_by === me.username,
   });
 
@@ -217,7 +220,7 @@ async function links(request, action) {
 
     return json({
       links: rows.map(shape),
-      site,
+      site: shortSite,
       mayCreate: canEditTasks(me),
       mayManageAll: canManageAccounts(me),
       remaining: Math.max(0, MAX_PER_PERSON - mine),
@@ -234,7 +237,7 @@ async function links(request, action) {
     if (!canEditTasks(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
 
     const body = await request.json().catch(() => ({}));
-    const target = readTarget(body.url, { siteUrl: site });
+    const target = readTarget(body.url, { siteUrl: site, hosts: siteHosts() });
     if (target.error) return json({ error: target.error }, 400);
 
     const [{ mine }] = await sql`
@@ -299,7 +302,7 @@ async function links(request, action) {
     }
 
     if (body.url !== undefined) {
-      const target = readTarget(body.url, { siteUrl: site });
+      const target = readTarget(body.url, { siteUrl: site, hosts: siteHosts() });
       if (target.error) return json({ error: target.error }, 400);
       await sql`UPDATE short_links SET url = ${target.url} WHERE code = ${read.code}`;
     }

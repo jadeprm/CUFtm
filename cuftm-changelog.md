@@ -9,6 +9,53 @@ Ship complete folders (api/ lib/ public/ test/ dev-tests/), never partial zips, 
 **Working on this in a new container:** restore from the latest zip, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-22 — cuftm-2026-10-22a-shortlink-domain.zip · version `2026-10-22a`
+No schema change (`2026-10-18a` still). Still 12 functions.
+
+### Short links and their QR codes move to chulafair.com
+The app lives at **task.chulafair.com**; the short links now live at **chulafair.com**, which is the point of having a short domain — it goes on a poster and gets read aloud across a room.
+
+`shortlinkUrl()` (lib/line.js) reads a new **`SHORTLINK_URL`** and falls back to `siteUrl()` when it is unset, so nothing changes for anyone who does not set it. `?do=link` builds every `shortUrl` from it, and because the page draws the QR and the A4 print sheet from that same value, both follow with no change of their own.
+
+The loop check follows too: `siteHosts()` now counts the short-link host as this site, so a link pointing at `chulafair.com/s/ABC` is refused like any other self-reference.
+
+**To turn it on:**
+
+1. **Vercel → Settings → Domains:** add `chulafair.com` to this same project. By default Vercel redirects a non-primary domain to the primary one, which works — `chulafair.com/s/ABC` → `task.chulafair.com/s/ABC` → the target — but it is one hop longer and the person watching the address bar sees the app's domain. Turning the redirect off, so `chulafair.com` serves the project directly, keeps the short address all the way through. Either is fine; the direct one is better.
+2. **Vercel → Settings → Environment Variables:** `SHORTLINK_URL` = `https://chulafair.com` (Production). **Then redeploy.**
+
+**Links already printed keep working.** Codes live in the database, not in the domain, so every old `cu-ftm.vercel.app/s/CODE` poster still resolves as long as that domain stays on the project — and the page now prints the new address for anything made from here on. Nothing was renumbered.
+
+### Tests
+Five new checks: short links staying put with `SHORTLINK_URL` unset, moving when it is set (trailing slash trimmed), the printed address and the QR taking that value, the app still advertising its own address everywhere else, and the short-link host counting as this site in the loop check. 1293 checks.
+
+## 2026-10-20 — cuftm-2026-10-20a-domain.zip · version `2026-10-20a`
+No schema change (`2026-10-18a` still). Still 12 functions.
+
+### Moving to task.chulafair.com
+
+**The move itself needs no code.** Every address the app hands out — short links, the QR codes beside them, the links the LINE bot sends, push notifications — comes from `siteUrl()` in `lib/line.js`, which reads `SITE_URL` and falls back to whatever Vercel calls the deployment. Set the variable and everything follows.
+
+Four settings, in this order:
+
+1. **Vercel → Settings → Environment Variables:** `SITE_URL` = `https://task.chulafair.com` (Production). **Then redeploy** — a variable only reaches deployments created after it was saved.
+2. **Vercel → Settings → Domains:** make `task.chulafair.com` the **primary** domain so `cu-ftm.vercel.app` redirects to it. Every QR code already printed keeps working: the redirect carries the `/s/CODE` path across.
+3. **Google Cloud console → the OAuth client:** add `https://task.chulafair.com/api/auth?do=google-callback` to the authorised redirect URIs. Keep the old one until nobody is on the old address. Without this, linking Google Calendar fails with a redirect-URI mismatch.
+4. **LINE Developers → Messaging API:** change the webhook to `https://task.chulafair.com/api/line`. The rich-menu and chat links need nothing — they are built from `SITE_URL`.
+
+Two things to expect. **Everybody signs in again:** the session cookie is host-only (no `Domain=`, deliberately), so a session on the old address does not carry to the new one. And **calendar subscriptions made on the old address keep working**, because the old host still resolves; new ones are issued on the new address automatically, since the page builds that link from wherever it is being viewed.
+
+### The one thing the move does break, fixed here
+A short link may not point at another short link on this site — a pair of them is a redirect loop the browser gives up on. That check compared the target against the ONE address the app advertises. After the move, `cu-ftm.vercel.app/s/ABC` reaches the same `/s/` and would have sailed through.
+
+`siteHosts()` (lib/line.js) now lists **every** address this deployment answers on — `SITE_URL`, the Vercel production and preview hosts, and anything in a new optional `EXTRA_HOSTS` (comma-separated, for a second custom domain) — and `readTarget` refuses a `/s/` target on any of them. Somebody else's `/s/` is still a perfectly good destination.
+
+### Tests
+Six new checks: the old address and the new one both refused as self-targets, another site's `/s/` still accepted, and `siteHosts()` collecting all four sources in order while `siteUrl()` keeps advertising just the one. 1288 checks.
+
+### Still worth deleting
+`test/e2e.mjs` and `DEPLOY.md` are both from the old Slack project — `DEPLOY.md` documents setting up a Slack app and has nothing to do with this one. Neither runs; both ship inside the deployment.
+
 ## 2026-10-19d — the two 2026-10-19c builds, merged · version `2026-10-19d`
 No schema change (`2026-10-18a` still). Still 12 functions.
 

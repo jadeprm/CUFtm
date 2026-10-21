@@ -3967,7 +3967,8 @@ ok('...and says how many people have the paid digest on',
 // ===========================================================================
 head('62. Short links, and the QR codes that go on posters');
 
-const { readCode, readTarget, makeCode, ALPHABET } = await import('../lib/shortlink.js');
+const { readCode, readTarget, makeCode, shortUrl, ALPHABET } = await import('../lib/shortlink.js');
+const { siteUrl, siteHosts, shortlinkUrl } = await import('../lib/line.js');
 
 // ---- the rules, without a database -------------------------------------
 ok('a code is folded to upper case, so a poster can be typed either way',
@@ -3985,6 +3986,63 @@ ok('...but it can point at an ordinary page on the same site',
   Boolean(readTarget('https://fair.test/work', { siteUrl: 'https://fair.test' }).url));
 ok('a link typed without https:// still works',
   readTarget('forms.gle/abc').url === 'https://forms.gle/abc');
+/**
+ * Moving to a custom domain does not retire the old one. Both addresses reach
+ * the same /s/, so a link pointing at either is still pointing at itself.
+ */
+ok('...and the old address is still this site after a move to a custom domain',
+  readTarget('https://cu-ftm.vercel.app/s/ABC',
+    { siteUrl: 'https://task.chulafair.com', hosts: ['cu-ftm.vercel.app'] }).error === 'POINTS_AT_ITSELF');
+ok('...the new one too',
+  readTarget('https://task.chulafair.com/s/ABC',
+    { siteUrl: 'https://task.chulafair.com', hosts: ['cu-ftm.vercel.app'] }).error === 'POINTS_AT_ITSELF');
+ok('...while somebody else\u2019s /s/ is a perfectly good destination',
+  Boolean(readTarget('https://bit.example/s/ABC',
+    { siteUrl: 'https://task.chulafair.com', hosts: ['cu-ftm.vercel.app'] }).url));
+
+/**
+ * Every address this deployment answers on, however it was configured.
+ */
+{
+  const keep = { SITE_URL: process.env.SITE_URL, VERCEL_URL: process.env.VERCEL_URL,
+                 VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+                 EXTRA_HOSTS: process.env.EXTRA_HOSTS };
+  process.env.SITE_URL = 'https://task.chulafair.com/';
+  process.env.VERCEL_PROJECT_PRODUCTION_URL = 'cu-ftm.vercel.app';
+  process.env.VERCEL_URL = 'cu-ftm-git-main.vercel.app';
+  process.env.EXTRA_HOSTS = 'www.chulafair.com, old.example';
+  const hosts = siteHosts();
+  ok('siteHosts lists every address, from the advertised one to the spares',
+    hosts.join(',') === 'task.chulafair.com,cu-ftm.vercel.app,cu-ftm-git-main.vercel.app,www.chulafair.com,old.example',
+    hosts.join(','));
+  ok('...and the advertised address is still just the one',
+    siteUrl() === 'https://task.chulafair.com', String(siteUrl()));
+
+  /**
+   * The short links live on the shortest address the committee owns, which
+   * need not be where the app lives.
+   */
+  ok('with no SHORTLINK_URL, short links stay on the app\u2019s own address',
+    shortlinkUrl() === 'https://task.chulafair.com', String(shortlinkUrl()));
+  process.env.SHORTLINK_URL = 'https://chulafair.com/';
+  ok('SHORTLINK_URL moves them, trailing slash and all',
+    shortlinkUrl() === 'https://chulafair.com', String(shortlinkUrl()));
+  ok('...and that is the address printed and put in the QR',
+    shortUrl(shortlinkUrl(), 'CUFAIR') === 'https://chulafair.com/s/CUFAIR',
+    shortUrl(shortlinkUrl(), 'CUFAIR'));
+  ok('...while the app keeps advertising its own address everywhere else',
+    siteUrl() === 'https://task.chulafair.com', String(siteUrl()));
+  ok('...and the short-link host counts as this site for the loop check',
+    siteHosts().includes('chulafair.com') &&
+    readTarget('https://chulafair.com/s/ABC',
+      { siteUrl: siteUrl(), hosts: siteHosts() }).error === 'POINTS_AT_ITSELF',
+    siteHosts().join(','));
+
+  for (const [k, v] of Object.entries(keep)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+  delete process.env.SHORTLINK_URL;
+}
 
 // ---- making one ---------------------------------------------------------
 r = await call(metaApi, '/api/meta?do=link', { method: 'POST', as: 'content',
