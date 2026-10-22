@@ -4,11 +4,31 @@
  * something else start each browser with it put off for the session, exactly
  * as pressing "Later" would. guide.mjs is the suite that tests the guide.
  */
-export function quietGuide(b) {
+export function quietGuide(b, { popups = false } = {}) {
   const newContext = b.newContext.bind(b);
   b.newContext = async (opts) => {
     const ctx = await newContext(opts);
     await ctx.addInitScript(() => { try { sessionStorage.setItem('fair-guide-later', '1'); } catch (e) {} });
+
+    /**
+     * And the committee's pop-up, which is the guide's problem all over again
+     * but worse: it is a box over the page that belongs to no suite in
+     * particular, so one left live by a crashed run breaks every other suite
+     * with "intercepts pointer events" — a failure that looks nothing like
+     * its cause.
+     *
+     * Answered at the network edge rather than with a flag in app.js: this is
+     * a fact about the test browser, not a behaviour the app should carry.
+     * `quietGuide(b, { popups: true })` lets it through, for the one suite
+     * whose job is to test it.
+     */
+    if (!popups) {
+      await ctx.route('**/api/push?do=popup', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: JSON.stringify({ popup: null }),
+      }));
+    }
     /**
      * The app now opens on หน้าแรก. Every suite here was written against the
      * work page being where a sign-in lands, so a bare address still goes

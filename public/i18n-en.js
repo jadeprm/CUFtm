@@ -146,6 +146,7 @@ Object.assign(window.STRINGS, {
     mtgFileSeeThese: 'See this item\u2019s papers',
     mtgFileMoved: 'Moved',
     errNoSuchAgendaItem: 'That agenda item is not there. It may have been removed.',
+    errUnknownAction: 'The server has not been updated to match this page. Deploy the missing files and try again.',
     errMembersCannotAdd: 'Members cannot add links yet — ask your department head or an admin.',
     errNoSuchFolder: 'That folder is not there. It may have been deleted.',
     errNotAFolder: 'Things cannot go inside a link — it has to be a folder.',

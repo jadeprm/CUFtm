@@ -152,6 +152,7 @@ window.STRINGS = {
     mtgFileSeeThese: 'ดูเอกสารของวาระนี้',
     mtgFileMoved: 'ย้ายแล้ว',
     errNoSuchAgendaItem: 'ไม่พบวาระนี้ อาจถูกลบไปแล้ว',
+    errUnknownAction: 'เซิร์ฟเวอร์ยังไม่ได้อัปเดตเป็นเวอร์ชันเดียวกับหน้าเว็บ — ต้อง deploy ไฟล์ให้ครบแล้วลองใหม่',
     errMembersCannotAdd: 'สมาชิกฝ่ายยังเพิ่มลิงก์ไม่ได้ — บอกประธานฝ่ายหรือแอดมินให้เพิ่มให้',
     errNoSuchFolder: 'ไม่พบโฟลเดอร์นี้ อาจถูกลบไปแล้ว',
     errNotAFolder: 'วางของในลิงก์ไม่ได้ ต้องเป็นโฟลเดอร์',
@@ -1451,6 +1452,7 @@ window.STRINGS = {
 };
 
 window.ERROR_KEYS = {
+  UNKNOWN_ACTION: 'errUnknownAction',
   NO_SUCH_AGENDA_ITEM: 'errNoSuchAgendaItem',
   // The shelf of important links
   MEMBERS_CANNOT_ADD: 'errMembersCannotAdd',

@@ -1,5 +1,5 @@
 import { APP_VERSION } from '../lib/version.js';
-import { json, hasDatabase, getSql, requestUrl } from '../lib/db.js';
+import { json, hasDatabase, getSql, requestUrl, toBuffer } from '../lib/db.js';
 import { DEPARTMENTS } from '../lib/departments.js';
 import { STATUSES, PRIORITIES } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
@@ -7,7 +7,20 @@ import { currentUser, canEditTasks, canManageAccounts } from '../lib/auth.js';
 import { makeCode, readCode, readTarget, shortUrl } from '../lib/shortlink.js';
 import { siteUrl, siteHosts, shortlinkUrl } from '../lib/line.js';
 import { CIRCLES } from '../lib/circles.js';
+import { accessSet, seesEverything } from '../lib/scope.js';
+import {
+  MAX_DEPTH, MAX_NODES, canAddToShelf, canSeeNode, canEditNode, canDeleteNode,
+  visibleTree, shapeNode, allNodes, childCounts, descendantsOf, addNode, editNode,
+} from '../lib/shelf.js';
 import { ACCESS_ORDER } from '../lib/auth.js';
+import {
+  KINDS, SEVERITIES, STATES, MAX_SHOTS, MAX_SHOT, NUDGE_AT,
+  canReport, canTriage, canSetTeam, canSeeDetail, teamOf,
+  shapeReport, listReports, oneReport,
+  addReport, triageReport, toggleVote,
+  tellResponders, tellReporter, maybeNudge,
+  digestText, digestRows,
+} from '../lib/reports.js';
 
 /**
  * Reference data, the keep-warm ping, and short links.
@@ -26,6 +39,20 @@ import { ACCESS_ORDER } from '../lib/auth.js';
  *   POST   /api/meta?do=link         make one
  *   PATCH  /api/meta?do=link         change where it points, or switch it off
  *   DELETE /api/meta?do=link&code=…  remove one
+ *
+ *   GET    /api/meta?do=reports         the reports I may see, and what I may do
+ *   POST   /api/meta?do=report          file a bug or a suggestion
+ *   PATCH  /api/meta?do=report          triage one (the rota only)
+ *   POST   /api/meta?do=report-vote     เจอเหมือนกัน, and pressing it again undoes it
+ *   GET    /api/meta?do=report-shot     one screenshot
+ *   GET    /api/meta?do=report-digest   the day's summary, as text to copy
+ *   POST   /api/meta?do=report-team     who else gets the urgent alert (admins only)
+ *
+ *   GET    /api/meta?do=shelf           the shelf of important links, as I may see it
+ *   POST   /api/meta?do=shelf-add       add a link or a folder
+ *   PATCH  /api/meta?do=shelf-edit      rename, re-scope or move one
+ *   DELETE /api/meta?do=shelf-delete    remove one (a folder takes its contents)
+ *   POST   /api/meta?do=shelf-order     re-order one folder's contents
  */
 
 /** Nobody needs two hundred short links; a runaway script might make them. */
@@ -40,6 +67,25 @@ async function handler(request) {
   if (hasDatabase && (action === 'links' || action === 'link')) {
     return links(request, action);
   }
+  if (hasDatabase && action.indexOf('report') === 0) return reports(request, action);
+  if (hasDatabase && action.indexOf('shelf') === 0) return shelf(request, action);
+
+  /**
+   * An action this build does not know about is an error, not reference data.
+   *
+   * Learnt the hard way on 22 October. A deployment went out with the new
+   * page but an old copy of this file, so `?do=reports` fell through to the
+   * block below and answered 200 with the department tree. The page got a
+   * perfectly valid response with none of the fields it wanted and showed
+   * "เกิดข้อผิดพลาด กรุณาลองใหม่", which is true and tells nobody anything —
+   * and from the outside the server looked healthy, because every version
+   * string matched.
+   *
+   * Saying UNKNOWN_ACTION instead turns that into a sentence naming the real
+   * problem, and makes a half-applied deploy visible from one request with
+   * no sign-in.
+   */
+  if (action) return json({ error: 'UNKNOWN_ACTION', action, version: APP_VERSION }, 400);
 
   /**
    * A keep-warm ping: /api/meta?ping=1
@@ -337,6 +383,413 @@ async function links(request, action) {
      */
     await sql`DELETE FROM short_links WHERE code = ${read.code}`;
     return json({ ok: true, deleted: read.code });
+  }
+
+  return json({ error: 'UNKNOWN_ACTION' }, 400);
+}
+
+
+// ---------------------------------------------------------------------------
+// Bug reports and suggestions
+// ---------------------------------------------------------------------------
+
+/**
+ * Decodes one screenshot.
+ *
+ * Images only, and the type is read from the bytes rather than trusted from
+ * the `mime` the page sent: this is the one place in the feature where
+ * anybody at all can put a file into the database, so what comes out of it
+ * later must be something a browser will only ever render as a picture.
+ */
+function readShot(value) {
+  const raw = String(value || '').replace(/^data:[^,]*,/, '');
+  if (!raw) return { error: 'EMPTY_FILE' };
+  let buffer;
+  try { buffer = Buffer.from(raw, 'base64'); } catch { return { error: 'BAD_FILE' }; }
+  if (!buffer.length) return { error: 'EMPTY_FILE' };
+  if (buffer.length > MAX_SHOT) return { error: 'SHOT_TOO_BIG', limit: MAX_SHOT };
+
+  const png = buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50;
+  const jpeg = buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8;
+  const webp = buffer.length > 12
+    && buffer.slice(0, 4).toString('latin1') === 'RIFF'
+    && buffer.slice(8, 12).toString('latin1') === 'WEBP';
+  if (!png && !jpeg && !webp) return { error: 'NOT_AN_IMAGE' };
+
+  return { buffer, mime: png ? 'image/png' : jpeg ? 'image/jpeg' : 'image/webp' };
+}
+
+async function reports(request, action) {
+  const { sql, ready } = getSql();
+  await ready;
+
+  const me = await currentUser(request, sql);
+  if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+
+  const url = requestUrl(request);
+  const team = await teamOf(sql);
+  const mayTriage = canTriage(me, team);
+
+  // ---- the list ----------------------------------------------------------
+  if (action === 'reports' && request.method === 'GET') {
+    const rows = await listReports(sql, me.username);
+    /**
+     * Everybody gets the list; the private half of each row is included only
+     * where canSeeDetail allows it, which for most people is their own
+     * reports. The decision is made per row rather than per request, so one
+     * list serves everybody and there is no second code path to lock down.
+     */
+    const reportList = rows.map((row) => shapeReport(row, {
+      detail: canSeeDetail(me, row, team),
+      me: me.username,
+    }));
+
+    /** Who is on the rota, and who could be put on it. Admins only. */
+    let rota = null;
+    if (canSetTeam(me)) {
+      const people = await sql`
+        SELECT username, nickname, display_name, access FROM users
+         WHERE active = true AND suspended = false
+           AND access IN ('admin', 'coadmin')
+         ORDER BY access DESC, nickname`;
+      rota = {
+        chosen: [...team],
+        candidates: people
+          .filter((p) => p.access === 'coadmin')
+          .map((p) => ({ username: p.username, name: p.nickname || p.display_name || p.username })),
+        // Listed so the page can say plainly that these people are always told.
+        always: people.filter((p) => p.access === 'admin').map((p) => ({
+          username: p.username, name: p.nickname || p.display_name || p.username,
+        })),
+      };
+    }
+
+    return json({
+      reports: reportList,
+      kinds: KINDS,
+      severities: SEVERITIES,
+      states: STATES,
+      mayReport: canReport(me),
+      mayTriage,
+      maySetTeam: canSetTeam(me),
+      // So the page can show who is going to be woken by an urgent tick.
+      responders: mayTriage ? [...team] : null,
+      rota,
+      nudgeAt: NUDGE_AT,
+      maxShots: MAX_SHOTS,
+      maxShot: MAX_SHOT,
+      version: APP_VERSION,
+    });
+  }
+
+  // ---- filing one --------------------------------------------------------
+  if (action === 'report' && request.method === 'POST') {
+    if (!canReport(me)) return json({ error: 'CANNOT_REPORT' }, 403);
+    const body = await request.json().catch(() => ({}));
+
+    const shots = [];
+    for (const raw of (Array.isArray(body.shots) ? body.shots : []).slice(0, MAX_SHOTS)) {
+      const shot = readShot(raw);
+      if (shot.error) return json({ error: shot.error, limit: MAX_SHOT }, 400);
+      shots.push(shot);
+    }
+
+    const made = await addReport(sql, me, body, shots);
+    if (made.error) return json({ error: made.error }, 400);
+    const report = made.report;
+
+    /**
+     * An urgent fault wakes the rota at once — that is the whole reason the
+     * tick exists. Everything else waits for the daily summary, which is the
+     * bargain that keeps the alert worth answering: if every suggestion
+     * buzzed somebody's phone, the next genuine emergency would arrive in a
+     * notification shade nobody reads any more.
+     */
+    if (report.severity === 'urgent') {
+      await tellResponders(sql, {
+        actor: me.username,
+        title: `ด่วน · ${report.code}`,
+        body: `${report.title} — แจ้งโดย ${me.nickname || me.display_name || me.username}`,
+        tag: `report-${report.id}`,
+        loudly: true,
+      });
+    }
+
+    const fresh = await oneReport(sql, me.username, report.id);
+    return json({ report: shapeReport(fresh, { detail: true, me: me.username }) }, 201);
+  }
+
+  // ---- triage ------------------------------------------------------------
+  if (action === 'report' && request.method === 'PATCH') {
+    if (!mayTriage) return json({ error: 'NOT_ON_THE_ROTA' }, 403);
+    const body = await request.json().catch(() => ({}));
+
+    const before = await oneReport(sql, me.username, String(body.id || ''));
+    if (!before) return json({ error: 'NO_SUCH_REPORT' }, 404);
+
+    const done = await triageReport(sql, me, before, body);
+    if (done.error) return json({ error: done.error }, 400);
+    const after = done.report;
+
+    /**
+     * The reporter hears when the ANSWER changed, not when a note was tidied.
+     *
+     * Severity is left out on purpose: an admin lowering somebody's urgent to
+     * ติดขัด is a judgement about the fair's afternoon, and telling the
+     * reporter "your report has been downgraded" would mostly teach people
+     * not to tick the box honestly.
+     */
+    if (body.state !== undefined && after.state !== before.state) {
+      const said = {
+        planned: 'รับเรื่องแล้ว อยู่ในแผนที่จะแก้',
+        fixed: 'แก้แล้ว',
+        declined: 'พิจารณาแล้วยังไม่ทำ',
+        duplicate: `ซ้ำกับเรื่องที่มีอยู่แล้ว${after.dup_of ? ' (' + after.dup_of + ')' : ''}`,
+        new: 'กลับมาเป็นเรื่องที่ยังไม่ได้ดู',
+      }[after.state] || after.state;
+      await tellReporter(sql, after, {
+        actor: me.username,
+        title: `${after.code} · ${said}`,
+        body: after.note ? `${after.title} — ${after.note}` : after.title,
+      });
+    }
+
+    /**
+     * An admin raising something TO urgent buzzes the rest of the rota, for
+     * the same reason the tick does: whoever is going to fix it has to find
+     * out now rather than in tomorrow's summary.
+     */
+    if (after.severity === 'urgent' && before.severity !== 'urgent') {
+      await tellResponders(sql, {
+        actor: me.username,
+        title: `ด่วน · ${after.code}`,
+        body: `${after.title} — ${me.nickname || me.display_name || me.username} ตั้งเป็นเรื่องด่วน`,
+        tag: `report-${after.id}`,
+        loudly: true,
+      });
+    }
+
+    const fresh = await oneReport(sql, me.username, after.id);
+    return json({ report: shapeReport(fresh, { detail: true, me: me.username }) });
+  }
+
+  // ---- เจอเหมือนกัน -------------------------------------------------------
+  if (action === 'report-vote' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const report = await oneReport(sql, me.username, String(body.id || ''));
+    if (!report) return json({ error: 'NO_SUCH_REPORT' }, 404);
+
+    const done = await toggleVote(sql, me, report);
+    const nudged = done.voted ? await maybeNudge(sql, report, done.votes) : false;
+    return json({ ...done, nudged });
+  }
+
+  // ---- one screenshot ----------------------------------------------------
+  if (action === 'report-shot' && request.method === 'GET') {
+    const report = await oneReport(sql, me.username, url.searchParams.get('id') || '');
+    if (!report) return json({ error: 'NO_SUCH_REPORT' }, 404);
+    /**
+     * A screenshot is whatever was on somebody's screen at the time, which may
+     * be a letter, a phone number or a private message. So unlike the list,
+     * these are closed: the rota and the person who took it, nobody else.
+     */
+    if (!canSeeDetail(me, report, team)) return json({ error: 'NOT_YOURS' }, 403);
+
+    const i = Math.max(0, Math.min(MAX_SHOTS - 1, Number(url.searchParams.get('i') || 0)));
+    const [row] = await sql`
+      SELECT bytes, mime FROM report_files WHERE report_id = ${report.id} AND idx = ${i}`;
+    if (!row) return json({ error: 'NO_SUCH_SHOT' }, 404);
+
+    const bytes = toBuffer(row.bytes);
+    return new Response(bytes, {
+      headers: {
+        'content-type': row.mime || 'image/png',
+        'content-length': String(bytes.length),
+        // Never cached by anything in between: see the note on the mime type.
+        'cache-control': 'private, no-store',
+        'content-disposition': 'inline',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  }
+
+  // ---- the day's summary -------------------------------------------------
+  if (action === 'report-digest' && request.method === 'GET') {
+    if (!mayTriage) return json({ error: 'NOT_ON_THE_ROTA' }, 403);
+
+    /**
+     * The day defaults to today in Bangkok, not to the browser's today: the
+     * committee reads this summary together and it has to mean the same day
+     * to all of them.
+     */
+    const asked = String(url.searchParams.get('day') || '');
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(asked)
+      ? asked
+      : (await sql`SELECT (now() AT TIME ZONE 'Asia/Bangkok')::date::text AS d`)[0].d;
+
+    const rows = await digestRows(sql, day);
+    return json({
+      day,
+      text: digestText(rows, { day, siteUrl: siteUrl() }),
+      counts: {
+        today: rows.filter((r) => r.on_day === day).length,
+        open: rows.filter((r) => ['new', 'planned'].includes(r.state)).length,
+        urgent: rows.filter((r) => r.severity === 'urgent' && ['new', 'planned'].includes(r.state)).length,
+      },
+    });
+  }
+
+  // ---- who else gets woken up --------------------------------------------
+  if (action === 'report-team' && request.method === 'POST') {
+    if (!canSetTeam(me)) return json({ error: 'ADMINS_ONLY' }, 403);
+    const body = await request.json().catch(() => ({}));
+    const asked = [...new Set((Array.isArray(body.usernames) ? body.usernames : [])
+      .map((u) => String(u || '').trim()).filter(Boolean))].slice(0, 20);
+
+    /**
+     * Only a co-admin can be added, and only an active one.
+     *
+     * Not a member or an editor: being woken at night by a broken page is a
+     * job with power attached, and the people who have that power in this app
+     * are its admins and co-admins. Admins are already told and are filtered
+     * out rather than refused, so ticking one is simply a no-op.
+     */
+    const ok = asked.length
+      ? (await sql`
+          SELECT username FROM users
+           WHERE username = ANY(${asked}) AND active = true AND suspended = false
+             AND access = 'coadmin'`).map((r) => r.username)
+      : [];
+
+    await sql`DELETE FROM report_team WHERE username <> ALL(${ok.length ? ok : ['']})`;
+    for (const username of ok) {
+      await sql`
+        INSERT INTO report_team (username, added_by) VALUES (${username}, ${me.username})
+        ON CONFLICT (username) DO NOTHING`;
+    }
+
+    const refused = asked.filter((u) => !ok.includes(u));
+    return json({ chosen: ok, refused });
+  }
+
+  return json({ error: 'UNKNOWN_ACTION' }, 400);
+}
+
+
+// ---------------------------------------------------------------------------
+// The shelf: important links, in folders
+// ---------------------------------------------------------------------------
+
+async function shelf(request, action) {
+  const { sql, ready } = getSql();
+  await ready;
+
+  const me = await currentUser(request, sql);
+  if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+
+  const url = requestUrl(request);
+  const rows = await allNodes(sql);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+
+  // ---- the whole shelf ---------------------------------------------------
+  if (action === 'shelf' && request.method === 'GET') {
+    const visible = visibleTree(rows, me);
+    /**
+     * The count on a folder counts only what the VIEWER can see.
+     *
+     * A folder saying "8 รายการ" that opens on three is worse than no count
+     * at all — it reads as a bug, or worse, as something being kept from
+     * them. So the number is recomputed over the visible set rather than
+     * taken from the database's own total.
+     */
+    const seen = new Set(visible.map((r) => r.id));
+    const visibleCounts = {};
+    for (const r of visible) {
+      if (r.parent_id && seen.has(r.parent_id)) {
+        visibleCounts[r.parent_id] = (visibleCounts[r.parent_id] || 0) + 1;
+      }
+    }
+    return json({
+      nodes: visible.map((r) => shapeNode(r, me, visibleCounts[r.id] || 0)),
+      mayAdd: canAddToShelf(me),
+      maxDepth: MAX_DEPTH,
+      maxNodes: MAX_NODES,
+      // The ฝ่าย this person may scope a branch to — the page offers these only.
+      myDepartments: seesEverything(me)
+        ? DEPARTMENTS.map((d) => d.key)
+        : [...accessSet(me)].filter((k) => k && k !== 'all'),
+    });
+  }
+
+  // ---- adding one --------------------------------------------------------
+  if (action === 'shelf-add' && request.method === 'POST') {
+    if (!canAddToShelf(me)) return json({ error: 'MEMBERS_CANNOT_ADD' }, 403);
+    const body = await request.json().catch(() => ({}));
+    const made = await addNode(sql, me, body, byId);
+    if (made.error) return json({ error: made.error, limit: made.limit }, 400);
+    return json({ node: shapeNode(made.node, me, 0) }, 201);
+  }
+
+  // ---- changing or moving one -------------------------------------------
+  if (action === 'shelf-edit' && request.method === 'PATCH') {
+    const body = await request.json().catch(() => ({}));
+    const existing = byId.get(String(body.id || ''));
+    if (!existing || !canSeeNode(me, existing)) return json({ error: 'NO_SUCH_ITEM' }, 404);
+    if (!canEditNode(me, existing)) return json({ error: 'NOT_YOURS' }, 403);
+
+    const done = await editNode(sql, me, existing, body, byId);
+    if (done.error) return json({ error: done.error, limit: done.limit }, 400);
+
+    const counts = await childCounts(sql);
+    return json({ node: shapeNode(done.node, me, counts[done.node.id] || 0) });
+  }
+
+  // ---- removing one ------------------------------------------------------
+  if (action === 'shelf-delete' && request.method === 'DELETE') {
+    const id = String(url.searchParams.get('id') || '');
+    const existing = byId.get(id);
+    if (!existing || !canSeeNode(me, existing)) return json({ error: 'NO_SUCH_ITEM' }, 404);
+
+    const inside = descendantsOf(rows, id);
+    if (!canDeleteNode(me, existing, inside.length)) {
+      return json({ error: 'FOLDER_NOT_EMPTY', inside: inside.length }, 403);
+    }
+
+    /**
+     * Deleting a folder takes everything under it — the foreign key cascades.
+     * The count goes back so the page can say what actually went, rather than
+     * reporting "deleted" for a tidy-up that removed nineteen links.
+     */
+    await sql`DELETE FROM doc_links WHERE id = ${id}`;
+    return json({ ok: true, deleted: id, alsoRemoved: inside.length });
+  }
+
+  /**
+   * Re-ordering a folder's contents in one go.
+   *
+   * One request for the whole folder rather than one per item: a drag that
+   * moves one card changes the position of everything after it, and sending
+   * those one at a time is how a list ends up half-sorted when a phone loses
+   * signal mid-drag.
+   */
+  if (action === 'shelf-order' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map((x) => String(x || '')).slice(0, MAX_NODES);
+    if (!ids.length) return json({ error: 'NOTHING_TO_ORDER' }, 400);
+
+    const nodes = ids.map((id) => byId.get(id)).filter(Boolean);
+    if (nodes.length !== ids.length) return json({ error: 'NO_SUCH_ITEM' }, 404);
+    // Everything must sit in the same folder, or "position" means nothing.
+    const parent = nodes[0].parent_id || null;
+    if (nodes.some((n) => (n.parent_id || null) !== parent)) {
+      return json({ error: 'NOT_THE_SAME_FOLDER' }, 400);
+    }
+    if (nodes.some((n) => !canEditNode(me, n))) return json({ error: 'NOT_YOURS' }, 403);
+
+    for (let i = 0; i < ids.length; i++) {
+      await sql`UPDATE doc_links SET position = ${i + 1}, updated_at = now() WHERE id = ${ids[i]}`;
+    }
+    return json({ ok: true, ordered: ids.length });
   }
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);

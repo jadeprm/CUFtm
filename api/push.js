@@ -1,8 +1,13 @@
 import { sortRecipients } from '../lib/notifyprefs.js';
-import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
+import { getSql, json, noDatabase, hasDatabase, requestUrl, toBuffer } from '../lib/db.js';
 import { currentUser, canManageAccounts } from '../lib/auth.js';
 import { isDepartment, expandAccess } from '../lib/departments.js';
 import { publicKey, sendToUser, sendToMany, unreadCount, SUBJECT_IN_USE } from '../lib/push.js';
+import { safeUrl } from '../lib/scope.js';
+import {
+  REPEATS, MAX_IMAGE, MAX_LIVE, canManagePopups,
+  readPopup, shapePopup, pickForViewer, addPopup, editPopup, statsFor, readImage,
+} from '../lib/popup.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -15,6 +20,13 @@ import { withNode } from '../lib/http.js';
  *   PATCH /api/push?do=prefs         turn my own notifications on or off
  *   POST  /api/push?do=announce      admin / co-admin: send a message to people
  *   GET   /api/push?do=sent          admin / co-admin: what was sent, and who read it
+ *
+ *   GET    /api/push?do=popup         the pop-up to show me now, if any
+ *   GET    /api/push?do=popup-image   its picture
+ *   POST   /api/push?do=popup-seen    I have seen it (and whether I followed the link)
+ *   GET    /api/push?do=popups        admin / co-admin: all of them, with who saw each
+ *   POST   /api/push?do=popup-save    make one or change one
+ *   DELETE /api/push?do=popup-delete  remove one
  */
 
 const clean = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -306,6 +318,191 @@ async function handler(request) {
       delivered: result.sent,
       removed: result.removed,
     }, 201);
+  }
+
+
+  // -------------------------------------------------------------------------
+  // The pop-up that greets people when they open the app
+  // -------------------------------------------------------------------------
+
+  /**
+   * What to show me right now, if anything.
+   *
+   * Called on every app load, so it is deliberately cheap: one query for the
+   * live pop-ups, one for what I have already seen, and no image bytes — the
+   * picture is fetched separately only once a box is actually going to be
+   * drawn.
+   */
+  if (request.method === 'GET' && action === 'popup') {
+    const live = await sql`
+      SELECT id, title, body, image_mime, image_w, image_h, link_url, link_label,
+             audience, repeat_mode, starts_at, ends_at, active, created_by, created_at
+        FROM popups
+       WHERE active = true
+         AND (starts_at IS NULL OR starts_at <= now())
+         AND (ends_at IS NULL OR ends_at > now())
+       ORDER BY created_at DESC
+       LIMIT ${MAX_LIVE * 2}`;
+
+    if (!live.length) return json({ popup: null });
+
+    /**
+     * The audience is checked per pop-up rather than in SQL, because
+     * resolveAudience already knows how to expand a department umbrella and
+     * a circle, and having two implementations of "who does this reach" is
+     * how the announcement bug of 11 October happened.
+     */
+    const mine = [];
+    for (const row of live) {
+      let audience;
+      try { audience = JSON.parse(row.audience); } catch { audience = { kind: 'everyone' }; }
+      if ((audience?.kind || 'everyone') === 'everyone') { mine.push(row); continue; }
+      const names = await resolveAudience(sql, audience);
+      if (names.includes(me.username)) mine.push(row);
+    }
+    if (!mine.length) return json({ popup: null });
+
+    const seenRows = await sql`
+      SELECT popup_id, on_day FROM popup_seen
+       WHERE username = ${me.username} AND popup_id = ANY(${mine.map((r) => r.id)})`;
+    const seen = {};
+    for (const r of seenRows) seen[r.popup_id] = r;
+
+    const [{ today }] = await sql`SELECT (now() AT TIME ZONE 'Asia/Bangkok')::date::text AS today`;
+    const pick = pickForViewer(mine, seen, today);
+    return json({ popup: pick ? shapePopup(pick) : null });
+  }
+
+  /** The poster. Signed-in only, and never cached by anything in between. */
+  if (request.method === 'GET' && action === 'popup-image') {
+    const [row] = await sql`
+      SELECT image, image_mime FROM popups WHERE id = ${clean(url.searchParams.get('id'), 64)}`;
+    if (!row || !row.image_mime) return json({ error: 'NO_IMAGE' }, 404);
+    const bytes = toBuffer(row.image);
+    return new Response(bytes, {
+      headers: {
+        'content-type': row.image_mime,
+        'content-length': String(bytes.length),
+        'cache-control': 'private, max-age=600',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  }
+
+  /**
+   * "I have seen it."
+   *
+   * Written when the box is dismissed rather than when it is drawn, so a
+   * pop-up that appeared for half a second while somebody was navigating
+   * away is not counted as read — and, more importantly, is shown again next
+   * time, which is what the author intended.
+   */
+  if (request.method === 'POST' && action === 'popup-seen') {
+    const body = await request.json().catch(() => ({}));
+    const id = clean(body.id, 64);
+    if (!id) return json({ error: 'ID_REQUIRED' }, 400);
+
+    await sql`
+      INSERT INTO popup_seen (popup_id, username, clicked)
+      VALUES (${id}, ${me.username}, ${Boolean(body.clicked)})
+      ON CONFLICT (popup_id, username) DO UPDATE
+        SET at = now(),
+            on_day = (now() AT TIME ZONE 'Asia/Bangkok')::date,
+            -- Once somebody has followed the link, that stays true: a second
+            -- dismissal without clicking does not un-click the first.
+            clicked = popup_seen.clicked OR EXCLUDED.clicked`;
+    return json({ ok: true });
+  }
+
+  // ---- managing them ------------------------------------------------------
+  if (action === 'popups' || action === 'popup-save' || action === 'popup-delete') {
+    if (!canManagePopups(me)) return json({ error: 'EDITORS_CANNOT_ANNOUNCE' }, 403);
+
+    if (request.method === 'GET' && action === 'popups') {
+      const rows = await sql`
+        SELECT id, title, body, image_mime, image_w, image_h, link_url, link_label,
+               audience, repeat_mode, starts_at, ends_at, active, created_by, created_at
+          FROM popups ORDER BY created_at DESC LIMIT 100`;
+      const out = [];
+      for (const row of rows) {
+        out.push(shapePopup(row, { forAdmin: true, stats: await statsFor(sql, row.id) }));
+      }
+      const [{ live }] = await sql`
+        SELECT count(*)::int AS live FROM popups
+         WHERE active = true AND (ends_at IS NULL OR ends_at > now())`;
+      return json({
+        popups: out,
+        repeats: REPEATS,
+        maxLive: MAX_LIVE,
+        maxImage: MAX_IMAGE,
+        liveNow: Number(live),
+        // How many people could see it at all, so the shown/total figure means something.
+        people: (await sql`
+          SELECT count(*)::int AS n FROM users WHERE active = true AND suspended = false`)[0].n,
+      });
+    }
+
+    if (request.method === 'POST' && action === 'popup-save') {
+      const body = await request.json().catch(() => ({}));
+      const id = clean(body.id, 64);
+
+      const existing = id
+        ? (await sql`SELECT * FROM popups WHERE id = ${id}`)[0]
+        : null;
+      if (id && !existing) return json({ error: 'NO_SUCH_POPUP' }, 404);
+
+      const read = readPopup(body, { existing, safeUrl });
+      if (read.error) return json({ error: read.error }, 400);
+      if (!read.popup.body && body.image === undefined && !existing?.image_mime) {
+        // A heading with nothing under it is worse than no pop-up at all.
+        return json({ error: 'NEEDS_WORDS_OR_PICTURE' }, 400);
+      }
+
+      /** `image: null` removes the poster; omitting it leaves the existing one. */
+      let image;
+      if (body.image === null) image = null;
+      else if (body.image !== undefined) {
+        const got = readImage(body.image);
+        if (got.error) return json({ error: got.error, limit: MAX_IMAGE }, 400);
+        image = got;
+      }
+
+      const audience = body.audience === undefined ? null : (body.audience || { kind: 'everyone' });
+      if (audience) {
+        // Refused now rather than discovered later by an admin wondering why
+        // their notice reached nobody.
+        const names = await resolveAudience(sql, audience);
+        if (!names.length) return json({ error: 'NO_RECIPIENTS' }, 400);
+      }
+
+      const done = existing
+        ? await editPopup(sql, existing, read.popup, audience, image)
+        : await addPopup(sql, me, read.popup, audience || { kind: 'everyone' }, image);
+      if (done.error) return json({ error: done.error, limit: MAX_LIVE }, 400);
+
+      /**
+       * Editing the WORDS of a notice people have already seen does not show
+       * it to them again — but changing it into a different notice should, so
+       * `resetSeen` clears the record on request. Deliberately a choice the
+       * admin makes rather than something inferred from what changed: only
+       * they know whether a correction is worth interrupting people twice.
+       */
+      if (existing && body.resetSeen) {
+        await sql`DELETE FROM popup_seen WHERE popup_id = ${existing.id}`;
+      }
+
+      return json({
+        popup: shapePopup(done.popup, { forAdmin: true, stats: await statsFor(sql, done.popup.id) }),
+      }, existing ? 200 : 201);
+    }
+
+    if (request.method === 'DELETE' && action === 'popup-delete') {
+      const id = clean(url.searchParams.get('id'), 64);
+      const [row] = await sql`SELECT id FROM popups WHERE id = ${id}`;
+      if (!row) return json({ error: 'NO_SUCH_POPUP' }, 404);
+      await sql`DELETE FROM popups WHERE id = ${id}`;
+      return json({ ok: true, deleted: id });
+    }
   }
 
   // ---- what has been sent, and who has seen it ----------------------------
