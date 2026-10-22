@@ -11,6 +11,61 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-23 — the feed · version `2026-10-23b`
+Schema **`2026-10-23b`** (migrates itself: two columns on `posts`). Still 12 functions.
+
+The server side of the feed already existed — `lib/feed.js`, the routes on `api/notifications.js`, the tables, the `feed` notification category. What was missing was the page, which is what this release is, plus pinning, which Jade asked for.
+
+### Why it is not the announcements page
+Jade chose this split when asked, and it is the decision the rest of the design hangs off. An **announcement** is the committee speaking TO somebody: it comes from an admin, it buzzes a phone, it is read once. The **feed** is the committee talking AMONG itself: anybody posts, nothing buzzes, and the value is that it is still there next week. Collapsing them gives you one of two bad things — every photo of a Saturday work session interrupting two hundred people, or announcements nobody notices in a stream of photos.
+
+So **the only thing in the feed that notifies anybody is a reply to your own post.** Not likes: a popular photo would be forty notifications, and the one that mattered would be lost among them.
+
+### The page
+- **A composer open to everybody**, including a สมาชิกฝ่าย who cannot create a task. Text, up to four pictures, and a ฝ่าย picker that defaults to ทั้งโครงการ — a post nobody can find is worse than one a few extra people scroll past.
+- **Pictures laid out by how many there are.** One gets the full width at its own shape; two sit side by side; three or four become a grid. A fixed grid letterboxes a single portrait photo into a thin strip, and most phone photos are portrait.
+- **Replies in place**, open already when a post has some and folded when it has none — a conversation behind a button is a conversation nobody joins.
+- **Three tabs and a ฝ่าย dropdown**, not a tab per ฝ่าย. The first build gave an admin seventeen buttons over three lines, because an admin is in all fourteen ฝ่าย. The three real modes are tabs; which ฝ่าย is a different question and gets a dropdown, which also stays on one line on a phone.
+- **A ••• menu** per post: pin (admins), edit, delete, and tell an admin. Opening one closes any other — two lists of actions stacked gives no way to tell which post either belongs to.
+- **Editing changes the words, never the pictures.** Swapping the photo under a post people have already replied to is a different post wearing the same replies; the dialog says so and says to delete and post again instead.
+
+### Pinning
+`pinned_at` rather than a boolean, because a committee eventually pins two things and then the order it pinned them in is the order they belong in. **Admins only** — posting is open to everybody precisely because a post costs nobody anything, and the top of two hundred people's page is a different thing. **Five at most**, or the held list becomes a second feed above the feed.
+
+The part worth knowing: **a pinned post is its own list, not a sort order.** The feed pages by `created_at < cutoff`, which is what makes it cheap and correct — and a pinned post from September sorted to the top of that query would either repeat on every page or be skipped on page two. It comes back as a separate array on the first page only, and is excluded from the stream, so it is never drawn twice. Checked in both suites.
+
+### Tests
+- **run.mjs §94 is new (30 checks)** and covers the whole feature, since none of it had any: a member posting with pictures, ฝ่าย scoping both ways including the pictures, likes counting once and telling nobody, a reply notifying the author, the post owner being able to clear a reply off their own post, who may rewrite and delete, and all of pinning — a member refused, an admin allowed, the separate list, no duplicate in the stream, nothing riding along with page two, and the five-post cap. **1438 checks.**
+- **`dev-tests/feed.mjs` is new**, for what only exists in a browser: the composer, two pictures laying out as a pair, replies folding and unfolding, the like button leaving no zero behind when taken back, only one ••• menu open at once, a ฝ่าย post invisible to another ฝ่าย, and the whole thing at 390px with a thumb-sized ถูกใจ. It clears any leftover pins at both ends — five is a real cap, so a previous run fills it and the next one's pin is refused by a rule working exactly as intended, which is the most confusing kind of red.
+
+### A mistake worth recording
+I overwrote `lib/feed.js` with a fresh implementation, not having noticed the file already existed — the clue was `Write` reporting "updated" rather than "created", and I missed it. Nothing was lost: the original was recovered in full from the session transcript and restored, and the duplicate schema block and routes I had added were removed. But the reason it was recoverable at all is luck, and the reason it happened is that I did not look before writing.
+
+## 2026-10-23 — two pages called เอกสาร, and a pop-up nobody could find · version `2026-10-23a`
+No schema change (`2026-10-22d` still). Still 12 functions. Wording and placement only.
+
+### Two tabs with the same name
+The bottom bar on a phone showed the SHORT label, and two of them were the identical word **เอกสาร** — one for sending official letters, one for the new shelf of links. That is not a naming quibble: it is two tabs you have to press to tell apart.
+
+| | was | now |
+|---|---|---|
+| letters | เอกสาร / เอกสาร | **ส่งเอกสาร** / ส่งเอกสาร |
+| the shelf | เอกสารสำคัญ / เอกสาร | **รวมข้อมูลสำคัญ** / ข้อมูลสำคัญ |
+
+Jade's words, and they are better than mine were: "ส่งเอกสาร" says what the page is *for* rather than what it contains, and "รวมข้อมูลสำคัญ" stops the shelf reading as a kind of เอกสาร at all — which it is not, since most of what belongs on it is a link to a sheet or a form. English follows: **Send a document** and **Key information**. The shelf's one-line intro changed with it.
+
+### The pop-up composer was several screens down
+It sat below **ประกาศที่ส่งไปแล้ว**, which grows without limit — so after a few weeks of announcements the one control for putting a notice in front of the whole committee was far below the fold, and Jade could not find it. It now sits directly under the announcement form. The two things an admin comes to that page to *do* belong together at the top; the record of what was already done belongs underneath.
+
+### Tests
+run.mjs §93 is new (7 checks), and they are about the class of mistake rather than these two instances:
+- **no two tabs may share a short label**, in either language, across all nine — this is the check that would have caught the original clash, and will catch the next one;
+- the two new names are what they should be, and are genuinely translated rather than left in Thai;
+- **every nav label in `index.html` matches its Thai string.** The shell carries the words as untranslated defaults so the tab bar is right in the instant before app.js runs, and the two drift apart silently;
+- the pop-up composer appears before the sent-announcements log in the source.
+
+**1408 checks.** All 29 browser suites still pass — every one of them reaches a page by route or `data-page`, never by its visible label, which is why a rename of this size touched none of them.
+
 ## 2026-10-22 — a paper can belong to one วาระ · version `2026-10-22d`
 Schema **`2026-10-22d`** (migrates itself: one nullable column on `meeting_files`). Still 12 functions.
 

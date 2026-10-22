@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-22d';
+  var APP_VERSION = '2026-10-23b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1026,7 +1026,7 @@
       home: 'navHome', schedule: 'navSchedule',
       work: 'navWork', calendar: 'navCalendar', docs: 'navDocs', announce: 'navAnnounce',
       admin: 'navAdmin', profile: 'profile', links: 'navLinks',
-      reports: 'navReports', shelf: 'navShelf',
+      reports: 'navReports', shelf: 'navShelf', feed: 'navFeed',
     }[S.page] || 'navWork');
   }
 
@@ -1156,7 +1156,7 @@
 
     // On a phone, the drawer also carries the pages that have no room in the bar.
     if (isPhone()) {
-      var pages = [['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
+      var pages = [['feed', 'navFeed', 'megaphone'], ['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
         ['announce', 'navAnnounce', 'megaphone', S.canManage],
         ['admin', 'navAdmin', 'people', S.canManage], ['profile', 'profile', 'user'],
         ['links', 'navLinks', 'link'], ['reports', 'navReports', 'bug']];
@@ -1461,7 +1461,7 @@
     }
     if (page === 'more') page = S.page || 'home';
     if (['home', 'schedule', 'space', 'work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce',
-      'reports', 'shelf'].indexOf(page) === -1) page = 'home';
+      'reports', 'shelf', 'feed'].indexOf(page) === -1) page = 'home';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -3243,6 +3243,7 @@
     if (S.page === 'links') return pageLinks(main);
     if (S.page === 'reports') return pageReports(main);
     if (S.page === 'shelf') return pageShelf(main);
+    if (S.page === 'feed') return pageFeed(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
   }
@@ -10068,12 +10069,22 @@
       h('footer', {}, [sendBtn]),
     ]));
 
+    /**
+     * The pop-up section goes directly under the announcement form, above the
+     * log of what has already been sent.
+     *
+     * It was below that log, which grows without limit — after a few weeks of
+     * announcements the one control for putting a notice in front of the whole
+     * committee was several screens down, and Jade could not find it. The two
+     * things an admin comes to this page to DO belong together at the top; the
+     * record of what was done belongs underneath.
+     */
+    popupSection(main);
+
     /* ---- what has been sent, and who has read it ---- */
     var sentBox = h('div', {});
     main.appendChild(h('h2', { class: 'section-head', text: t('recentAnnouncements') }));
     main.appendChild(sentBox);
-
-    popupSection(main);
 
     function loadSent() {
       api('/api/push?do=sent').then(function (d) {
@@ -14422,6 +14433,478 @@
     var pad = function (n) { return String(n).padStart(2, '0'); };
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
       + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+
+  /* ======================================================================
+     The feed
+     ====================================================================== */
+
+  /**
+   * What the committee says to itself.
+   *
+   * Everything else in this app is work with an owner and a deadline. This is
+   * the page where somebody puts up a photo of last night's build, and that
+   * is worth a page of its own — two hundred people were already doing it in
+   * a LINE group where it scrolled away by morning.
+   */
+  function pageFeed(main) {
+    var state = { posts: [], pinned: [], mayPost: false, myDepartments: [], maxImages: 4 };
+    var notice = h('div', { class: 'notice', hidden: true });
+    var stream = h('div', { class: 'feed-stream' });
+    var moreBtn = h('button', { class: 'btn feed-more', text: t('feedMore'), hidden: true });
+    var scopes = h('div', { class: 'seg feed-scopes' });
+
+    function say(kind, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + kind;
+      notice.textContent = text;
+    }
+
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navFeed') })]));
+    main.appendChild(notice);
+    main.appendChild(scopes);
+
+    var composer = h('div', { class: 'feed-composer' });
+    main.appendChild(composer);
+    main.appendChild(stream);
+    main.appendChild(moreBtn);
+
+    /* ---- which slice of it ---- */
+    /**
+     * Three tabs and a ฝ่าย picker — not a tab per ฝ่าย.
+     *
+     * An admin is in all fourteen, so one tab each produced seventeen
+     * buttons wrapping over three lines, which is not a choice anybody can
+     * make at a glance. The three real modes are tabs; which ฝ่าย is a
+     * separate question and gets a dropdown, which also stays one line on a
+     * phone however many ฝ่าย somebody belongs to.
+     */
+    function drawScopes() {
+      clear(scopes);
+      var at = S.feedScope || 'all';
+      [['all', t('feedScopeAll')], ['main', t('feedWhole')], ['mentions', t('feedMentions')]]
+        .forEach(function (pair) {
+          scopes.appendChild(h('button', {
+            type: 'button', class: at === pair[0] ? 'on' : '', text: pair[1],
+            onclick: function () { S.feedScope = pair[0]; load(); },
+          }));
+        });
+
+      var depts = state.myDepartments || [];
+      if (!depts.length) return;
+
+      var pick = h('select', { class: 'feed-dept-pick' }, [
+        h('option', { value: '', text: t('feedByDept') }),
+      ].concat(depts.map(function (key) {
+        return h('option', {
+          value: 'dept:' + key, text: deptLabel(key),
+          selected: at === 'dept:' + key ? true : null,
+        });
+      })));
+      pick.addEventListener('change', function () {
+        // Back to ทั้งหมด when the blank row is chosen, rather than showing
+        // a feed of nothing with no tab looking selected.
+        S.feedScope = pick.value || 'all';
+        load();
+      });
+      scopes.appendChild(h('div', { class: 'feed-dept-wrap' + (at.indexOf('dept:') === 0 ? ' on' : '') }, [pick]));
+    }
+
+    function scopeQuery() {
+      var at = S.feedScope || 'all';
+      if (at.indexOf('dept:') === 0) {
+        return 'scope=dept&department=' + encodeURIComponent(at.slice(5));
+      }
+      return 'scope=' + encodeURIComponent(at);
+    }
+
+    /* ---- writing one ---- */
+    function drawComposer() {
+      clear(composer);
+      if (!state.mayPost) return;
+
+      var box = h('textarea', { rows: '2', maxlength: '4000', placeholder: t('feedSay') });
+      var shots = [];
+      var strip = h('div', { class: 'feed-shots' });
+      var fileIn = h('input', {
+        type: 'file', accept: 'image/png,image/jpeg,image/webp', multiple: true, id: 'feed-img',
+      });
+
+      /**
+       * Where it goes. Defaults to the whole committee, which is the honest
+       * default for a feed — a post nobody can find is worse than one a few
+       * extra people scroll past.
+       */
+      var where = h('select', { class: 'feed-where' }, [
+        h('option', { value: '', text: t('feedWhole') }),
+      ].concat((state.myDepartments || []).map(function (key) {
+        return h('option', { value: key, text: deptLabel(key) });
+      })));
+      // Posting from inside a ฝ่าย tab starts on that ฝ่าย, which is almost
+      // always what was meant by going there first.
+      if ((S.feedScope || '').indexOf('dept:') === 0) where.value = S.feedScope.slice(5);
+
+      function drawShots() {
+        clear(strip);
+        shots.forEach(function (shot, i) {
+          strip.appendChild(h('div', { class: 'feed-shot' }, [
+            h('img', { src: shot.url, alt: '' }),
+            h('button', {
+              type: 'button', class: 'rep-shot-x', text: '✕', 'aria-label': t('remove'),
+              onclick: function () {
+                URL.revokeObjectURL(shot.url);
+                shots.splice(i, 1);
+                drawShots();
+              },
+            }),
+          ]));
+        });
+        if (shots.length < (state.maxImages || 4)) {
+          strip.appendChild(h('label', { class: 'rep-shot-add', for: 'feed-img' }, [
+            h('span', { text: '+' }), h('small', { text: t('feedAddImage') }),
+          ]));
+        }
+      }
+
+      fileIn.addEventListener('change', function () {
+        var chosen = Array.prototype.slice.call(fileIn.files || []);
+        fileIn.value = '';
+        chosen.forEach(function (file) {
+          if (shots.length >= (state.maxImages || 4)) {
+            say('err', t('feedTooManyImages').replace('%s', state.maxImages || 4));
+            return;
+          }
+          if (file.size > (state.maxImage || 2097152)) {
+            say('err', t('feedImageTooBig').replace('%s', Math.round((state.maxImage || 2097152) / 1048576 * 10) / 10));
+            return;
+          }
+          fileToBase64(file).then(function (b64) {
+            shots.push({ data: b64, url: URL.createObjectURL(file) });
+            drawShots();
+          });
+        });
+      });
+
+      var sendBtn = h('button', {
+        class: 'btn primary', text: t('feedPost'),
+        onclick: function () {
+          if (!box.value.trim() && !shots.length) { say('err', t('feedNeedSomething')); box.focus(); return; }
+          sendBtn.disabled = true;
+          api('/api/notifications?do=feed-post', {
+            method: 'POST',
+            body: {
+              body: box.value,
+              department: where.value || null,
+              images: shots.map(function (s) { return s.data; }),
+            },
+          }).then(function () {
+            shots.forEach(function (s) { URL.revokeObjectURL(s.url); });
+            notice.hidden = true;
+            load();
+          }).catch(function (err) { say('err', errText(err.code)); })
+            .then(function () { sendBtn.disabled = false; });
+        },
+      });
+
+      composer.appendChild(h('div', { class: 'feed-compose-row' }, [
+        avatarNode(S.user.username),
+        h('div', { class: 'grow' }, [
+          box, strip, fileIn,
+          h('div', { class: 'feed-compose-foot' }, [
+            where, h('span', { class: 'grow' }), sendBtn,
+          ]),
+        ]),
+      ]));
+      drawShots();
+    }
+
+    /* ---- one card ---- */
+    function card(post, isPinned) {
+      var head = h('div', { class: 'feed-head' }, [
+        avatarNode(post.createdBy),
+        h('div', { class: 'grow' }, [
+          h('b', { text: nameOf(post.createdBy) }),
+          h('div', { class: 'feed-when' }, [
+            h('span', { text: fmtStamp(post.createdAt) }),
+            post.editedAt ? h('span', { text: ' · ' + t('feedEdited') }) : null,
+            post.department ? h('span', { class: 'chip dept', text: deptLabel(post.department) }) : null,
+            isPinned ? h('span', { class: 'chip pin', text: '📌 ' + t('feedPinned') }) : null,
+          ].filter(Boolean)),
+        ]),
+        postMenu(post, isPinned),
+      ]);
+
+      var body = post.body
+        ? h('div', { class: 'feed-body' }, String(post.body).split('\n').map(function (line) {
+          return line.trim() ? h('p', { text: line }) : h('br', {});
+        }))
+        : null;
+
+      /**
+       * The pictures, laid out by how many there are.
+       *
+       * One photo gets the full width at its own shape; two sit side by side;
+       * three or four become a grid. A fixed grid would letterbox a single
+       * portrait photo into a thin strip, which is what most phone photos are.
+       */
+      var shots = null;
+      if (post.images.length) {
+        shots = h('div', { class: 'feed-images n' + post.images.length });
+        post.images.forEach(function (img, i) {
+          var src = '/api/notifications?do=feed-image&id=' + encodeURIComponent(post.id) + '&i=' + img.idx;
+          var frame = h('a', {
+            class: 'feed-img', href: src, target: '_blank', rel: 'noopener',
+            title: t('feedOpenImage'),
+          }, [h('img', { src: src, alt: '', loading: i ? 'lazy' : 'eager' })]);
+          if (post.images.length === 1 && img.width && img.height) {
+            frame.style.aspectRatio = img.width + ' / ' + img.height;
+          }
+          shots.appendChild(frame);
+        });
+      }
+
+      var links = post.links.length
+        ? h('div', { class: 'feed-links' }, post.links.map(function (l) {
+          return h('a', { class: 'feed-link', href: l.url, target: '_blank', rel: 'noopener noreferrer' }, [
+            h('b', { text: l.title || hostOfUrl(l.url) }),
+            h('small', { text: hostOfUrl(l.url) }),
+          ]);
+        }))
+        : null;
+
+      /* ---- like and reply counts ---- */
+      var likeBtn = h('button', {
+        type: 'button', class: 'feed-act' + (post.liked ? ' on' : ''),
+        onclick: function () {
+          likeBtn.disabled = true;
+          api('/api/notifications?do=feed-like', { method: 'POST', body: { id: post.id } })
+            .then(function (d) {
+              post.liked = d.liked;
+              post.likes = d.likes;
+              likeBtn.classList.toggle('on', d.liked);
+              likeCount.textContent = d.likes ? String(d.likes) : '';
+            })
+            .catch(function (err) { say('err', errText(err.code)); })
+            .then(function () { likeBtn.disabled = false; });
+        },
+      });
+      var likeCount = h('b', { text: post.likes ? String(post.likes) : '' });
+      likeBtn.appendChild(h('span', { text: '❤' }));
+      likeBtn.appendChild(h('span', { text: t('feedLike') }));
+      likeBtn.appendChild(likeCount);
+
+      var replies = h('div', { class: 'feed-replies' });
+      var replyBtn = h('button', {
+        type: 'button', class: 'feed-act',
+        onclick: function () {
+          replies.hidden = !replies.hidden;
+          if (!replies.hidden) {
+            var inp = replies.querySelector('input');
+            if (inp) inp.focus();
+          }
+        },
+      }, [
+        h('span', { text: '💬' }),
+        h('span', { text: t('feedReply') }),
+        h('b', { text: post.comments.length ? String(post.comments.length) : '' }),
+      ]);
+
+      drawReplies(replies, post);
+      // Replies start open when there are a few, because a conversation
+      // hidden behind a button is a conversation nobody joins.
+      replies.hidden = post.comments.length === 0;
+
+      return h('article', { class: 'feed-card' + (isPinned ? ' pinned' : '') }, [
+        head, body, shots, links,
+        h('div', { class: 'feed-acts' }, [likeBtn, replyBtn]),
+        replies,
+      ].filter(Boolean));
+    }
+
+    /* ---- the ••• menu ---- */
+    function postMenu(post, isPinned) {
+      var items = [];
+      if (state.mayModerate) {
+        items.push([isPinned ? t('feedUnpin') : t('feedPin'), function () {
+          api('/api/notifications?do=feed-post', {
+            method: 'PATCH', body: { id: post.id, pinned: !isPinned },
+          }).then(load).catch(function (err) {
+            say('err', err.code === 'TOO_MANY_PINNED'
+              ? t('feedTooManyPinned').replace('%s', (err.data && err.data.limit) || 5)
+              : errText(err.code));
+          });
+        }]);
+      }
+      if (post.mayEdit) {
+        items.push([t('edit'), function () { openPostEditor(post, load); }]);
+      }
+      if (post.mayDelete) {
+        items.push([t('remove'), function () {
+          if (!confirm(t('feedDeleteSure'))) return;
+          api('/api/notifications?do=feed-post&id=' + encodeURIComponent(post.id), { method: 'DELETE' })
+            .then(load).catch(function (err) { say('err', errText(err.code)); });
+        }]);
+      }
+      if (!post.mine) {
+        items.push([t('feedReport'), function () {
+          if (!confirm(t('feedReportSure'))) return;
+          api('/api/notifications?do=feed-report', { method: 'POST', body: { postId: post.id } })
+            .then(function () { say('ok', t('feedReported')); })
+            .catch(function (err) { say('err', errText(err.code)); });
+        }]);
+      }
+      if (!items.length) return null;
+
+      var pop = h('div', { class: 'feed-menu-pop', hidden: true }, items.map(function (it) {
+        return h('button', { type: 'button', text: it[0], onclick: function () { pop.hidden = true; it[1](); } });
+      }));
+      var btn = h('button', {
+        type: 'button', class: 'btn ghost sm feed-menu', text: '⋯', 'aria-label': t('feedMenu'),
+        onclick: function (e) {
+          e.stopPropagation();
+          var was = pop.hidden;
+          // Only ever one open: a second menu over the first is two lists of
+          // actions with no way to tell which post either belongs to.
+          document.querySelectorAll('.feed-menu-pop').forEach(function (x) { x.hidden = true; });
+          pop.hidden = !was;
+        },
+      });
+      return h('div', { class: 'feed-menu-wrap' }, [btn, pop]);
+    }
+
+    /* ---- replies ---- */
+    function drawReplies(into, post) {
+      clear(into);
+      post.comments.forEach(function (c) {
+        into.appendChild(h('div', { class: 'feed-reply' }, [
+          avatarNode(c.createdBy, 'sm'),
+          h('div', { class: 'grow' }, [
+            h('b', { text: nameOf(c.createdBy) }),
+            h('span', { class: 'feed-reply-body', text: c.body }),
+            h('div', { class: 'feed-when', text: fmtStamp(c.createdAt) }),
+          ]),
+          c.mayDelete ? h('button', {
+            type: 'button', class: 'btn ghost sm', text: '✕', 'aria-label': t('remove'),
+            onclick: function () {
+              api('/api/notifications?do=feed-comment&id=' + encodeURIComponent(c.id), { method: 'DELETE' })
+                .then(load).catch(function (err) { say('err', errText(err.code)); });
+            },
+          }) : null,
+        ].filter(Boolean)));
+      });
+
+      var inp = h('input', { type: 'text', maxlength: '1500', placeholder: t('feedReplyPlaceholder') });
+      var send = function () {
+        if (!inp.value.trim()) return;
+        inp.disabled = true;
+        api('/api/notifications?do=feed-comment', {
+          method: 'POST', body: { postId: post.id, body: inp.value.trim() },
+        }).then(load).catch(function (err) {
+          inp.disabled = false;
+          say('err', errText(err.code));
+        });
+      };
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); send(); }
+      });
+      into.appendChild(h('div', { class: 'feed-reply-add' }, [
+        avatarNode(S.user.username, 'sm'),
+        inp,
+        h('button', { class: 'btn sm', text: t('feedSend'), onclick: send }),
+      ]));
+    }
+
+    /* ---- drawing it ---- */
+    function draw() {
+      drawScopes();
+      drawComposer();
+      clear(stream);
+
+      (state.pinned || []).forEach(function (p) { stream.appendChild(card(p, true)); });
+
+      if (!state.posts.length && !(state.pinned || []).length) {
+        stream.appendChild(h('div', { class: 'empty' }, [
+          h('strong', { text: t('feedNone') }),
+          h('p', { text: state.mayPost ? t('feedNoneSay') : t('feedNoneWait') }),
+        ]));
+        return;
+      }
+      state.posts.forEach(function (p) { stream.appendChild(card(p, false)); });
+      moreBtn.hidden = !state.more;
+    }
+
+    moreBtn.addEventListener('click', function () {
+      if (!state.next) return;
+      moreBtn.disabled = true;
+      api('/api/notifications?do=feed&' + scopeQuery() + '&before=' + encodeURIComponent(state.next))
+        .then(function (d) {
+          // Appended rather than redrawn, so the page does not jump back to
+          // the top of a feed somebody has been scrolling through.
+          d.posts.forEach(function (p) { stream.appendChild(card(p, false)); });
+          state.posts = state.posts.concat(d.posts);
+          state.more = d.more;
+          state.next = d.next;
+          moreBtn.hidden = !d.more;
+        })
+        .catch(function (err) { say('err', errText(err.code)); })
+        .then(function () { moreBtn.disabled = false; });
+    });
+
+    function load() {
+      return api('/api/notifications?do=feed&' + scopeQuery())
+        .then(function (d) { state = d; draw(); })
+        .catch(function (err) { say('err', errText(err.code)); });
+    }
+
+    if (!S.feedScope) S.feedScope = 'all';
+    load();
+  }
+
+  /** Closing an open ••• menu by clicking anywhere else. */
+  document.addEventListener('click', function () {
+    document.querySelectorAll('.feed-menu-pop').forEach(function (x) { x.hidden = true; });
+  });
+
+  /** Editing the words of a post. The pictures are deliberately not editable. */
+  function openPostEditor(post, onSaved) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+    var box = h('textarea', { rows: '5', maxlength: '4000' });
+    box.value = post.body || '';
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'),
+      onclick: function () {
+        saveBtn.disabled = true;
+        api('/api/notifications?do=feed-post', { method: 'PATCH', body: { id: post.id, body: box.value } })
+          .then(function () { veil.remove(); if (onSaved) onSaved(); })
+          .catch(function (err) {
+            notice.hidden = false;
+            notice.className = 'notice err';
+            notice.textContent = errText(err.code);
+            saveBtn.disabled = false;
+          });
+      },
+    });
+
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(34rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('feedEdit') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice, box,
+        post.images.length ? h('small', { class: 'hint', text: t('feedEditImagesWhy') }) : null,
+      ].filter(Boolean)),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+    box.focus();
   }
 
   /**

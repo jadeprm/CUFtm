@@ -279,7 +279,15 @@ const ph = await as('Jade_Pres', 'fairAdmin1', PHONE, { home: true });
 const tabsBox = await ph.locator('#tabs').boundingBox();
 ok('the nav is a bar along the bottom', tabsBox.y > 700 && tabsBox.width >= 390, JSON.stringify(tabsBox));
 const tabLabels = (await ph.locator('#tabs a:visible .ts').allInnerTexts()).join('|');
-ok('...with หน้าแรก, ตาราง, งาน, เอกสาร and เมนู', tabLabels === 'หน้าแรก|ตาราง|งาน|เอกสาร|เมนู', tabLabels);
+/**
+ * Renamed 23 October: the letters tab and the shelf tab were both "เอกสาร",
+ * which on a 393px bar is two tabs you have to press to tell apart.
+ */
+ok('...with หน้าแรก, ตาราง, งาน, ส่งเอกสาร and เมนู',
+  tabLabels === 'หน้าแรก|ตาราง|งาน|ส่งเอกสาร|เมนู', tabLabels);
+ok('...and all five fit without the bar scrolling sideways',
+  await ph.locator('#tabs').evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+  await ph.locator('#tabs').evaluate((el) => el.scrollWidth + ' vs ' + el.clientWidth));
 await ph.click('#tab-more'); await ph.waitForTimeout(500);
 ok('เมนู opens the drawer', (await ph.locator('#sidebar').boundingBox()).x >= 0);
 ok('...which holds the other pages and the spaces', await ph.locator('#sidebar .sb-drawer-nav a[href="#/calendar"]').count() === 1 &&

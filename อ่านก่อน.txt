@@ -1,40 +1,30 @@
-CUFTM 2026-10-22d — ชุดรวมทั้งหมด (21 ไฟล์)
+CUFTM 2026-10-23b — ชุดรวมทั้งหมด (25 ไฟล์)
 ============================================
 
-ชุดนี้รวมทุกอย่างตั้งแต่ 2026-10-22b จนถึง 2026-10-22d ไว้ในครั้งเดียว
-ไม่ต้องสนใจลำดับ ไม่ต้องลงชุดก่อนหน้า แตกทับได้เลย
+รวมทุกอย่างตั้งแต่ 2026-10-22b ถึง 2026-10-23b ในครั้งเดียว
+ไม่ต้องสนลำดับ ไม่ต้องลงชุดก่อนหน้า แตกทับ CUFtm-clean ได้เลย
 
-ทำไมต้องมีชุดนี้
-  ที่ขึ้น "เกิดข้อผิดพลาด กรุณาลองใหม่" เพราะบน server มี public/app.js ตัวใหม่
-  (มีหน้าแจ้งปัญหาและหน้าเอกสารสำคัญ) แต่ api/meta.js ยังเป็นตัวเก่าที่ไม่มี
-  route ของสองหน้านั้น ตรวจได้จาก /api/meta?do=shelf ซึ่งตอบข้อมูลฝ่ายกลับมา
-  แทนที่จะตอบ error — แปลว่าไฟล์ฝั่ง server ขึ้นไม่ครบ
+มีอะไรใหม่
+  2026-10-22c  หน้าแจ้งปัญหา · ป๊อปอัปประกาศ · หน้ารวมข้อมูลสำคัญ
+  2026-10-22d  เอกสารประกอบแยกตามวาระได้
+  2026-10-23a  เปลี่ยนชื่อ เอกสาร -> ส่งเอกสาร, เอกสารสำคัญ -> รวมข้อมูลสำคัญ
+               ย้ายตัวสร้างป๊อปอัปขึ้นมาบนสุดของหน้าส่งประกาศ
+  2026-10-23b  หน้าฟีดโครงการ (โพสต์ รูป คอมเมนต์ ถูกใจ ปักหมุด)
 
-ไฟล์ทั้งหมดในชุดนี้ (21)
-  lib/db.js              lib/notifyprefs.js   lib/departments.js
-  lib/reports.js         lib/popup.js         lib/shelf.js
-  lib/meetingstore.js    lib/version.js
-  api/meta.js            api/push.js          api/events.js
-  public/app.js          public/i18n.js       public/i18n-en.js
-  public/index.html      public/styles.css
-  test/run.mjs           dev-tests/voice.mjs  dev-tests/quiet.mjs
-  dev-tests/agenda.mjs   cuftm-changelog.md
-
-ต้องลบสองไฟล์นี้ด้วย (ของเก่าจากโปรเจกต์ Slack รันไม่ได้ แต่ติดไปกับ deploy)
+ต้องลบสองไฟล์นี้ด้วย ถ้ายังมีอยู่
   DEPLOY.md
   test/e2e.mjs
 
-วิธีตรวจว่าขึ้นครบแล้ว — เปิดสามลิงก์นี้ในเบราว์เซอร์ ไม่ต้องล็อกอิน
-  1) https://task.chulafair.com/api/meta
-     ต้องขึ้น  "version":"2026-10-22d"
-  2) https://task.chulafair.com/api/meta?do=shelf
-     ต้องขึ้น  {"error":"NOT_SIGNED_IN"}
-     ถ้าขึ้นข้อมูลฝ่ายยาว ๆ = api/meta.js ยังเป็นตัวเก่า
-     ถ้าขึ้น {"error":"UNKNOWN_ACTION"} = ขึ้นแล้วแต่ยังไม่ครบ
-  3) https://task.chulafair.com/api/meta?do=reports
-     ต้องขึ้น  {"error":"NOT_SIGNED_IN"}
-  แล้วค่อยเช็ก โปรไฟล์ → เวอร์ชันที่ใช้งานอยู่ ว่าตรงกันทั้งสองบรรทัด
+ตรวจว่าขึ้นครบแล้ว — เปิดในเบราว์เซอร์ ไม่ต้องล็อกอิน
+  https://task.chulafair.com/api/meta             -> "version":"2026-10-23b"
+  https://task.chulafair.com/api/meta?do=shelf    -> {"error":"NOT_SIGNED_IN"}
+  https://task.chulafair.com/api/meta?do=reports  -> {"error":"NOT_SIGNED_IN"}
+  ถ้าขึ้นข้อมูลฝ่ายยาว ๆ แทน = ไฟล์ฝั่ง server ขึ้นไม่ครบ
 
 หลัง deploy
-  schema ย้ายตัวเองอัตโนมัติ ไม่ต้องทำอะไรกับฐานข้อมูล
+  schema ย้ายตัวเองอัตโนมัติ ไม่ต้องแตะฐานข้อมูล
   ยังเป็น 12 serverless functions ตามเดิม
+  แอดมินควรเข้า แจ้งปัญหา -> สรุปรายวัน -> ตั้งคนรับเรื่องด่วน เลือกโคแอดมินไว้
+
+ยังค้างอยู่ (ไม่เกี่ยวกับโค้ด)
+  chulafair.com ยังไม่มี A record ที่ Z.com ลิงก์สั้นจึงยังใช้ไม่ได้

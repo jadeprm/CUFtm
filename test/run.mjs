@@ -8204,6 +8204,246 @@ ok('...and its papers survive it, back on the meeting rather than deleted',
   survivors.length === 2 && survivors.every((f) => f.agendaId === null),
   JSON.stringify(survivors.map((f) => [f.name, f.agendaId])));
 
+// ===========================================================================
+const fs0 = (await import('node:fs'));
+head('93. Two pages called เอกสาร, and a pop-up nobody could find');
+
+/**
+ * Both reported on 23 October, and both are about finding things.
+ */
+const strTh = (() => {
+  const g = {};
+  new Function('window', fs0.readFileSync('public/i18n.js', 'utf8'))(g);
+  new Function('window', fs0.readFileSync('public/i18n-en.js', 'utf8'))(g);
+  return g;
+})();
+const TH = strTh.STRINGS.th;
+const EN = strTh.STRINGS.en;
+
+/**
+ * The phone's bottom bar shows the SHORT label, and two of them were the
+ * identical word "เอกสาร" — one for sending official letters, one for the
+ * shelf of links. Two tabs with the same name is not a naming quibble; it is
+ * two tabs you have to press to tell apart.
+ */
+const shortLabels = ['navHomeShort', 'navScheduleShort', 'navWorkShort', 'navCalendarShort',
+  'navDocsShort', 'navShelfShort', 'navReportsShort', 'navAnnounceShort', 'navAdminShort'];
+for (const lang of [['th', TH], ['en', EN]]) {
+  const seen = {};
+  const clashes = [];
+  for (const key of shortLabels) {
+    const label = lang[1][key];
+    if (seen[label]) clashes.push(`${label} (${seen[label]} & ${key})`);
+    seen[label] = key;
+  }
+  ok(`no two tabs share a short label in ${lang[0]}`, clashes.length === 0, clashes.join('; '));
+}
+
+ok('the letters page is ส่งเอกสาร, which says what it is for',
+  TH.navDocs === 'ส่งเอกสาร' && TH.navDocsShort === 'ส่งเอกสาร', TH.navDocs + ' / ' + TH.navDocsShort);
+ok('...and the shelf is รวมข้อมูลสำคัญ, which is not a kind of เอกสาร at all',
+  TH.navShelf === 'รวมข้อมูลสำคัญ' && TH.navShelfShort === 'ข้อมูลสำคัญ',
+  TH.navShelf + ' / ' + TH.navShelfShort);
+ok('...and both are translated rather than left in Thai',
+  EN.navDocs !== TH.navDocs && EN.navShelf !== TH.navShelf && EN.navShelfShort !== EN.navDocsShort,
+  EN.navDocs + ' / ' + EN.navShelf);
+
+/**
+ * index.html carries the same words as its untranslated default, so the tab
+ * bar is right in the instant before app.js has run. They drift apart
+ * silently, which is the sort of thing only a check notices.
+ */
+const shellHtml = fs0.readFileSync('public/index.html', 'utf8');
+const defaults = [...shellHtml.matchAll(/data-t="(nav[A-Za-z]+)">([^<]*)</g)]
+  .map(([, key, text]) => [key, text]);
+const drift = defaults.filter(([key, text]) => TH[key] !== undefined && TH[key] !== text);
+ok('every nav label in the page shell matches its Thai string',
+  drift.length === 0, drift.map((d) => d.join('=')).join('; '));
+
+/**
+ * The pop-up composer sat below the log of sent announcements, which grows
+ * without limit — so the one control for putting a notice in front of the
+ * committee ended up several screens down.
+ */
+const appSrc = fs0.readFileSync('public/app.js', 'utf8');
+const atPopup = appSrc.indexOf('popupSection(main)');
+const atSentHead = appSrc.indexOf("text: t('recentAnnouncements')");
+ok('the pop-up composer comes before the log of what was already sent',
+  atPopup > 0 && atSentHead > 0 && atPopup < atSentHead,
+  `popup@${atPopup} sentLog@${atSentHead}`);
+
+// ===========================================================================
+const { MAX_PINNED: MAX_PINNED_FOR_TEST } = await import('../lib/feed.js');
+head('94. The feed: what the committee says to itself');
+
+/**
+ * Separate from announcements, and Jade chose that split when asked. An
+ * announcement is the committee speaking TO somebody — it buzzes a phone and
+ * is read once. The feed is the committee talking AMONG itself: anybody may
+ * post, nothing buzzes, and it is still there next week.
+ */
+const feedPng = pngBytes.toString('base64');
+
+r = await call(notifApi, '/api/notifications?do=feed', { as: 'member' });
+ok('a MEMBER may open the feed and post in it',
+  r.status === 200 && r.data.mayPost === true, JSON.stringify(r.data).slice(0, 80));
+ok('...and is not offered moderation', r.data.mayModerate === false);
+
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'POST', as: 'member',
+  body: { body: 'ภาพเก็บของเมื่อคืน ขอบคุณทุกคนครับ', images: [feedPng, feedPng] },
+});
+ok('a member posts, with pictures', r.status === 201 && r.data.post.images.length === 2,
+  JSON.stringify(r.data).slice(0, 90));
+const postA = r.data.post.id;
+
+r = await call(notifApi, '/api/notifications?do=feed-post', { method: 'POST', as: 'member', body: {} });
+ok('...but an empty post is refused', r.status === 400, JSON.stringify(r.data));
+
+// ---- who sees what -------------------------------------------------------
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'POST', as: 'editor',
+  body: { body: 'เรื่องภายในฝ่ายเนื้อหา', department: 'content' },
+});
+ok('a post can be aimed at one ฝ่าย', r.status === 201 && r.data.post.department === 'content');
+const postDept = r.data.post.id;
+
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'POST', as: 'editor2', body: { body: 'x', department: 'content' },
+});
+ok('...and only by somebody in it', r.status === 403 || r.data.error === 'NOT_YOUR_DEPARTMENT',
+  JSON.stringify(r.data));
+
+r = await call(notifApi, '/api/notifications?do=feed', { as: 'member' });
+const memberSees = r.data.posts.map((p) => p.id);
+ok('somebody in that ฝ่าย sees its post', memberSees.includes(postDept));
+
+r = await call(notifApi, '/api/notifications?do=feed', { as: 'editor2' });
+const otherSees = r.data.posts.map((p) => p.id);
+ok('...and somebody in another ฝ่าย does not',
+  !otherSees.includes(postDept) && otherSees.includes(postA),
+  JSON.stringify(otherSees));
+
+r = await call(notifApi, '/api/notifications?do=feed&scope=main', { as: 'member' });
+ok('the ทั้งโครงการ tab leaves out every ฝ่าย post',
+  r.data.posts.every((p) => p.department === null), JSON.stringify(r.data.posts.map((p) => p.department)));
+
+// ---- a picture -----------------------------------------------------------
+r = await call(notifApi, `/api/notifications?do=feed-image&id=${postA}&i=0`, { as: 'editor2' });
+ok('anybody who may see the post may see its picture', r.status === 200);
+r = await call(notifApi, `/api/notifications?do=feed-image&id=${postDept}&i=0`, { as: 'editor2' });
+ok('...and somebody who may not see the post cannot', r.status === 403 || r.status === 404,
+  r.status + ' ' + JSON.stringify(r.data));
+
+// ---- likes and replies ---------------------------------------------------
+r = await call(notifApi, '/api/notifications?do=feed-like', { method: 'POST', as: 'editor', body: { id: postA } });
+ok('a like counts once', r.status === 200 && r.data.likes === 1 && r.data.liked === true, JSON.stringify(r.data));
+r = await call(notifApi, '/api/notifications?do=feed-like', { method: 'POST', as: 'editor', body: { id: postA } });
+ok('...and pressing again takes it back', r.data.likes === 0 && r.data.liked === false);
+
+await sql`DELETE FROM notifications WHERE kind = 'feed'`;
+r = await call(notifApi, '/api/notifications?do=feed-comment', {
+  method: 'POST', as: 'editor', body: { postId: postA, body: 'เหนื่อยแต่สนุกครับ' },
+});
+/**
+ * The reply route hands back the whole POST rather than the comment on its
+ * own — which is right for the page, since one response redraws the card
+ * with its new reply already in it.
+ */
+ok('a reply lands on the post',
+  r.status === 201 && r.data.post && r.data.post.comments.length === 1,
+  JSON.stringify(r.data).slice(0, 70));
+const commentA = r.data.post && r.data.post.comments.length ? r.data.post.comments[0].id : null;
+
+const toldAuthor = await sql`
+  SELECT username FROM notifications WHERE kind = 'feed'`;
+ok('...and the person whose post it is hears about it',
+  toldAuthor.some((x) => x.username === 'Ploy_StaffCon'),
+  JSON.stringify(toldAuthor.map((x) => x.username)));
+
+/**
+ * A like tells nobody, on purpose. A popular photo would otherwise be forty
+ * notifications, and then the one that mattered is lost among them.
+ */
+await sql`DELETE FROM notifications WHERE kind = 'feed'`;
+await call(notifApi, '/api/notifications?do=feed-like', { method: 'POST', as: 'editor2', body: { id: postA } });
+const afterLike = await sql`SELECT count(*)::int AS n FROM notifications WHERE kind = 'feed'`;
+ok('a like tells nobody', afterLike[0].n === 0);
+
+// ---- whose post is it ----------------------------------------------------
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'PATCH', as: 'editor2', body: { id: postA, body: 'hijacked' },
+});
+ok('somebody else cannot rewrite your post', r.status === 403, JSON.stringify(r.data));
+
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'PATCH', as: 'member', body: { id: postA, body: 'ภาพเก็บของเมื่อคืน (แก้ไข)' },
+});
+ok('the author can, and it is marked as edited',
+  r.status === 200 && Boolean(r.data.post.editedAt), JSON.stringify(r.data).slice(0, 80));
+
+r = await call(notifApi, `/api/notifications?do=feed-comment&id=${commentA}`, { method: 'DELETE', as: 'member' });
+ok('the owner of a post can clear a reply off it, not only its writer',
+  r.status === 200, JSON.stringify(r.data));
+
+// ---- pinning -------------------------------------------------------------
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'PATCH', as: 'member', body: { id: postA, pinned: true },
+});
+ok('a member cannot pin — the top of everybody’s page is not theirs to take',
+  r.status === 403 && r.data.error === 'ADMINS_ONLY', JSON.stringify(r.data));
+
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'PATCH', as: 'admin', body: { id: postA, pinned: true },
+});
+ok('an admin can', r.status === 200 && r.data.post.pinned === true, JSON.stringify(r.data).slice(0, 70));
+
+/**
+ * The important one. The feed pages by `created_at < cutoff`, so a pinned
+ * post sorted to the top of that query would either repeat on every page or
+ * be skipped on page two. It is its own list instead.
+ */
+r = await call(notifApi, '/api/notifications?do=feed', { as: 'member' });
+const pinIds = r.data.pinned.map((p) => p.id);
+const streamIds = r.data.posts.map((p) => p.id);
+ok('a pinned post moves into its own list', pinIds.includes(postA), JSON.stringify(pinIds));
+ok('...and out of the stream, so it is never drawn twice',
+  !streamIds.includes(postA), JSON.stringify(streamIds));
+
+r = await call(notifApi, '/api/notifications?do=feed&before=2099-01-01T00:00:00Z', { as: 'member' });
+ok('...and does not ride along with later pages either',
+  (r.data.pinned || []).length === 0, JSON.stringify((r.data.pinned || []).map((p) => p.id)));
+
+r = await call(notifApi, '/api/notifications?do=feed-post', {
+  method: 'PATCH', as: 'admin', body: { id: postA, pinned: false },
+});
+ok('unpinning puts it back in the stream', r.status === 200 && r.data.post.pinned === false);
+r = await call(notifApi, '/api/notifications?do=feed', { as: 'member' });
+ok('...where it is again', r.data.posts.map((p) => p.id).includes(postA));
+
+// The cap, so the held list never becomes a second feed above the feed.
+const pinned = [];
+for (let i = 0; i < MAX_PINNED_FOR_TEST + 1; i++) {
+  const made = await call(notifApi, '/api/notifications?do=feed-post', {
+    method: 'POST', as: 'admin', body: { body: 'pin ' + i },
+  });
+  const res = await call(notifApi, '/api/notifications?do=feed-post', {
+    method: 'PATCH', as: 'admin', body: { id: made.data.post.id, pinned: true },
+  });
+  pinned.push(res.status === 200 ? 'ok' : res.data.error);
+}
+ok(`only ${MAX_PINNED_FOR_TEST} posts can be held at the top at once`,
+  pinned.filter((x) => x === 'ok').length === MAX_PINNED_FOR_TEST
+  && pinned[pinned.length - 1] === 'TOO_MANY_PINNED', pinned.join(','));
+
+// ---- deleting ------------------------------------------------------------
+r = await call(notifApi, `/api/notifications?do=feed-post&id=${postA}`, { method: 'DELETE', as: 'editor2' });
+ok('somebody else cannot delete your post', r.status === 403);
+r = await call(notifApi, `/api/notifications?do=feed-post&id=${postA}`, { method: 'DELETE', as: 'member' });
+ok('the author can', r.status === 200);
+const gonePics = await sql`SELECT count(*)::int AS n FROM post_files WHERE post_id = ${postA}`;
+ok('...and its pictures and replies go with it', gonePics[0].n === 0);
+
 
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);

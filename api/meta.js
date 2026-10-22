@@ -53,6 +53,7 @@ import {
  *   PATCH  /api/meta?do=shelf-edit      rename, re-scope or move one
  *   DELETE /api/meta?do=shelf-delete    remove one (a folder takes its contents)
  *   POST   /api/meta?do=shelf-order     re-order one folder's contents
+
  */
 
 /** Nobody needs two hundred short links; a runaway script might make them. */
@@ -794,6 +795,7 @@ async function shelf(request, action) {
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);
 }
+
 
 /** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
 export default withNode(handler);
