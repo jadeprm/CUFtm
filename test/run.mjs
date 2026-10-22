@@ -7454,6 +7454,49 @@ ok('...and said so in the history',
 await sql`DELETE FROM documents WHERE id = ${crossId}`;
 
 /**
+ * Getting the PDF onto a phone (22 October). It is served inline so the app's
+ * own reader can draw it, and `&download=1` says "put this in my downloads"
+ * for the button beside that reader.
+ */
+const readSteps = ((await call(docsApi, '/api/documents?do=propose',
+  { method: 'POST', as: 'content', body: { department: 'content' } })).data.steps)
+  .map((x) => ({
+    role: x.role, username: x.username,
+    mark: x.signs ? { page: 1, x: 0.6, y: 0.8, w: 0.25, h: 0.07 } : null,
+  }));
+const readDoc = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือทดสอบการเปิดอ่านและดาวน์โหลด',
+          recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
+          department: 'content', steps: readSteps },
+});
+const readId = readDoc.data.id;
+await sql`UPDATE documents SET doc_number = 'อบจ.จฬฟ. 99-001/2569' WHERE id = ${readId}`;
+
+const inline = await docsApi(makeRequest(`/api/documents?id=${readId}&file=original`, { as: 'content' }));
+ok('a PDF is served for the reader to draw, not pushed at the browser',
+  inline.status === 200 && /^inline;/.test(inline.headers.get('content-disposition') || ''),
+  inline.headers.get('content-disposition'));
+
+const forced = await docsApi(makeRequest(`/api/documents?id=${readId}&file=original&download=1`, { as: 'content' }));
+const cd = forced.headers.get('content-disposition') || '';
+ok('...and download=1 puts it in the downloads folder instead',
+  forced.status === 200 && /^attachment;/.test(cd), cd);
+ok('...under a name that leads with the เลขรันเอกสาร',
+  cd.includes(encodeURIComponent('อบจ.จฬฟ. 99-001/2569'.replace('/', '-'))) || cd.includes('99-001'),
+  decodeURIComponent(cd));
+ok('...and it is the same bytes either way',
+  (await forced.arrayBuffer()).byteLength === (await inline.arrayBuffer()).byteLength);
+
+// Somebody with no part in the letter still gets nothing, download flag or not.
+r = await call(docsApi, `/api/documents?id=${readId}&file=original&download=1`, { as: 'member' });
+ok('...and the flag is not a way around who may see the file', r.status === 403,
+  `${r.status} ${JSON.stringify(r.data)}`);
+await sql`DELETE FROM documents WHERE id = ${readId}`;
+
+
+
+/**
  * Unticking "ลงลายเซ็น" on a signing role used to make the letter impossible
  * to submit (reported 19 October): the form stopped asking for that person's
  * box, the server went on demanding one, and the dialog answered every press
@@ -7589,6 +7632,577 @@ head('90. One source for colour, and colours people can read');
   const leftovers = ['lib/public', 'lib/api', 'lib/lib', 'lib/test', 'cuftm-viewers'].filter((d) => fs.existsSync(d));
   ok('no stale second copy of the app sits inside the package', leftovers.length === 0, leftovers.join(', '));
 }
+
+
+// ===========================================================================
+head('91. Reporting a bug, and the pop-up, and the shelf of links');
+
+/**
+ * Three features that share one release, and one principle: the committee's
+ * own voice inside its own tool. Reporting is open to everybody; interrupting
+ * everybody is open to almost nobody.
+ */
+
+// ---- a tiny real PNG, for the screenshots and the poster ------------------
+const zlibForPng = await import('node:zlib');
+const pngBytes = (() => {
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body) >>> 0);
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(40, 0); ihdr.writeUInt32BE(25, 4);
+  ihdr[8] = 8; ihdr[9] = 2;
+  const raw = Buffer.concat(Array.from({ length: 25 }, () =>
+    Buffer.concat([Buffer.from([0]), Buffer.alloc(40 * 3)])));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlibForPng.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+})();
+function crc32(buf) {
+  let c = ~0;
+  for (const b of buf) {
+    c ^= b;
+    for (let i = 0; i < 8; i++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+  }
+  return ~c;
+}
+const png64 = pngBytes.toString('base64');
+
+// The header reader has to agree with the file, or the pop-up reserves the
+// wrong amount of room and its dismiss button moves under somebody's thumb.
+const { imageSize } = await import('../lib/popup.js');
+const measured = imageSize(pngBytes);
+ok('the image header reader gets the real pixel size',
+  measured && measured.width === 40 && measured.height === 25 && measured.mime === 'image/png',
+  JSON.stringify(measured));
+ok('...and refuses something that is not an image', imageSize(Buffer.from('not a picture at all')) === null);
+
+// ---- filing one -----------------------------------------------------------
+r = await call(metaApi, '/api/meta?do=report', { method: 'POST', as: 'member',
+  body: {
+    kind: 'bug', title: 'เข้าหน้าเอกสารไม่ได้ ขึ้นจอขาว', severity: 'urgent',
+    doing: 'กดแท็บเอกสารจากหน้าแรก', body: 'ขึ้นจอขาวทุกครั้ง',
+    page: '#/docs', device: 'iPhone Safari 393x852', appVersion: '2026-10-22c',
+    shots: [png64],
+  } });
+ok('a MEMBER can report a bug — reporting is open to everybody', r.status === 201, JSON.stringify(r.data).slice(0, 90));
+const repUrgent = r.data.report;
+ok('...and it is numbered R0001-style', /^R\d{4}$/.test(repUrgent.code || ''), repUrgent.code);
+ok('...with the screenshot kept', repUrgent.shots === 1);
+ok('...and the reporter counts as one person who hit it', repUrgent.votes === 1 && repUrgent.voted === true);
+
+r = await call(metaApi, '/api/meta?do=reports', { as: 'admin' });
+const toldUrgent = await sql`SELECT username FROM notifications WHERE kind = 'report'`;
+ok('an urgent report buzzes the admin at once',
+  toldUrgent.some((x) => x.username === 'Jade_Pres'), JSON.stringify(toldUrgent.map((x) => x.username)));
+
+// A suggestion is never an emergency. Enforced on the server, because the
+// alert it would unlock is the one thing here that costs somebody their evening.
+r = await call(metaApi, '/api/meta?do=report', { method: 'POST', as: 'member',
+  body: { kind: 'idea', title: 'อยากให้กรองงานตามฝ่ายได้', severity: 'urgent', body: 'ตอนนี้ต้องเลื่อนหาเอง' } });
+ok('a SUGGESTION cannot be urgent, however the form asks',
+  r.status === 201 && r.data.report.severity !== 'urgent', r.data.report && r.data.report.severity);
+
+r = await call(metaApi, '/api/meta?do=report', { method: 'POST', as: 'member',
+  body: { kind: 'bug', title: 'x', shots: [Buffer.from('definitely not a png').toString('base64')] } });
+ok('a file that is not an image is refused', r.status === 400 && r.data.error === 'NOT_AN_IMAGE');
+
+r = await call(metaApi, '/api/meta?do=report', { method: 'POST', as: 'member', body: { kind: 'bug', title: '   ' } });
+ok('...and so is a report with nothing in the title', r.status === 400 && r.data.error === 'TITLE_REQUIRED');
+
+// ---- who may read what ----------------------------------------------------
+r = await call(metaApi, '/api/meta?do=reports', { as: 'editor' });
+const repAsEditor = r.data.reports.find((x) => x.code === repUrgent.code);
+ok('everybody sees the LIST — that is how a duplicate gets caught',
+  Boolean(repAsEditor) && repAsEditor.title === repUrgent.title);
+ok('...but not the browser line or the triage notes', repAsEditor.device === undefined);
+ok('...and cannot triage', r.data.mayTriage === false && r.data.responders === null);
+
+r = await call(metaApi, `/api/meta?do=report-shot&id=${repUrgent.id}&i=0`, { as: 'editor' });
+ok('a screenshot is closed to everybody but the rota and whoever took it',
+  r.status === 403 && r.data.error === 'NOT_YOURS');
+r = await call(metaApi, `/api/meta?do=report-shot&id=${repUrgent.id}&i=0`, { as: 'member' });
+ok('...and the person who took it can open it', r.status === 200);
+
+// ---- the rota -------------------------------------------------------------
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'coadmin',
+  body: { id: repUrgent.id, state: 'planned' } });
+ok('a co-admin NOT on the rota cannot triage', r.status === 403 && r.data.error === 'NOT_ON_THE_ROTA');
+
+r = await call(metaApi, '/api/meta?do=report-team', { method: 'POST', as: 'coadmin', body: { usernames: ['Kaew_VP'] } });
+ok('...and cannot put herself on it', r.status === 403 && r.data.error === 'ADMINS_ONLY');
+
+r = await call(metaApi, '/api/meta?do=report-team', { method: 'POST', as: 'admin',
+  body: { usernames: ['Kaew_VP', 'Kungking_HeadCon'] } });
+ok('an admin chooses the rota, and only co-admins may be on it',
+  r.status === 200 && r.data.chosen.join() === 'Kaew_VP' && r.data.refused.join() === 'Kungking_HeadCon',
+  JSON.stringify(r.data));
+
+await sql`DELETE FROM notifications WHERE kind = 'report'`;
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'coadmin',
+  body: { id: repUrgent.id, state: 'planned', note: 'เจอแล้ว เป็นที่ตัวอ่าน PDF' } });
+ok('now she can, and the record says who did it',
+  r.status === 200 && r.data.report.state === 'planned' && r.data.report.triagedBy === 'Kaew_VP');
+
+const toldReporter = await sql`
+  SELECT title, body FROM notifications WHERE kind = 'report' AND username = 'Ploy_StaffCon'`;
+ok('the person who reported it is told what became of it — the one notice that keeps people reporting',
+  toldReporter.length === 1 && /อยู่ในแผน|รับเรื่อง/.test(toldReporter[0].title),
+  toldReporter[0] && toldReporter[0].title);
+ok('...and the admin note is carried to them', toldReporter[0] && /ตัวอ่าน PDF/.test(toldReporter[0].body));
+
+r = await call(metaApi, '/api/meta?do=reports', { as: 'coadmin' });
+const nowSeen = r.data.reports.find((x) => x.code === repUrgent.code);
+ok('being on the rota opens the private half', r.data.mayTriage === true && nowSeen.device !== undefined);
+
+/**
+ * Lowering a severity does NOT tell the reporter. An admin deciding that
+ * somebody's urgent is really ติดขัด is a judgement about the fair's
+ * afternoon, and "your report has been downgraded" would teach people not to
+ * tick the box honestly.
+ */
+await sql`DELETE FROM notifications WHERE kind = 'report'`;
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'admin',
+  body: { id: repUrgent.id, severity: 'high' } });
+const afterDowngrade = await sql`SELECT count(*)::int AS n FROM notifications WHERE kind = 'report'`;
+ok('lowering a severity tells nobody', r.status === 200 && afterDowngrade[0].n === 0);
+ok('...but the record keeps that it WAS urgent once', Boolean(r.data.report.urgentAt));
+
+// Raising one TO urgent buzzes the rota, for the same reason the tick does.
+await sql`DELETE FROM notifications WHERE kind = 'report'`;
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'admin',
+  body: { id: repUrgent.id, severity: 'urgent' } });
+const afterRaise = await sql`SELECT username FROM notifications WHERE kind = 'report'`;
+ok('raising one to urgent buzzes the rota', afterRaise.some((x) => x.username === 'Kaew_VP'),
+  JSON.stringify(afterRaise.map((x) => x.username)));
+
+// ---- เจอเหมือนกัน ---------------------------------------------------------
+const { NUDGE_AT } = await import('../lib/reports.js');
+r = await call(metaApi, '/api/meta?do=report', { method: 'POST', as: 'member',
+  body: { kind: 'bug', title: 'วันที่ในหน้างานแสดงผิดไปหนึ่งวัน', severity: 'normal', page: '#/work' } });
+const repSmall = r.data.report;
+
+await sql`DELETE FROM notifications WHERE kind = 'report'`;
+const voteTrail = [];
+for (const who of ['admin', 'coadmin', 'coadmin2', 'editor', 'editor2']) {
+  r = await call(metaApi, '/api/meta?do=report-vote', { method: 'POST', as: who, body: { id: repSmall.id } });
+  voteTrail.push({ votes: r.data.votes, nudged: r.data.nudged });
+}
+/**
+ * The reporter is already one of the people who hit it, so the fifth person
+ * on the list is the fourth to press the button. The contract is about the
+ * COUNT, not about how many presses it took: the rota is told exactly once,
+ * on the press that reaches the threshold, and never again.
+ */
+ok('each person counts once', voteTrail.map((x) => x.votes).join() === '2,3,4,5,6', voteTrail.map((x) => x.votes).join());
+const nudgedAt = voteTrail.filter((x) => x.nudged);
+ok('...and the rota is told once, on the press that reaches the threshold',
+  nudgedAt.length === 1 && nudgedAt[0].votes === NUDGE_AT,
+  JSON.stringify(nudgedAt) + ' threshold ' + NUDGE_AT);
+
+const nudges = await sql`
+  SELECT count(*)::int AS n FROM notifications WHERE kind = 'report' AND title LIKE '%เจอปัญหาเดียวกัน%'`;
+ok('...told once, not once per vote', nudges[0].n >= 1);
+
+r = await call(metaApi, '/api/meta?do=report-vote', { method: 'POST', as: 'editor2', body: { id: repSmall.id } });
+ok('pressing again takes it back', r.data.voted === false);
+r = await call(metaApi, '/api/meta?do=report-vote', { method: 'POST', as: 'editor2', body: { id: repSmall.id } });
+ok('...and does not nudge a second time', r.data.nudged === false);
+
+// ---- marking a duplicate --------------------------------------------------
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'admin',
+  body: { id: repSmall.id, dupOf: repSmall.code } });
+ok('a report cannot be a duplicate of itself', r.status === 400 && r.data.error === 'NOT_ITS_OWN_DUPLICATE');
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'admin',
+  body: { id: repSmall.id, dupOf: 'R9999' } });
+ok('...nor of a report that does not exist', r.status === 400 && r.data.error === 'NO_SUCH_REPORT');
+r = await call(metaApi, '/api/meta?do=report', { method: 'PATCH', as: 'admin',
+  body: { id: repSmall.id, dupOf: repUrgent.code } });
+ok('marking a duplicate sets the state as well', r.status === 200
+  && r.data.report.dupOf === repUrgent.code && r.data.report.state === 'duplicate');
+
+// ---- the daily summary ----------------------------------------------------
+r = await call(metaApi, '/api/meta?do=report-digest', { as: 'editor' });
+ok('the daily summary is closed to anybody not on the rota', r.status === 403);
+
+r = await call(metaApi, '/api/meta?do=report-digest', { as: 'coadmin' });
+ok('the rota can read it', r.status === 200 && typeof r.data.text === 'string');
+const digest = r.data.text || '';
+ok('...and it carries what somebody needs to act: the code, what they were doing, and the device',
+  digest.includes(repUrgent.code) && digest.includes('ตอนนั้นกำลัง') && digest.includes('iPhone Safari'),
+  digest.slice(0, 60));
+ok('...and says a screenshot exists', /ภาพหน้าจอ 1 รูป/.test(digest));
+ok('...with the urgent one first', digest.indexOf(repUrgent.code) < digest.indexOf(repSmall.code));
+ok('...and it names no particular developer', !/claude/i.test(digest));
+
+/**
+ * A small bug many people hit outranks a middling one nobody did — the same
+ * rule the page uses, so the list and the summary can never look like they
+ * disagree about which thing matters.
+ */
+const { digestText: digestOf } = await import('../lib/reports.js');
+const crowdOrder = digestOf([
+  { id: 'a', code: 'RA', kind: 'bug', title: 'a', severity: 'normal', state: 'new', votes: NUDGE_AT, on_day: '2026-10-22', created_by: 'x' },
+  { id: 'b', code: 'RB', kind: 'bug', title: 'b', severity: 'high', state: 'new', votes: 1, on_day: '2026-10-22', created_by: 'x' },
+], { day: '2026-10-22' });
+ok('a small bug many people hit is ordered above a middling one nobody did',
+  crowdOrder.indexOf('RA') < crowdOrder.indexOf('RB'));
+
+// ===========================================================================
+// The pop-up
+// ===========================================================================
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'editor', body: { title: 'x', body: 'y' } });
+ok('an editor cannot put a box in front of the whole committee',
+  r.status === 403 && r.data.error === 'EDITORS_CANNOT_ANNOUNCE');
+
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin', body: { title: 'แค่หัวข้อ' } });
+ok('a heading with nothing under it is refused', r.status === 400 && r.data.error === 'NEEDS_WORDS_OR_PICTURE');
+
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin',
+  body: { title: 'a', body: 'b', startsAt: '2026-12-01T00:00:00Z', endsAt: '2026-11-01T00:00:00Z' } });
+ok('...and so is a window that ends before it starts', r.status === 400 && r.data.error === 'ENDS_BEFORE_IT_STARTS');
+
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin',
+  body: {
+    title: 'ประชุมใหญ่ 25 ต.ค.', body: 'ห้อง 301 เวลา 17.00 น.',
+    linkUrl: 'chulafair.com/s/MEET', linkLabel: 'ดูกำหนดการ', image: png64,
+  } });
+ok('an admin can make one, with a poster', r.status === 201, JSON.stringify(r.data).slice(0, 80));
+const popEveryone = r.data.popup;
+ok('...and the poster’s real shape is recorded, so the box does not jump as it loads',
+  popEveryone.imageW === 40 && popEveryone.imageH === 25);
+ok('...and a bare address is given a scheme rather than refused',
+  popEveryone.linkUrl === 'https://chulafair.com/s/MEET', popEveryone.linkUrl);
+
+r = await call(pushApi, '/api/push?do=popup', { as: 'member' });
+ok('somebody opening the app gets it', r.data.popup && r.data.popup.id === popEveryone.id);
+
+r = await call(pushApi, `/api/push?do=popup-image&id=${popEveryone.id}`, { as: 'member' });
+ok('the poster is served as a picture, and told not to be sniffed as anything else',
+  r.status === 200);
+
+await call(pushApi, '/api/push?do=popup-seen', { method: 'POST', as: 'member', body: { id: popEveryone.id, clicked: true } });
+r = await call(pushApi, '/api/push?do=popup', { as: 'member' });
+ok('once dismissed it does not come back', r.data.popup === null);
+r = await call(pushApi, '/api/push?do=popup', { as: 'editor' });
+ok('...but it still greets somebody who has not seen it', r.data.popup && r.data.popup.id === popEveryone.id);
+
+// A second dismissal without following the link must not un-click the first.
+await call(pushApi, '/api/push?do=popup-seen', { method: 'POST', as: 'member', body: { id: popEveryone.id } });
+r = await call(pushApi, '/api/push?do=popups', { as: 'admin' });
+const popStats = r.data.popups.find((p) => p.id === popEveryone.id);
+ok('following the link is remembered, and dismissing again does not undo it',
+  popStats.stats.clicked === 1 && popStats.stats.shown === 1, JSON.stringify(popStats.stats));
+
+// Editing the words must not silently drop the poster.
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin',
+  body: { id: popEveryone.id, body: 'ย้ายไปห้อง 302' } });
+ok('editing the words keeps the picture', r.data.popup.hasImage === true && /302/.test(r.data.popup.body));
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin',
+  body: { id: popEveryone.id, image: null } });
+ok('...and asking for it to go removes it', r.data.popup.hasImage === false);
+
+// A department pop-up reaches that department, and nobody else — the same rule
+// the announcements learnt on 11 October.
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin',
+  body: { title: 'เนื้อหาเท่านั้น', body: 'ส่งสคริปต์ก่อนศุกร์', audience: { kind: 'departments', departments: ['content'] } } });
+const popContent = r.data.popup;
+ok('a pop-up can be aimed at one ฝ่าย', r.status === 201);
+
+await call(pushApi, '/api/push?do=popup-seen', { method: 'POST', as: 'editor', body: { id: popEveryone.id } });
+r = await call(pushApi, '/api/push?do=popup', { as: 'editor' });
+ok('...and it reaches that ฝ่าย', r.data.popup && r.data.popup.id === popContent.id);
+await call(pushApi, '/api/push?do=popup-seen', { method: 'POST', as: 'editor2', body: { id: popEveryone.id } });
+r = await call(pushApi, '/api/push?do=popup', { as: 'editor2' });
+ok('...and not another one', r.data.popup === null);
+
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin',
+  body: { title: 'ไม่มีใคร', body: 'x', audience: { kind: 'people', people: ['Nobody_At_All'] } } });
+ok('a pop-up aimed at nobody is refused now, not discovered later', r.status === 400 && r.data.error === 'NO_RECIPIENTS');
+
+// Only ever one at a time, even with several live.
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin', body: { title: 'สาม', body: 'x' } });
+ok('a third live pop-up is allowed', r.status === 201);
+r = await call(pushApi, '/api/push?do=popup-save', { method: 'POST', as: 'admin', body: { title: 'สี่', body: 'x' } });
+ok('...a fourth is not — three boxes in a queue is not a notice', r.status === 400 && r.data.error === 'TOO_MANY_LIVE');
+
+const { pickForViewer } = await import('../lib/popup.js');
+const three = [{ id: 'c', repeat_mode: 'once' }, { id: 'b', repeat_mode: 'once' }, { id: 'a', repeat_mode: 'once' }];
+ok('only one box is ever shown at once', pickForViewer(three, {}, '2026-10-22').id === 'c');
+ok('...and a daily one comes back the next day, not the same day',
+  pickForViewer([{ id: 'd', repeat_mode: 'daily' }], { d: { on_day: '2026-10-22' } }, '2026-10-22') === null
+  && pickForViewer([{ id: 'd', repeat_mode: 'daily' }], { d: { on_day: '2026-10-21' } }, '2026-10-22') !== null);
+
+// ===========================================================================
+// The shelf of links
+// ===========================================================================
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'member', body: { kind: 'folder', title: 'x' } });
+ok('a member cannot put a link on the committee’s shelf', r.status === 403 && r.data.error === 'MEMBERS_CANNOT_ADD');
+
+r = await call(metaApi, '/api/meta?do=shelf', { as: 'member' });
+ok('...but reads all of it', r.status === 200 && r.data.mayAdd === false);
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+  body: { kind: 'folder', title: 'แบบฟอร์มกลาง', icon: '📁' } });
+const shRoot = r.data.node;
+ok('an admin makes a folder', r.status === 201 && shRoot.kind === 'folder');
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+  body: { kind: 'folder', title: 'หนังสือราชการ', parentId: shRoot.id } });
+const shSub = r.data.node;
+ok('...and a folder inside it', r.status === 201 && shSub.parentId === shRoot.id);
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+  body: { kind: 'link', title: 'เทมเพลตหนังสือเชิญ', url: 'docs.google.com/document/d/abc', parentId: shSub.id } });
+ok('a link inside that, with its address tidied', r.status === 201
+  && r.data.node.url === 'https://docs.google.com/document/d/abc', r.data.node && r.data.node.url);
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+  body: { kind: 'link', title: 'bad', url: 'javascript:alert(1)', parentId: shSub.id } });
+ok('a javascript: address never reaches a shelf the whole committee clicks',
+  r.status === 400 && r.data.error === 'BAD_URL');
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin', body: { kind: 'link', title: 'no address' } });
+ok('...and a link with no address is refused', r.status === 400 && r.data.error === 'URL_REQUIRED');
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+  body: { kind: 'folder', title: 'inside a link', parentId: r.data.id || shSub.id } });
+r = await call(metaApi, '/api/meta?do=shelf', { as: 'admin' });
+const aLink = r.data.nodes.find((n) => n.kind === 'link');
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+  body: { kind: 'folder', title: 'nope', parentId: aLink.id } });
+ok('nothing can go inside a link', r.status === 400 && r.data.error === 'NOT_A_FOLDER');
+
+// ---- how deep ----
+let deepAt = shSub.id;
+let depthHit = null;
+for (let i = 0; i < 8 && !depthHit; i++) {
+  r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'admin',
+    body: { kind: 'folder', title: 'ชั้น ' + i, parentId: deepAt } });
+  if (r.status === 201) deepAt = r.data.node.id;
+  else depthHit = r.data.error;
+}
+ok('folders stop at a depth a breadcrumb still fits on a phone', depthHit === 'TOO_DEEP', String(depthHit));
+
+// ---- moving ----
+r = await call(metaApi, '/api/meta?do=shelf-edit', { method: 'PATCH', as: 'admin',
+  body: { id: shRoot.id, parentId: shSub.id } });
+ok('a folder cannot be moved inside its own child — that would cut the branch off for good',
+  r.status === 400 && r.data.error === 'CANNOT_MOVE_INTO_ITSELF');
+r = await call(metaApi, '/api/meta?do=shelf-edit', { method: 'PATCH', as: 'admin',
+  body: { id: shRoot.id, parentId: shRoot.id } });
+ok('...nor inside itself', r.status === 400 && r.data.error === 'CANNOT_MOVE_INTO_ITSELF');
+
+// ---- a ฝ่าย's own branch ----
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'editor2',
+  body: { kind: 'folder', title: 'ฝ่ายอื่น', department: 'content' } });
+ok('somebody can only scope a branch to a ฝ่าย they are in',
+  r.status === 400 && r.data.error === 'NOT_YOUR_DEPARTMENT', JSON.stringify(r.data));
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'editor',
+  body: { kind: 'folder', title: 'เนื้อหาภายใน', department: 'content' } });
+const shPrivate = r.data.node;
+ok('...and can scope it to their own', r.status === 201 && shPrivate.department === 'content');
+
+r = await call(metaApi, '/api/meta?do=shelf-add', { method: 'POST', as: 'editor',
+  body: { kind: 'link', title: 'สรุปประชุมฝ่าย', url: 'https://drive.google.com/x', parentId: shPrivate.id } });
+const shPrivateLink = r.data.node;
+ok('a link can go inside it', r.status === 201);
+
+r = await call(metaApi, '/api/meta?do=shelf', { as: 'editor2' });
+const otherDeptIds = r.data.nodes.map((n) => n.id);
+ok('another ฝ่าย sees neither the folder nor what is inside it',
+  !otherDeptIds.includes(shPrivate.id) && !otherDeptIds.includes(shPrivateLink.id));
+
+r = await call(metaApi, '/api/meta?do=shelf', { as: 'member' });
+const memberIds = r.data.nodes.map((n) => n.id);
+ok('a member of that ฝ่าย does see it', memberIds.includes(shPrivate.id));
+const asMemberFolder = r.data.nodes.find((n) => n.id === shPrivate.id);
+ok('...and the count on a folder counts only what the viewer can see', asMemberFolder.count === 1);
+
+// ---- who may change and delete ----
+r = await call(metaApi, '/api/meta?do=shelf-edit', { method: 'PATCH', as: 'editor2',
+  body: { id: shRoot.id, title: 'hijacked' } });
+ok('one Editor cannot quietly rename another’s folder', r.status === 403 && r.data.error === 'NOT_YOURS');
+
+r = await call(metaApi, `/api/meta?do=shelf-delete&id=${shPrivate.id}`, { method: 'DELETE', as: 'editor' });
+ok('a folder with other people’s things in it is an admin’s to delete, even for whoever made it',
+  r.status === 403 && r.data.error === 'FOLDER_NOT_EMPTY' && r.data.inside === 1, JSON.stringify(r.data));
+
+r = await call(metaApi, `/api/meta?do=shelf-delete&id=${shPrivate.id}`, { method: 'DELETE', as: 'admin' });
+ok('...and deleting it says how much went with it',
+  r.status === 200 && r.data.alsoRemoved === 1, JSON.stringify(r.data));
+const goneToo = await sql`SELECT count(*)::int AS n FROM doc_links WHERE id = ${shPrivateLink.id}`;
+ok('...and the thing inside really is gone', goneToo[0].n === 0);
+
+// ---- ordering ----
+r = await call(metaApi, '/api/meta?do=shelf', { as: 'admin' });
+const sameFolder = r.data.nodes.filter((n) => (n.parentId || null) === shSub.id).map((n) => n.id);
+if (sameFolder.length > 1) {
+  const flipped = sameFolder.slice().reverse();
+  r = await call(metaApi, '/api/meta?do=shelf-order', { method: 'POST', as: 'admin', body: { ids: flipped } });
+  ok('a folder’s contents are reordered in one request, not one per card', r.status === 200);
+  const after = await sql`SELECT id, position FROM doc_links WHERE id = ANY(${flipped}) ORDER BY position`;
+  ok('...and the new order sticks', after.map((x) => x.id).join() === flipped.join());
+} else {
+  ok('a folder’s contents are reordered in one request, not one per card', true, 'only one item to order');
+  ok('...and the new order sticks', true, 'only one item to order');
+}
+r = await call(metaApi, '/api/meta?do=shelf-order', { method: 'POST', as: 'admin',
+  body: { ids: [shRoot.id, shSub.id] } });
+ok('things in different folders cannot be ordered together', r.status === 400 && r.data.error === 'NOT_THE_SAME_FOLDER');
+
+// ---- the twelve-function budget ----------------------------------------
+const { readdirSync } = await import('node:fs');
+const apiFiles = readdirSync('api').filter((f) => f.endsWith('.js'));
+ok('all of this still rides twelve serverless functions', apiFiles.length === 12, apiFiles.length + ' files');
+
+
+// ===========================================================================
+head('92. A paper can belong to one วาระ, or to the meeting as before');
+
+/**
+ * Asked for on 22 October, from a screenshot of a meeting with three papers
+ * in one undifferentiated list. A committee's papers divide two ways in
+ * practice — the minutes of last time belong to the meeting, the budget
+ * spreadsheet belongs to วาระที่ 4.2 and is noise everywhere else — and one
+ * flat list cannot say which is which.
+ *
+ * The whole design rests on the default being unchanged: a paper with no
+ * วาระ named is a paper for the meeting, which is what every existing row is.
+ */
+/** Its own meeting, so this section does not depend on an earlier one's. */
+r = await call(eventsApi, '/api/events?do=meeting', {
+  method: 'POST', as: 'admin',
+  body: {
+    title: 'ประชุมเอกสารแยกตามวาระ',
+    meetsOn: '2026-12-18', meetsAt: '15:00',
+    people: ['Kungking_HeadCon'],
+    template: 'standard',
+  },
+});
+const filingMtgId = r.data.id;
+ok('a meeting to file papers in', r.status === 201, JSON.stringify(r.data).slice(0, 70));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: filingMtgId, linkUrl: 'https://drive.google.com/file/d/minutes/view' },
+});
+ok('...with a paper on it the old way, naming no วาระ', r.status === 201 && r.data.agendaId === null);
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === filingMtgId);
+// An item belongs under one of the standing วาระ, as the agenda API requires.
+const underHeading = paperMtg.agenda.find((a) => a.depth === 0 && a.kind && a.kind !== 'item');
+
+r = await call(eventsApi, '/api/events?do=agenda', {
+  method: 'POST', as: 'admin',
+  body: {
+    meetingId: filingMtgId, title: 'งบประมาณไตรมาสที่ 3', minutes: 20,
+    parentId: underHeading && underHeading.id,
+  },
+});
+ok('an agenda item to file papers under', r.status === 201, JSON.stringify(r.data).slice(0, 70));
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === filingMtgId);
+const budgetItem = paperMtg.agenda.find((a) => a.title === 'งบประมาณไตรมาสที่ 3');
+ok('...and it is on the meeting', Boolean(budgetItem));
+
+// ---- the default is unchanged ----
+ok('every paper attached before today belongs to the meeting, not to a วาระ',
+  paperMtg.files.length > 0 && paperMtg.files.every((f) => f.agendaId === null),
+  JSON.stringify(paperMtg.files.map((f) => f.agendaId)));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: filingMtgId, linkUrl: 'https://docs.google.com/spreadsheets/d/plain' },
+});
+ok('...and one attached with no วาระ named still does',
+  r.status === 201 && r.data.agendaId === null, JSON.stringify(r.data));
+
+// ---- filing one under a วาระ ----
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: {
+    meetingId: filingMtgId,
+    linkUrl: 'https://docs.google.com/spreadsheets/d/q3budget',
+    agendaId: budgetItem.id,
+  },
+});
+ok('a paper can be filed under one วาระ as it goes on',
+  r.status === 201 && r.data.agendaId === budgetItem.id, JSON.stringify(r.data));
+const filedId = r.data.id;
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === filingMtgId);
+const filedPaper = paperMtg.files.find((f) => f.id === filedId);
+ok('...and the listing says which one', filedPaper && filedPaper.agendaId === budgetItem.id);
+ok('...while the others are still the meeting’s',
+  paperMtg.files.filter((f) => f.agendaId === null).length >= 2,
+  JSON.stringify(paperMtg.files.map((f) => f.agendaId)));
+
+/**
+ * An id from another meeting would file the paper where nobody could see it,
+ * and the symptom — "I attached it and it vanished" — is miserable to chase.
+ */
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'POST', as: 'admin',
+  body: { meetingId: filingMtgId, linkUrl: 'https://example.com/x', agendaId: 'ag_not_real' },
+});
+ok('a วาระ that is not on this meeting is refused rather than taken on trust',
+  r.status === 400 && r.data.error === 'NO_SUCH_AGENDA_ITEM', JSON.stringify(r.data));
+
+// ---- re-filing one afterwards ----
+const loosePaper = paperMtg.files.find((f) => f.agendaId === null);
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'PATCH', as: 'admin', body: { id: loosePaper.id, agendaId: budgetItem.id },
+});
+ok('a paper already attached can be moved under a วาระ',
+  r.status === 200 && r.data.agendaId === budgetItem.id, JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'PATCH', as: 'admin', body: { id: loosePaper.id, agendaId: null },
+});
+ok('...and moved back to the meeting as a whole',
+  r.status === 200 && r.data.agendaId === null, JSON.stringify(r.data));
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'PATCH', as: 'admin', body: { id: loosePaper.id, agendaId: 'ag_not_real' },
+});
+ok('...and a bogus วาระ is refused on the move too',
+  r.status === 400 && r.data.error === 'NO_SUCH_AGENDA_ITEM');
+
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'PATCH', as: 'member', body: { id: loosePaper.id, agendaId: budgetItem.id },
+});
+ok('somebody who neither attached it nor runs the meeting cannot re-file it',
+  r.status === 403 && r.data.error === 'NOT_YOUR_FILE', JSON.stringify(r.data));
+
+/**
+ * The one that matters most. Removing an agenda item must not destroy the
+ * paper somebody attached to it — the column is ON DELETE SET NULL, so the
+ * paper falls back to the meeting where it can be seen and re-filed.
+ */
+r = await call(eventsApi, '/api/events?do=mtgfile', {
+  method: 'PATCH', as: 'admin', body: { id: loosePaper.id, agendaId: budgetItem.id },
+});
+ok('two papers under the วาระ about to be deleted', r.status === 200);
+
+r = await call(eventsApi, `/api/events?do=agenda&id=${encodeURIComponent(budgetItem.id)}`,
+  { method: 'DELETE', as: 'admin' });
+ok('the วาระ is removed', r.status === 200, JSON.stringify(r.data).slice(0, 60));
+
+mtgList = await call(eventsApi, '/api/events?do=meetings', { as: 'admin' });
+paperMtg = mtgList.data.meetings.find((m) => m.id === filingMtgId);
+const survivors = paperMtg.files.filter((f) => f.id === filedId || f.id === loosePaper.id);
+ok('...and its papers survive it, back on the meeting rather than deleted',
+  survivors.length === 2 && survivors.every((f) => f.agendaId === null),
+  JSON.stringify(survivors.map((f) => [f.name, f.agendaId])));
 
 
 

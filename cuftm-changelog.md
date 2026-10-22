@@ -1,13 +1,122 @@
-# CUFTM (cu-ftm.vercel.app) — change log
+# CUFTM (task.chulafair.com · short links on chulafair.com) — change log
 
-Ship complete folders (api/ lib/ public/ test/ dev-tests/), never partial zips, and give every package a **dated filename**. A half-copied update broke tasks.js on 2026-10-08; reusing the filename `cuftm-complete-update.zip` for two different packages meant the 10-09 documents work was never deployed (10-10).
+**How changes reach the repository, since 22 October 2026:** the changed files are written straight into `Downloads/CUFtm-clean` on Jade's Mac — no more dated zips. That folder is the single local copy; everything older was deleted on 22 October after a tidy-up found 124 MB of half-overlapping downloads, two of which were both labelled `2026-10-19c` and contained different work.
+
+The rule the zips existed to enforce still holds and is now the reason the single folder is safer: **a partial update is worse than none.** A half-copied set broke tasks.js on 2026-10-08, and reusing the filename `cuftm-complete-update.zip` for two different packages meant the 10-09 documents work was never deployed (10-10). When only some files change, every one of them has to land, and the version string below is how to check that it did.
 
 **Checking what is live:** Profile → เวอร์ชันที่ใช้งานอยู่ shows the page's version and the server's. They must match; if they differ the deploy was incomplete. The string lives in `lib/version.js` (server), as `var APP_VERSION` near the top of `public/app.js` (page), and in every `?v=` in `public/index.html` — bump all three with each package; run.mjs §77 fails if they drift apart.
 
 **Posts are read from the roster's ตำแหน่ง column, not from Access.** ต๊อดติ is a Co-Admin because he manages people, which is not a reason to offer him as ประธานโครงการ. If a post ever stops being offered to the right person, look at that column first.
 
-**Working on this in a new container:** restore from the latest zip, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
+**Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
+
+## 2026-10-22 — a paper can belong to one วาระ · version `2026-10-22d`
+Schema **`2026-10-22d`** (migrates itself: one nullable column on `meeting_files`). Still 12 functions.
+
+Asked for from a screenshot of a meeting with three papers in one undifferentiated list. A committee's papers divide two ways in practice — the minutes of last time and the joining link belong to the meeting; the budget spreadsheet belongs to วาระที่ 4.2 and is noise everywhere else — and a flat list cannot say which is which.
+
+**The default is unchanged, and that is the whole design.** `meeting_files.agenda_id` is nullable; null means the paper is for the meeting as a whole, which is what every existing row is and what the picker still offers first, already chosen. Nobody who liked the old behaviour has to do anything differently — which is what "หรือขึ้นรวมแบบเดิมก็ได้" asked for.
+
+### What changed on the page
+- **One picker above the two attach buttons**, not one each, because it is one question. It is hidden entirely when the agenda is empty: a choice between one thing is not a choice.
+- **The list groups itself**, meeting papers first, then one group per วาระ that has any. A group with nothing in it never appears — an empty heading per วาระ would be longer than the list it organises.
+- **Headings appear unless the only group is the meeting's own.** "More than one group" is not quite the rule: when every paper sits under 4.1 there is still one group, and saying nothing leaves the reader unable to tell they are filed at all. The heading is redundant in exactly one case — everything belongs to the meeting, which is what the list meant before.
+- **A paper count on each agenda row**, which is the point of the change: the agenda is what somebody reads while the meeting runs, and "4.1 has two documents" is worth knowing at the moment 4.1 comes up. Pressing it jumps to that group and flashes it. The counts are recomputed whenever the list is redrawn, so moving a paper changes both places at once rather than leaving one stale.
+- **Each row can be re-filed from a dropdown on itself.** A committee that has been attaching everything to the meeting has a list to sort out, and the alternative is detaching and re-uploading — which loses a file held here and leaves a second copy in Drive for one that is not. On a phone the dropdown is simply there and full width; on a computer it fades in on hover, because it is for tidying up rather than for reading.
+
+### The rules behind it
+- **An agenda id is checked against this meeting's own agenda**, on both the upload and the move. An id from another meeting would file the paper where nobody could see it, and the symptom — "I attached it and it vanished" — is miserable to chase. Anything unrecognised is refused rather than quietly ignored.
+- **`ON DELETE SET NULL`, not `CASCADE`.** Removing a วาระ must not destroy the paper somebody attached to it. The paper falls back to the meeting, where it can be seen and re-filed. Checked in both suites.
+- **Moving is allowed to whoever may remove**: the person who attached it, and whoever runs the meeting. Filing is a lighter act than removing so nothing stricter is warranted, and anything looser would let one invitee reshuffle another's papers.
+
+### Tests
+- **run.mjs §92 is new (17 checks)**: the default staying null, filing at upload time, a foreign agenda id refused on both paths, moving to a วาระ and back, a stranger refused the move, and — the one that matters most — two papers surviving the deletion of the วาระ they were filed under. **1401 checks.**
+- **`dev-tests/agenda.mjs` extended (14 checks)**: it already builds a meeting with a real agenda, so the papers box is tested on the same one. ทั้งการประชุม offered first and pre-selected, the list splitting into groups once something is filed, the heading surviving when the single group is a วาระ, the count appearing on the agenda row, and the count following a move rather than going stale.
+
+## 2026-10-22 — the committee's own voice · version `2026-10-22c`
+Schema **`2026-10-22c`** (migrates itself: five new tables, one new sequence). Still 12 functions.
+
+Three features in one release, and they share a principle worth stating because it decided every detail below: **reporting is open to everybody; interrupting everybody is open to almost nobody.**
+
+### Reporting a bug, suggesting a feature — `#/reports`
+A fault used to reach me as a message in a LINE group, which is to say it reached me if I happened to be reading. The report scrolled away, the screenshot expired, and nobody could tell whether the thing had been fixed, dismissed, or simply missed. Five people would report the same fault, each certain they were the first.
+
+**Anybody may file one**, including a สมาชิกฝ่าย who cannot create a task — the people who find bugs are the people doing the work, and making them ask a ประธานฝ่าย to pass it on is how a fault goes unreported.
+
+The form's field order is the argument of the whole feature. **"ตอนนั้นกำลังทำอะไรอยู่" comes before the description**, because it is the single most useful sentence in any bug report and the one people leave out when the form is a blank box. Asked first, it gets answered; asked last, it gets skipped. Up to three screenshots. The page fills in the route, the browser, the screen size, whether they are in the installed app, and the build they are actually running — and **shows them that line before they send**, because quietly attaching facts about somebody's device to something they wrote is not a thing to do behind their back.
+
+**The duplicate check is live.** As somebody types a title, anything already open that matches appears underneath with a **เจอเหมือนกัน** button. Matching is by word overlap, not substring: "กดปุ่มบันทึกไม่ได้" and "ปุ่มบันทึกกดไม่ติด" are the same fault and share no substring. Five people reporting one thing becomes one report with five people on it — less to read, and better evidence.
+
+**Urgent wakes people, so it is constrained.** The reporter ticks it (they are the one standing in front of the broken thing) and an admin can raise or lower it afterwards. Only a BUG can be urgent — a suggestion, however good, is not an emergency, and allowing it to be marked as one would teach everybody to ignore the alert. The form says plainly that the tick wakes people up.
+
+**Many people hitting one thing is itself urgent.** At five **เจอเหมือนกัน** the rota is told once — once ever, hence `nudged_at`. Told, not escalated: the severity stays an admin's to set, and a counter should not be able to wake people night after night. The same five promotes a report one severity band in the ordering, so a เรื่องเล็ก six people hit sorts above a ติดขัด one person hit, but can never outrank a genuine ใช้งานไม่ได้เลย.
+
+**Who sees what.** Everybody sees the list — title, kind, how many hit it, what became of it. That openness is doing a job: it is how a duplicate gets caught and how the committee can see that reporting something here leads somewhere. Held back to the rota and the reporter: the screenshots (whatever was on somebody's screen may be a letter or a private message), the browser line, and the triage notes.
+
+**The reporter hears back.** When a state changes they get a notice with the admin's note. Without it the feature quietly dies: somebody reports two things, hears nothing either time, and reasonably concludes that reporting is a way of talking to yourself. A severity being *lowered* tells them nothing, on purpose — "your report has been downgraded" would mostly teach people not to tick the box honestly.
+
+### Who gets woken: the rota
+**จัดการผู้ใช้ is not where this lives** — it is a button under the daily summary. Admins are always told and are listed without a checkbox, because a tickbox you cannot untick is worse than a sentence saying so. An admin adds **co-admins only**: being woken at night by a broken page is a job with power attached. A co-admin cannot add themselves. Anybody on the rota can read every report in full at any time, which is what Jade asked for.
+
+### The daily summary
+A tab on the reports page with one **คัดลอกทั้งหมด** button. Plain text, assembled by the server so what gets pasted is the same whoever pastes it, in two groups: **ของวันนี้**, and **ยังค้างอยู่จากก่อนหน้านี้** — a report filed on Tuesday and ignored on Wednesday is the one most likely to be ignored again, and a summary showing only today's arrivals is how that happens. Each entry carries the code, what they were doing, the device, the version and whether a screenshot exists. The day is worked out in Bangkok time by the database, so "today" means the same day to everybody reading it.
+
+### The pop-up — admin / co-admin only, on the announce page
+A notice in LINE reaches whoever is reading LINE; a notice in the bell reaches whoever presses the bell. Neither reaches somebody who opened the app to check their own tasks, which is the one moment nearly everybody passes through. So this is the most intrusive thing in the app, and therefore the most constrained:
+
+- **Once per person** (`popup_seen`), unless the author deliberately chooses daily or every-load. A notice that reappears every visit is one people learn to dismiss before reading — and once they have learnt that, the next one does not work either.
+- **It ends by itself.** Every pop-up has a window, so nobody has to remember to take down the notice about last Tuesday.
+- **Only one box at a time**, even with three live. Two stacked over the page is how somebody dismisses both unread.
+- **Three live at most.** More than that and it is a queue, not a notice.
+- **A tap on the background does not close it.** Every other dialog in the app closes that way because every other dialog is something the person asked for. This one they did not.
+- Text, an optional poster, an optional link, and an audience — whole committee or chosen ฝ่าย, through the same `resolveAudience` the announcements use, so a ฝ่าย pop-up reaches that ฝ่าย and nobody else (the 11 October lesson, not re-learnt).
+
+The editor shows a **live preview at a phone's width**, because a notice that fits a laptop and takes two screens on a phone is the mistake this is here to catch. The poster's real pixel size is read out of the file's header (PNG, JPEG and WebP, by hand — a dependency for reading two integers is a dependency to maintain for a year) and used to reserve the box's height, so it does not grow as the picture lands and move the dismiss button out from under a thumb. Editing the words keeps the picture; `image: null` removes it. **ให้คนที่เคยเห็นแล้วเห็นอีกครั้ง** is a deliberate choice rather than something inferred from what changed — only the admin knows whether a correction is worth interrupting people twice. Each one reports how many of the committee have seen it and how many followed the link, which is the only honest measure of whether it worked.
+
+### The shelf of important documents — `#/shelf`
+Every committee keeps its paperwork as a pinned LINE message with fourteen Drive URLs in it, and it fails the same way every year: the template everybody needs is the eleventh line of a message from September, so people stop looking and ask in the group chat, and somebody answers with the link, and next week somebody else asks again.
+
+Folders inside folders, like Drive, because that is the shape people already think in. **One table for both** (`kind`, `parent_id`) — which is what makes moving things free: dragging a whole folder of แบบฟอร์ม into another is one UPDATE of one column, exactly like moving a single link. Six levels deep at most, not for a technical reason but because past that the breadcrumb no longer fits on a phone, which is where a filing system stops helping.
+
+**A branch can belong to one ฝ่าย.** Null means the whole committee; set, it means that ฝ่าย plus anybody who sees across ฝ่าย anyway. อำนวยการ 2's internal paperwork does not belong on everybody's shelf, and without this the page fills with other people's folders until it is as unusable as the pinned message was. Somebody may only scope a branch to a ฝ่าย they are in — otherwise "put this in อำนวยการ 2's folder" becomes a way to hide a link from everybody including อำนวยการ 2. **A node whose parent is hidden is hidden too**, however permissive its own scope: a link inside that folder is inside that folder, and showing it loose at the root would be a leak dressed up as a convenience. The count on a folder counts only what the viewer can see — "8 รายการ" that opens on three reads as something being kept from them.
+
+Members read all of it and add none of it, for the same reason they cannot create a task. Whoever added something can change it, plus admins — deliberately not everybody who may add, or any Editor could quietly reorganise another ฝ่าย's folder. **A folder with things in it is an admin's to delete even for whoever made it**, because by then other people have filed things in it. The confirmation says how many go with it: "ลบโฟลเดอร์นี้ไหม" is a question people say yes to; "ลบโฟลเดอร์นี้ และ 19 รายการข้างในไหม" is a question they read.
+
+Folders are `<button>` and links are `<a>` — not cosmetic: an anchor is what gives "open in a new tab" on a middle-click and a long-press menu on a phone, which is how a page of links actually gets used. Addresses go through the app's own `safeUrl`, so a `javascript:` address never reaches a shelf the whole committee clicks without looking. Each link is labelled by its host rather than by ninety characters of query string.
+
+### Also in this release
+- **`เสื้อโครงการ` added to the org chart** (`lib/departments.js`, under อำนวยการ 1). The contact-list sheet has had that unit for a while; the code did not, so its ประธาน had nowhere to be filed.
+- `test/e2e.mjs` and `DEPLOY.md` deleted at last — both were Slack-project leftovers that could not run and shipped inside the deployment.
+
+### Tests
+- **run.mjs §91 is new (86 checks)** covering all three: a member reporting, a suggestion refused urgency, a non-image refused, who may read the private half, the rota's gate on triage and on the summary, the reporter being told what became of it, a lowered severity telling nobody, the nudge firing once at the threshold, duplicate handling, the summary's contents and ordering, the pop-up's once-per-person and per-ฝ่าย behaviour, the three-live cap, the picture surviving a words-only edit, and the shelf's depth limit, move-into-itself refusal, ฝ่าย scoping, cascade delete and reordering. **1384 checks.**
+- **`dev-tests/voice.mjs` is new** — the browser side, because each feature has a part that exists only there: the live duplicate check as a title is typed, the pop-up refusing to close on a background tap, the preview tracking what is typed at a phone's width, the breadcrumb walking back out of a folder, and all of it at 390px with a thumb-sized เจอเหมือนกัน.
+- **`dev-tests/quiet.mjs` now stubs the pop-up endpoint for every other suite.** A live pop-up outlives the run that made it and lands over whatever page the next suite is driving, failing it with "intercepts pointer events" — a failure that looks nothing like its cause, and exactly how links.mjs's leftover QR code used to break the following run. Answered at the network edge rather than with a flag in app.js: it is a fact about the test browser, not a behaviour the app should carry. `voice.mjs` opts back in and clears its own fixtures at both ends.
+
+**Two bugs the tests found, both real:**
+- The pop-up was gated on the getting-started guide being *finished*, so anybody who never linked LINE — a large part of the committee, permanently — would never have seen a notice at all. Now it is gated on whether a dialog is actually on screen when its turn comes: the guide still wins a first visit, and it gives up rather than queueing behind whatever is open, because a box appearing the instant something else closes is dismissed by the same movement.
+- The report detail drew its screenshot strip from the count, which is in the open half of the payload — so somebody who may not fetch the images got a row of broken pictures and a row of 403s. Now gated on the detail itself having come back.
+
+## 2026-10-22 — cuftm-2026-10-22b-pdf-reader.zip · version `2026-10-22b`
+No schema change (`2026-10-18a` still). Still 12 functions. Includes 10-22a.
+
+### Reading a letter without leaving the app, and a real download
+The file chips were ordinary links with `target="_blank"`. On a computer that opens the browser's PDF viewer, which is fine. On a phone it hands the file to whatever reader the system picks — and for anyone who installed this to their home screen there is then **no address bar, no back button and no app**: the way back is to close the whole thing and sign in again. There was also no obvious way to save a copy.
+
+So a PDF chip now opens a reader **inside the app**: the page drawn with the pdf.js the app already ships, a pager when there is more than one page, and two buttons — **ดาวน์โหลด** and **ปิด**. The browser's own viewer is still offered, as a quiet **เปิดในแท็บใหม่** link above the page rather than a third button (a third button wraps onto its own row on a phone and pushes ปิด off the bottom of the screen, which is the exact trap this is meant to end).
+
+On a phone the way out is the ✕ in the header, and the sheet drags down to dismiss — the app already hides a footer "ปิด" that only repeats the ✕, and the reader follows that rule like every other dialog.
+
+**The download is a real download.** `&download=1` on the file endpoint serves the PDF as an `attachment` rather than `inline`, and the button fetches the bytes and hands over a blob, which is the one approach that behaves the same in Safari, in Chrome and inside an installed app. The file lands under a name worth having: **the เลขรันเอกสาร first**, then the title — that number is how the committee refers to the letter everywhere else, so it is what somebody will search their downloads folder for.
+
+The Word original is unchanged: it was always a straight download, because nothing renders a .docx in a tab.
+
+A file that has been archived to Drive, or removed when a letter was sent back, says so in the reader with a link to Drive where there is one, instead of a blank page.
+
+### Tests
+- run.mjs: five checks — the PDF served `inline` for the reader, `&download=1` serving it as an attachment, the name leading with the เลขรันเอกสาร, the same bytes either way, and the flag not being a way around who may see a file. 1298 checks.
+- `dev-tests/pdfread.mjs` is new: on a computer, the chip opens the reader rather than a tab, the page draws, the footer holds exactly ดาวน์โหลด and ปิด, the download really is an attachment, and closing returns to the letter. On a phone, the page fits 390px with no sideways scroll, the ✕ is on screen and thumb-sized, the duplicate ปิด stays hidden, ดาวน์โหลด sits above the home indicator, and tapping ✕ returns to the letter.
 
 ## 2026-10-22 — cuftm-2026-10-22a-shortlink-domain.zip · version `2026-10-22a`
 No schema change (`2026-10-18a` still). Still 12 functions.

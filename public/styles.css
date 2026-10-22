@@ -864,6 +864,13 @@ li.task[data-urgency="done"]  { border-left-color: var(--line); background: var(
 
 /* Marking where a signature goes. */
 .pdf-sheet { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: crosshair; }
+/* Reading a PDF, not placing anything on it — no crosshair, no invitation. */
+.pdf-sheet.plain { cursor: default; }
+.pdf-read { display: flex; flex-direction: column; gap: 10px; }
+.pdf-read-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pdf-tab-link { font-size: 13px; color: var(--accent); text-decoration: underline; }
+/* A chip that opens the reader: a button that has to pass for its neighbours. */
+.chip.as-btn { font: inherit; font-size: 12px; cursor: pointer; }
 .pdf-canvas { display: block; width: 100%; height: auto; background: #fff; }
 .pdf-overlay { position: absolute; inset: 0; pointer-events: none; }
 .pdf-pager { display: flex; gap: 8px; align-items: center; font-size: 13px; }
@@ -1602,3 +1609,265 @@ li.task:has(.role-watch) { border-style: dashed; }
 .users-table .add-dept { font-size: 12.5px; padding: 3px 6px; height: auto; }
 .users-table .btn.sm { font-size: 12px; padding: 4px 9px; }
 tr.urow[hidden] { display: none !important; }
+
+/* ======================================================================
+   The pop-up that greets people when they open the app
+   ====================================================================== */
+
+/* No pointer-events escape and no click-through: this box is the only dialog
+   in the app that a stray tap near the edge must not dismiss, because it is
+   the only one the person did not ask for. */
+.pop-veil { cursor: default; }
+.pop-modal { width: min(30rem, 100%); }
+.pop-modal > header { padding-bottom: 6px; border-bottom: 0; }
+.pop-tag {
+  font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 3px 9px; border-radius: 999px;
+}
+.pop-content { gap: 14px; padding-top: 4px; }
+/* The aspect ratio is set inline from the real pixel size the server read out
+   of the file, so the box is its final height before the picture arrives and
+   the dismiss button never moves out from under a thumb. */
+.pop-img {
+  width: 100%; border-radius: 12px; overflow: hidden;
+  background: var(--surface-2); display: grid; place-items: center;
+}
+.pop-img img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pop-title { font-size: 1.3rem; line-height: 1.3; margin: 0; }
+.pop-body { display: grid; gap: 8px; color: var(--ink); line-height: 1.6; }
+.pop-body p { margin: 0; }
+.pop-modal > footer { gap: 8px; }
+
+/* ---- the composer, on the announce page ---- */
+.pop-editor-cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; }
+.pop-editor-form { display: grid; gap: 12px; align-content: start; }
+.pop-editor-prev { display: grid; gap: 8px; align-content: start; position: sticky; top: 0; }
+/* The preview is drawn at a phone's width on purpose. A notice that looks
+   right on a laptop and takes two screens on a phone is the mistake this is
+   here to catch, and it can only be caught at the width people read on. */
+.pop-preview { background: var(--surface-2); border-radius: 14px; padding: 14px; display: grid; place-items: start center; }
+.pop-preview-card {
+  width: 100%; max-width: 20rem; background: var(--surface); border-radius: 14px;
+  padding: 14px; display: grid; gap: 10px; box-shadow: var(--shadow-2);
+}
+.pop-preview-card img { width: 100%; border-radius: 10px; display: block; }
+.pop-preview-card b { font-size: 1.05rem; line-height: 1.35; }
+.pop-preview-tag { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.pop-preview-body { font-size: .9rem; line-height: 1.55; color: var(--ink); display: grid; gap: 6px; }
+.pop-preview-body p { margin: 0; }
+.pop-preview-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.pop-img-pick { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pop-img-pick img { width: 84px; height: 84px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line-strong); }
+.pop-img-pick input[type="file"] { display: none; }
+.pop-thumb { width: 54px; height: 54px; object-fit: cover; border-radius: 10px; flex: 0 0 auto; }
+
+@media (max-width: 860px) {
+  .pop-editor-cols { grid-template-columns: 1fr; }
+  .pop-editor-prev { position: static; }
+}
+
+/* ======================================================================
+   The shelf of important links
+   ====================================================================== */
+
+.shelf-bar { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+.shelf-crumbs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin: 6px 0 0; }
+.crumb {
+  background: none; border: 0; padding: 4px 7px; border-radius: 8px; cursor: pointer;
+  color: var(--ink-faint); font: inherit; font-size: .92rem;
+}
+.crumb:hover { background: var(--surface-2); color: var(--ink); }
+.crumb.on { color: var(--ink); font-weight: 600; }
+.crumb-sep { color: var(--ink-faint); }
+
+.shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 12px; }
+.shelf-slot { position: relative; }
+/* Folders are buttons and links are anchors — see the note in pageShelf. The
+   two have to look identical, which means undoing what the browser does to
+   each of them separately. */
+.shelf-card {
+  display: grid; gap: 8px; width: 100%; text-align: start; text-decoration: none;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong);
+  border-radius: 14px; padding: 13px 14px; cursor: pointer; font: inherit;
+  transition: border-color .12s, transform .12s;
+}
+.shelf-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.shelf-card.folder { background: var(--surface-2); }
+.shelf-head { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.shelf-ico {
+  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+  font-size: 17px; flex: 0 0 auto; background: var(--surface-2);
+}
+.shelf-ico.folder { background: var(--accent-soft); }
+.shelf-name { font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.shelf-note { margin: 0; font-size: .88rem; line-height: 1.5; color: var(--ink-faint); }
+.shelf-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: .8rem; color: var(--ink-faint); }
+.shelf-host { font-variant-numeric: tabular-nums; }
+.shelf-count { font-weight: 600; }
+/* The tools sit over the card's top-right rather than inside it: the card is
+   one big button, and a button inside a button is not valid HTML. */
+.shelf-tools { position: absolute; top: 6px; inset-inline-end: 6px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.shelf-slot:hover .shelf-tools, .shelf-slot:focus-within .shelf-tools { opacity: 1; }
+.shelf-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+.swatch { width: 26px; height: 26px; border-radius: 8px; border: 2px solid transparent; cursor: pointer; }
+.swatch.on { border-color: var(--ink); }
+.shelf-icon-in { width: 5rem; text-align: center; font-size: 1.1rem; }
+
+/* A phone has no hover, so the tools are always there — and the card leaves
+   room for them rather than having them land on top of the title. */
+@media (max-width: 700px) {
+  .shelf-tools { opacity: 1; position: static; justify-content: flex-end; margin-top: -4px; }
+  .shelf-grid { grid-template-columns: 1fr; }
+}
+
+/* ======================================================================
+   Bug reports and suggestions
+   ====================================================================== */
+
+.rep-tabs { margin: 4px 0 14px; }
+.rep-list { display: grid; gap: 10px; }
+.rep-row {
+  display: flex; gap: 10px; align-items: stretch;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: 14px; overflow: hidden;
+}
+/* An urgent report nobody has looked at yet gets the one loud edge on the
+   page. Once it is on the list it goes back to looking like everything else:
+   the colour is for "nobody has picked this up", not for "this is bad". */
+.rep-row.hot { border-inline-start: 4px solid var(--danger); }
+.rep-open {
+  flex: 1 1 auto; min-width: 0; display: grid; gap: 6px; text-align: start;
+  background: none; border: 0; padding: 12px 14px; cursor: pointer; font: inherit; color: var(--ink);
+}
+.rep-open:hover { background: var(--surface-2); }
+.rep-top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.rep-code { font-size: .8rem; color: var(--ink-faint); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
+.rep-title { font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.rep-tags { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rep-by { display: flex; gap: 6px; align-items: center; font-size: .82rem; color: var(--ink-faint); }
+.rep-when { margin-inline-start: auto; }
+
+.rep-kind, .rep-sev, .rep-state, .rep-shots {
+  font-size: .76rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+}
+.rep-kind.k-bug { background: var(--danger-soft); color: var(--danger); }
+.rep-kind.k-idea { background: var(--st-feedback-soft); color: var(--st-feedback-ink); }
+.rep-sev.sev-urgent { background: var(--danger-soft); color: var(--danger); }
+.rep-sev.sev-high { background: var(--u-now-soft); color: var(--u-now); }
+.rep-sev.sev-normal { background: var(--surface-2); color: var(--ink-faint); }
+.rep-state { background: var(--surface-2); color: var(--ink-faint); }
+.rep-state.st-planned { background: var(--st-feedback-soft); color: var(--st-feedback-ink); }
+.rep-state.st-fixed { background: var(--st-done-soft); color: var(--st-done-ink); }
+.rep-shots { background: var(--surface-2); color: var(--ink-faint); font-weight: 500; }
+
+/* The count lives on the button because the number IS how many people
+   pressed it — putting them apart invites the reader to wonder whether they
+   mean the same thing. */
+.rep-metoo {
+  flex: 0 0 auto; display: grid; place-items: center; gap: 1px; width: 4.2rem;
+  background: none; border: 0; border-inline-start: 1px solid var(--line-strong);
+  cursor: pointer; font: inherit; color: var(--ink-faint);
+}
+.rep-metoo:hover { background: var(--surface-2); color: var(--ink); }
+.rep-metoo.on { background: var(--accent-soft); color: var(--accent); }
+.rep-metoo b { font-size: 1rem; font-variant-numeric: tabular-nums; }
+.rep-metoo-ic { font-size: 15px; line-height: 1; }
+
+.rep-kindseg button, .rep-sevseg button { display: grid; gap: 1px; padding: 8px 12px; text-align: center; }
+.rep-kindseg small, .rep-sevseg small { font-size: .74rem; opacity: .75; font-weight: 400; }
+.rep-sevseg button.on.sev-urgent { background: var(--danger); color: #fff; }
+.rep-sevseg button.on.sev-urgent small { opacity: .9; }
+
+.rep-dups { background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 12px; padding: 10px 12px; display: grid; gap: 7px; }
+.rep-dups-head { color: var(--ink-faint); line-height: 1.5; }
+.rep-dup-row { display: flex; gap: 8px; align-items: center; font-size: .88rem; }
+.rep-dup-row code { font-size: .78rem; color: var(--ink-faint); }
+.rep-dup-votes { font-variant-numeric: tabular-nums; color: var(--ink-faint); font-size: .82rem; }
+.btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+.rep-shotstrip { display: flex; gap: 8px; flex-wrap: wrap; }
+.rep-shot { position: relative; width: 92px; height: 92px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line-strong); display: block; }
+.rep-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Deliberately not themed: this sits on top of whatever the person
+   screenshotted, so it has to be dark-on-light regardless of the theme. */
+.rep-shot-x {
+  position: absolute; top: 2px; inset-inline-end: 2px; width: 22px; height: 22px;
+  border: 0; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; cursor: pointer; font-size: 12px; line-height: 1;
+}
+.rep-shot-add {
+  width: 92px; height: 92px; border-radius: 10px; border: 1px dashed var(--line-strong);
+  display: grid; place-items: center; gap: 2px; cursor: pointer; color: var(--ink-faint);
+}
+.rep-shot-add span { font-size: 1.4rem; line-height: 1; }
+.rep-shot-add small { font-size: .72rem; }
+.rep-shotstrip + input[type="file"] { display: none; }
+
+.rep-auto { background: var(--surface-2); border-radius: 10px; padding: 8px 12px; font-size: .85rem; }
+.rep-auto summary { cursor: pointer; color: var(--ink-faint); }
+.rep-auto ul { margin: 8px 0 4px; padding-inline-start: 1.1rem; display: grid; gap: 3px; color: var(--ink-faint); }
+
+.rep-detail-title { margin: 2px 0 0; font-size: 1.15rem; line-height: 1.35; }
+.rep-pre { display: grid; gap: 7px; line-height: 1.6; }
+.rep-pre p { margin: 0; }
+.rep-tech { background: var(--surface-2); border-radius: 10px; padding: 9px 12px; display: grid; gap: 4px; font-size: .84rem; color: var(--ink-faint); }
+.rep-note { border-inline-start: 3px solid var(--accent); padding: 2px 0 2px 11px; display: grid; gap: 3px; }
+.rep-note p { margin: 0; line-height: 1.6; }
+.rep-triage { border-top: 1px solid var(--line-strong); padding-top: 14px; margin-top: 4px; display: grid; gap: 12px; }
+.rep-triage h4 { margin: 0; }
+.rep-sent-code { text-align: center; margin: 0; }
+.rep-sent-code code { font-size: 1.5rem; font-weight: 700; letter-spacing: .04em; }
+
+.rep-digest-bar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 4px; }
+.rep-digest-counts { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+/* Monospace, wrapping, and scrollable: this is the block somebody copies, and
+   seeing it exactly as it will be pasted is the point. */
+.rep-digest {
+  background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 12px;
+  padding: 14px; margin: 0; max-height: 28rem; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.rep-team-link { display: grid; gap: 4px; justify-items: start; margin-top: 16px; }
+.rep-team { display: grid; gap: 2px; }
+.rep-team-row { display: flex; gap: 9px; align-items: center; padding: 7px 4px; border-radius: 9px; cursor: pointer; }
+.rep-team-row:hover { background: var(--surface-2); }
+.rep-team-row.fixed { cursor: default; }
+.rep-team-row.fixed:hover { background: none; }
+.rep-team-row span.grow { min-width: 0; overflow-wrap: anywhere; }
+.rep-always { margin-bottom: 10px; }
+
+@media (max-width: 700px) {
+  .rep-metoo { width: 3.4rem; }
+  .rep-when { margin-inline-start: 0; }
+  .rep-digest { font-size: .74rem; max-height: 22rem; }
+}
+
+/* ---- meeting papers, filed under a วาระ ---- */
+/* The group heading. The meeting's own papers get a quieter one than a
+   วาระ does: they are the default, and the default should not shout. */
+.mtg-file-head {
+  font-size: .82rem; font-weight: 600; color: var(--ink-faint);
+  padding: 10px 2px 4px; border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.mtg-file-head:first-child { border-top: 0; margin-top: 0; padding-top: 2px; }
+.mtg-file-head.whole { color: var(--ink-faint); font-weight: 500; }
+/* Jumped to from the agenda row's paper count, so it has to be findable for
+   a moment once you arrive. */
+.mtg-file-head.flash { background: var(--accent-soft); border-radius: 7px; padding-inline: 8px; }
+.mtg-under-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0 2px; font-size: .86rem; color: var(--ink-faint); }
+.mtg-under-row select { max-width: 22rem; }
+/* The per-file picker stays out of the way until the row is reached: it is
+   for tidying up, not for reading. */
+.mtg-file .f-under { max-width: 9rem; font-size: .78rem; padding: 2px 4px; opacity: .55; }
+.mtg-file:hover .f-under, .mtg-file .f-under:focus { opacity: 1; }
+.chip.paper { background: var(--accent-soft); color: var(--accent); border: 0; cursor: pointer; font-weight: 600; }
+.chip.paper:hover { text-decoration: underline; }
+
+@media (max-width: 700px) {
+  /* No hover on a phone, so the picker is simply there — and full width,
+     because a 9rem select of วาระ titles is unreadable. */
+  .mtg-file .f-under { opacity: 1; max-width: 100%; }
+  .mtg-under-row select { max-width: 100%; width: 100%; }
+}

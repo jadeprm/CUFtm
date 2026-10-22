@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-19d';
+  var APP_VERSION = '2026-10-22d';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -850,6 +850,8 @@
     megaphone: '<path d="M4 10v4h3l6 4V6L7 10z"/><path d="M16.5 9.5a3.5 3.5 0 010 5"/>',
     user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.7-3.6 3.6-5.5 7-5.5s6.3 1.9 7 5.5"/>',
     link: '<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
+    folder: '<path d="M3.5 7.5A2 2 0 015.5 5.5h3.6l2 2.4h7.4a2 2 0 012 2v8.1a2 2 0 01-2 2H5.5a2 2 0 01-2-2z"/>',
+    bug: '<circle cx="12" cy="13" r="5"/><path d="M12 8V5M9.2 6 7.8 4M14.8 6l1.4-2M7 11.5 4 10.5M7 15l-3 1M17 11.5l3-1M17 15l3 1M10.5 20l-1 2M13.5 20l1 2"/>',
     search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>',
     doc: '<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4"/>',
     chevron: '<path d="M9 6l6 6-6 6"/>',
@@ -1024,6 +1026,7 @@
       home: 'navHome', schedule: 'navSchedule',
       work: 'navWork', calendar: 'navCalendar', docs: 'navDocs', announce: 'navAnnounce',
       admin: 'navAdmin', profile: 'profile', links: 'navLinks',
+      reports: 'navReports', shelf: 'navShelf',
     }[S.page] || 'navWork');
   }
 
@@ -1153,8 +1156,10 @@
 
     // On a phone, the drawer also carries the pages that have no room in the bar.
     if (isPhone()) {
-      var pages = [['calendar', 'navCalendar', 'event'], ['announce', 'navAnnounce', 'megaphone', S.canManage],
-        ['admin', 'navAdmin', 'people', S.canManage], ['profile', 'profile', 'user'], ['links', 'navLinks', 'link']];
+      var pages = [['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
+        ['announce', 'navAnnounce', 'megaphone', S.canManage],
+        ['admin', 'navAdmin', 'people', S.canManage], ['profile', 'profile', 'user'],
+        ['links', 'navLinks', 'link'], ['reports', 'navReports', 'bug']];
       box.appendChild(h('div', { class: 'sb-drawer-nav' }, pages.filter(function (p) {
         return p[3] === undefined || p[3];
       }).map(function (p) {
@@ -1455,7 +1460,8 @@
       try { history.replaceState(null, '', '#/schedule'); } catch (e) {}
     }
     if (page === 'more') page = S.page || 'home';
-    if (['home', 'schedule', 'space', 'work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce'].indexOf(page) === -1) page = 'home';
+    if (['home', 'schedule', 'space', 'work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce',
+      'reports', 'shelf'].indexOf(page) === -1) page = 'home';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -2772,15 +2778,26 @@
         vRow(t('docUploader'), h('span', { class: 'selected' },
           [h('span', { class: 'chip who' }, [avatarNode(doc.createdBy, 'sm'), nameOf(doc.createdBy)])])),
         vRow(t('docFiles'), h('span', { class: 'selected' }, data.files.map(function (f) {
-          // The Word original downloads under its own name; the PDFs open.
+          /**
+           * The Word original downloads under its own name. A PDF opens in
+           * the reader inside this app — see openPdfViewer: handing it to the
+           * phone's own viewer leaves people with no way back.
+           */
           var isSource = f.kind === 'source';
-          return h('a', {
-            class: 'chip dept' + (isSource ? ' src' : ''),
-            target: isSource ? null : '_blank', rel: 'noopener',
-            href: '/api/documents?id=' + encodeURIComponent(doc.id) + '&file=' + f.kind,
-            title: isSource ? f.name : '',
-            text: (isSource ? t('docSource') : f.kind === 'signed' ? t('docSignedCopy') : t('docOriginal')) +
-              ' · ' + Math.round(f.size / 1024) + ' KB',
+          var label = isSource ? t('docSource')
+            : f.kind === 'signed' ? t('docSignedCopy') : t('docOriginal');
+          var size = ' \u00b7 ' + Math.round(f.size / 1024) + ' KB';
+          if (isSource) {
+            return h('a', {
+              class: 'chip dept src',
+              href: '/api/documents?id=' + encodeURIComponent(doc.id) + '&file=' + f.kind,
+              title: f.name, text: label + size,
+            });
+          }
+          return h('button', {
+            type: 'button', class: 'chip dept as-btn', title: t('docOpenReader'),
+            onclick: function () { openPdfViewer(doc, f.kind, label); },
+            text: label + size,
           });
         }).concat(doc.driveUrl ? [h('a', {
           // Once a finished document has been filed in Drive, that copy is the
@@ -3224,6 +3241,8 @@
     if (S.page === 'docs') return pageDocs(main);
     if (S.page === 'profile') return pageProfile(main);
     if (S.page === 'links') return pageLinks(main);
+    if (S.page === 'reports') return pageReports(main);
+    if (S.page === 'shelf') return pageShelf(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
   }
@@ -4553,6 +4572,174 @@
     }
     paintSize();
     drawFooter();
+  }
+
+
+  /**
+   * Saving whatever is at a URL, under a name we choose.
+   *
+   * `<a download href="/api/…">` only honours the name for a same-origin URL
+   * and, on a phone, often hands the file to a viewer instead of the
+   * downloads folder. Fetching the bytes and handing over a blob behaves the
+   * same way everywhere — the lesson the QR download already taught us.
+   */
+  function saveUrl(url, filename, onDone) {
+    var give = function (href, revoke) {
+      var a = document.createElement('a');
+      a.download = filename;
+      a.href = href;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        a.remove();
+        if (revoke) URL.revokeObjectURL(href);
+        if (onDone) onDone(null);
+      }, 4000);
+    };
+    return fetch(url, { credentials: 'same-origin' }).then(function (res) {
+      if (!res.ok) throw new Error(String(res.status));
+      return res.blob();
+    }).then(function (blob) {
+      give(URL.createObjectURL(blob), true);
+    }).catch(function (err) {
+      // Nothing saved is better than a zero-byte file with the right name.
+      if (onDone) onDone(err);
+      else alert(t('docFileUnavailable'));
+    });
+  }
+
+  /**
+   * Reading a letter without leaving the app.
+   *
+   * The file chips used to be ordinary links with target="_blank". On a
+   * computer that opens the browser's PDF viewer, which is fine. On a phone —
+   * and especially on a phone where somebody installed this to their home
+   * screen — it hands the PDF to whatever reader the system picks, and there
+   * is no way back: no address bar, no back button, no app. People were
+   * closing the whole thing and signing in again.
+   *
+   * So the PDF opens here instead: the page, a pager, a real ดาวน์โหลด that
+   * puts the file in the downloads folder, and a ปิด big enough for a thumb.
+   * Opening it in a tab is still offered for anyone who wants the browser's
+   * own viewer.
+   */
+  function openPdfViewer(doc, kind, label) {
+    var base = '/api/documents?id=' + encodeURIComponent(doc.id) + '&file=' + encodeURIComponent(kind);
+    var fileName = ((doc.docNumber ? doc.docNumber + ' ' : '') + (doc.title || 'document') + '.pdf')
+      .replace(/[\\/:*?"<>|]/g, '-');
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) close(); } });
+    var canvas = h('canvas', { class: 'pdf-canvas' });
+    var sheet = h('div', { class: 'pdf-sheet plain' }, [canvas]);
+    var pager = h('div', { class: 'pdf-pager' });
+    var note = h('p', { class: 'hint', text: t('loading') });
+    /**
+     * The browser's own viewer, for anyone who wants it, sits up here as a
+     * quiet link rather than a third button in the footer: on a phone a third
+     * button wraps onto its own row and pushes ปิด off the bottom of the
+     * screen, which is the exact trap this reader exists to avoid.
+     */
+    var tabLink = h('a', {
+      class: 'pdf-tab-link', target: '_blank', rel: 'noopener',
+      href: base, text: t('docOpenTab'),
+    });
+    var topRow = h('div', { class: 'pdf-read-top' }, [pager, h('span', { class: 'grow' }), tabLink]);
+    var bodyBox = h('div', { class: 'body pdf-read' }, [note, topRow, sheet]);
+    var footer = h('footer', {});
+    var modal = h('div', { class: 'modal wide pdf-modal' }, [
+      h('header', {}, [
+        h('h2', { text: label + (doc.docNumber ? ' · ' + doc.docNumber : '') }),
+        h('button', { class: 'btn ghost sm', text: '✕', title: t('close'), onclick: function () { close(); } }),
+      ]),
+      bodyBox, footer,
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+
+    function close() { veil.remove(); }
+
+    var shown = 1;
+    var pages = 1;
+    var bytes = null;
+
+    function drawPager() {
+      clear(pager);
+      if (pages < 2) return;
+      pager.appendChild(h('button', {
+        class: 'btn sm', text: '‹', disabled: shown <= 1,
+        onclick: function () { shown -= 1; show(); },
+      }));
+      pager.appendChild(h('span', { text: t('docPage') + ' ' + shown + ' / ' + pages }));
+      pager.appendChild(h('button', {
+        class: 'btn sm', text: '›', disabled: shown >= pages,
+        onclick: function () { shown += 1; show(); },
+      }));
+    }
+
+    function show() {
+      return withPdfJs().then(function (lib) {
+        return renderPdfPage(lib, bytes, shown, canvas, 1100);
+      }).then(function (info) {
+        pages = info.pages;
+        note.hidden = true;
+        drawPager();
+      });
+    }
+
+    /**
+     * Download works even when the page cannot be drawn.
+     *
+     * pdf.js failing is a rendering problem; the bytes are still there and
+     * still worth saving, so the button is built before the render is tried
+     * and stays whatever happens.
+     */
+    function drawFooter() {
+      clear(footer);
+      var save = h('button', {
+        class: 'btn primary', text: t('docDownload'),
+        onclick: function () {
+          save.disabled = true;
+          save.textContent = t('docDownloading');
+          saveUrl(base + '&download=1', fileName, function (err) {
+            save.disabled = false;
+            save.textContent = t('docDownload');
+            if (err) alert(t('docFileUnavailable'));
+          });
+        },
+      });
+      footer.appendChild(save);
+      footer.appendChild(h('button', { class: 'btn', text: t('close'), onclick: function () { close(); } }));
+    }
+    drawFooter();
+
+    fetch(base, { credentials: 'same-origin' })
+      .then(function (res) {
+        if (res.ok) return res.arrayBuffer();
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          var e = new Error(body.error || String(res.status));
+          e.body = body;
+          throw e;
+        });
+      })
+      .then(function (buf) { bytes = new Uint8Array(buf); return show(); })
+      .catch(function (err) {
+        clear(bodyBox);
+        var code = err && err.body && err.body.error;
+        var driveUrl = err && err.body && err.body.driveUrl;
+        bodyBox.appendChild(h('div', { class: 'notice warn', text:
+          code === 'ARCHIVED' ? t('docFileInDrive')
+            : code === 'REJECTED_FILE_REMOVED' ? t('docFileRejected')
+              : t('docFileUnavailable') }));
+        if (driveUrl) {
+          bodyBox.appendChild(h('a', {
+            class: 'btn primary', target: '_blank', rel: 'noopener',
+            href: driveUrl, text: t('docInDrive'),
+          }));
+        }
+        clear(footer);
+        footer.appendChild(h('button', { class: 'btn', text: t('close'), onclick: function () { close(); } }));
+      });
   }
 
   function patchTask(id, changes) {
@@ -9122,9 +9309,38 @@
        * heading it is for only when there is a choice to make.
        */
       function agendaRow(item) {
+        /**
+         * How many papers are filed under this วาระ.
+         *
+         * Shown on the row rather than only in the papers list, because the
+         * agenda is what somebody reads while the meeting runs: "4.2 has two
+         * documents" is the thing worth knowing at the moment 4.2 comes up,
+         * and scrolling back to the list to find out is the friction this
+         * whole change exists to remove. It is a link, so it jumps there.
+         */
+        var papers = (meeting.files || []).filter(function (f) { return f.agendaId === item.id; });
         return h('div', { class: 'agenda-row d' + item.depth }, [
           h('span', { class: 't-code', text: item.number }),
           h('span', { class: 'grow', text: item.title }),
+          h('button', {
+            type: 'button', class: 'chip paper', title: t('mtgFileSeeThese'),
+            dataset: { papersFor: item.id },
+            hidden: !papers.length,
+            text: '\uD83D\uDCCE ' + papers.length,
+            onclick: function () {
+              var headings = fileList.querySelectorAll('.mtg-file-head');
+              var want = item.number + '. ' + item.title;
+              for (var i = 0; i < headings.length; i++) {
+                if (headings[i].textContent === want) {
+                  headings[i].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  headings[i].classList.add('flash');
+                  setTimeout(function (el) { return function () { el.classList.remove('flash'); }; }(headings[i]), 1400);
+                  return;
+                }
+              }
+              fileList.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            },
+          }),
           item.minutes
             ? h('span', { class: 'chip' + (item.hasChildren ? ' sum' : ''),
                 text: item.minutes + ' ' + t('mtgItemMinutes') })
@@ -9239,13 +9455,108 @@
           : Math.round(bytes / 1024) + ' KB';
       }
 
+      /**
+       * The วาระ a paper can be filed under, as the picker offers them.
+       *
+       * Every item, headings included: the minutes of วาระที่ 1 belong to
+       * วาระที่ 1, and a paper for 4.2 belongs to 4.2. The number is part of
+       * the label because that is how people refer to them out loud.
+       */
+      function agendaChoices() {
+        return (meeting.agenda || []).map(function (x) {
+          return { id: x.id, label: x.number + '. ' + x.title, depth: x.depth || 0 };
+        });
+      }
+      function agendaLabel(id) {
+        var hit = agendaChoices().filter(function (x) { return x.id === id; })[0];
+        return hit ? hit.label : null;
+      }
+      /** A select of วาระ, with "the whole meeting" first and chosen by default. */
+      function agendaSelect(value, cls) {
+        var sel = h('select', { class: cls || null }, [
+          h('option', { value: '', text: t('mtgFileWholeMeeting') }),
+        ].concat(agendaChoices().map(function (x) {
+          return h('option', {
+            value: x.id,
+            // Indented, so a sub-item reads as sitting under its heading.
+            text: (x.depth ? '\u00A0\u00A0\u00A0' : '') + x.label,
+            selected: value === x.id ? true : null,
+          });
+        })));
+        return sel;
+      }
+
       function drawFiles() {
         clear(fileList);
         if (!(meeting.files || []).length) {
           fileList.appendChild(h('p', { class: 'mtg-file-none', text: t('mtgFilesNone') }));
           return;
         }
+
+        /**
+         * Grouped by วาระ, with the meeting's own papers first.
+         *
+         * A flat list was right while everything belonged to the meeting. Once
+         * some papers belong to วาระที่ 4.2, a flat list is the thing it was
+         * meant to fix: you are looking for the one document for the item
+         * being discussed, and it is somewhere among eleven.
+         *
+         * A group only appears when it has something in it — an empty heading
+         * per วาระ would be longer than the list it organises.
+         */
+        var groups = [{ id: null, label: t('mtgFileWholeMeeting'), files: [] }];
+        agendaChoices().forEach(function (x) {
+          groups.push({ id: x.id, label: x.label, depth: x.depth, files: [] });
+        });
+        var byId = {};
+        groups.forEach(function (g) { byId[g.id || ''] = g; });
         meeting.files.forEach(function (f) {
+          // A paper whose วาระ was deleted falls back to the meeting rather
+          // than disappearing — the column is ON DELETE SET NULL for this.
+          (byId[f.agendaId || ''] || groups[0]).files.push(f);
+        });
+
+        var shown = groups.filter(function (g) { return g.files.length; });
+        /**
+         * Headings appear unless the only group is the meeting's own.
+         *
+         * "More than one group" is not quite the rule: when every paper sits
+         * under วาระ 4.1 there is still only one group, and saying nothing
+         * leaves the reader unable to tell they are filed at all. The heading
+         * is redundant in exactly one case — everything belongs to the
+         * meeting, which is what the list meant before any of this existed.
+         */
+        var manyGroups = shown.length > 1 || (shown.length === 1 && shown[0].id);
+
+        /**
+         * The counts on the agenda rows are part of this list, not a separate
+         * fact about it — so they are recomputed here rather than only when
+         * the dialog is built. Moving a paper to another วาระ changes two
+         * places on screen, and one of them going stale is how somebody ends
+         * up looking for a document under the wrong heading.
+         */
+        if (typeof agendaPane !== 'undefined' && agendaPane) {
+          agendaPane.querySelectorAll('[data-papers-for]').forEach(function (chip) {
+            var n = (meeting.files || []).filter(function (f) {
+              return f.agendaId === chip.dataset.papersFor;
+            }).length;
+            chip.hidden = !n;
+            chip.textContent = '\uD83D\uDCCE ' + n;
+          });
+        }
+
+        shown.forEach(function (g) {
+          if (manyGroups) {
+            fileList.appendChild(h('div', {
+              class: 'mtg-file-head' + (g.id ? '' : ' whole'),
+              text: g.label,
+            }));
+          }
+          g.files.forEach(function (f) { drawOneFile(f); });
+        });
+      }
+
+      function drawOneFile(f) {
           /**
            * A link and a Drive copy open directly; a file still held here is
            * fetched back through this app. `where` says which, so the page
@@ -9265,6 +9576,33 @@
               : h('span', { class: 'f-name', text: f.name + ' · ' + t('mtgFileGone') }),
             h('span', { class: 'f-meta',
               text: [sizeText(f.size), nameOf(f.addedBy)].filter(Boolean).join(' · ') }),
+            /**
+             * Re-filing, inline.
+             *
+             * A committee that has been attaching everything to the meeting
+             * has a list to sort out, and the alternative to this control is
+             * detaching and re-uploading — which loses a file held here and
+             * leaves a second copy in Drive for one that is not.
+             */
+            (mayDrop && (meeting.agenda || []).length) ? (function () {
+              var move = agendaSelect(f.agendaId, 'f-under');
+              move.title = t('mtgFileUnderWhich');
+              move.addEventListener('change', function () {
+                move.disabled = true;
+                api('/api/events?do=mtgfile', {
+                  method: 'PATCH',
+                  body: { id: f.id, agendaId: move.value || null },
+                })
+                  .then(function () { return reloadMeetingsQuietly(); })
+                  .then(function () {
+                    var fresh = (S.meetings || []).filter(function (x) { return x.id === meeting.id; })[0];
+                    if (fresh) meeting.files = fresh.files;
+                    drawFiles();
+                  })
+                  .catch(function (err) { move.disabled = false; fileFail(errText(err.code)); });
+              });
+              return move;
+            }()) : null,
             mayDrop ? h('button', {
               class: 'btn ghost sm', text: t('mtgFileRemove'),
               onclick: function () {
@@ -9280,7 +9618,6 @@
               },
             }) : null,
           ].filter(Boolean)));
-        });
       }
       drawFiles();
       filesPane.appendChild(fileNotice);
@@ -9294,6 +9631,24 @@
         var pickBtn = h('button', { class: 'btn sm', text: t('mtgAddFile'),
           onclick: function () { fileIn.click(); } });
         var linkIn = h('input', { type: 'url', placeholder: t('mtgLinkPlaceholder') });
+
+        /**
+         * Which วาระ the next paper is for.
+         *
+         * One picker above both buttons rather than one each, because it is
+         * one question — and it defaults to ทั้งการประชุม, which is what
+         * every paper was before today and what most of them still should be.
+         * Nobody who liked the old behaviour has to do anything differently.
+         *
+         * Hidden entirely when the agenda is empty: a choice between one
+         * thing is not a choice, and an empty dropdown above the attach
+         * buttons would just be something else to read.
+         */
+        var underPick = agendaSelect('', 'mtg-file-under');
+        var underRow = h('label', { class: 'mtg-under-row' }, [
+          h('span', { text: t('mtgFileUnderWhich') }),
+          underPick,
+        ]);
 
         function afterAttach(answer) {
           return reloadMeetingsQuietly().then(function () {
@@ -9323,7 +9678,10 @@
           fileToBase64(file).then(function (base64) {
             return api('/api/events?do=mtgfile', {
               method: 'POST',
-              body: { meetingId: meeting.id, name: file.name, mime: file.type, file: base64 },
+              body: {
+                meetingId: meeting.id, name: file.name, mime: file.type, file: base64,
+                agendaId: underPick.value || null,
+              },
             });
           })
             .then(afterAttach)
@@ -9335,6 +9693,7 @@
             });
         });
 
+        if ((meeting.agenda || []).length) filesPane.appendChild(underRow);
         filesPane.appendChild(h('div', { class: 'mtg-file-add' }, [
           pickBtn, fileIn,
           linkIn,
@@ -9344,7 +9703,10 @@
               fileNotice.hidden = true;
               api('/api/events?do=mtgfile', {
                 method: 'POST',
-                body: { meetingId: meeting.id, linkUrl: linkIn.value.trim() },
+                body: {
+                  meetingId: meeting.id, linkUrl: linkIn.value.trim(),
+                  agendaId: underPick.value || null,
+                },
               })
                 .then(function (answer) { linkIn.value = ''; return afterAttach(answer); })
                 .catch(function (err) { fileFail(errText(err.code)); });
@@ -9710,6 +10072,8 @@
     var sentBox = h('div', {});
     main.appendChild(h('h2', { class: 'section-head', text: t('recentAnnouncements') }));
     main.appendChild(sentBox);
+
+    popupSection(main);
 
     function loadSent() {
       api('/api/push?do=sent').then(function (d) {
@@ -12384,6 +12748,9 @@
       showPending();
       // After whatever they came for has had its turn — see maybeShowGuide.
       setTimeout(maybeShowGuide, 1200);
+      // And the committee's own notice, which waits for the guide to be done
+      // with somebody before it interrupts them — see maybeShowPopup.
+      setTimeout(maybeShowPopup, 2600);
       // What this person wants to be told about, for the switches inside tasks.
       loadNotify();
       watchTheClock();
@@ -12432,6 +12799,1630 @@
     if (err.code === 'NO_DATABASE') showAuthNotice(t('noDatabase'), 'warn');
     else if (err.code === 'SHEET_UNREADABLE') showAuthNotice((err.data && err.data.message) || t('errGeneric'), 'warn');
   });
+
+
+  /* ======================================================================
+     The pop-up that greets people when they open the app
+     ====================================================================== */
+
+  /**
+   * Shows the committee's notice, once, if there is one.
+   *
+   * One interruption per visit, and the getting-started guide wins it.
+   *
+   * The rule is simply "is a dialog already up when my turn comes" — not "has
+   * this person finished the guide". That distinction matters: the guide's
+   * steps are optional and plenty of people will leave LINE unlinked for
+   * good, so gating on a FINISHED guide would mean a large part of the
+   * committee never saw a notice at all. Checking what is actually on screen
+   * gets the behaviour that was wanted — the guide first on a first visit,
+   * the notice from the next one — without quietly excluding anybody.
+   *
+   * And it gives up rather than queueing behind whatever is open. A box that
+   * appears the instant somebody closes something else is a box they dismiss
+   * with the same movement, having read none of it.
+   */
+  function maybeShowPopup() {
+    if (!S.user) return;
+    if (document.querySelector('#modal-root .veil')) return;
+    api('/api/push?do=popup').then(function (d) {
+      // Checked again on the way back: a dialog may have opened while the
+      // request was in flight, and this one must never land on top of it.
+      if (d.popup && !document.querySelector('#modal-root .veil')) openPopup(d.popup);
+    }).catch(function () {});
+  }
+
+  /**
+   * The box itself.
+   *
+   * Deliberately not dismissible by clicking the background. Every other
+   * dialog in the app is, because every other dialog is something the person
+   * asked for — this one they did not, and a notice that vanishes on a stray
+   * tap near the edge has not been read. The ✕, the button and Escape all
+   * close it; a click on the veil does not.
+   *
+   * It is recorded as seen when it CLOSES, not when it draws, so a box that
+   * flashed up while the page was still settling comes back next time.
+   */
+  function openPopup(popup) {
+    var veil = h('div', { class: 'veil pop-veil' });
+    var done = false;
+
+    function finish(clicked) {
+      if (done) return;
+      done = true;
+      veil.remove();
+      document.removeEventListener('keydown', onKey);
+      api('/api/push?do=popup-seen', { method: 'POST', body: { id: popup.id, clicked: Boolean(clicked) } })
+        .catch(function () {});
+    }
+    function onKey(e) { if (e.key === 'Escape') finish(false); }
+    document.addEventListener('keydown', onKey);
+
+    var parts = [];
+
+    /**
+     * The picture, with its own aspect ratio reserved before it arrives.
+     *
+     * The server read the real pixel size out of the file's header for exactly
+     * this: without it the box is short, then grows when the image lands, and
+     * the close button moves out from under a thumb already on its way down.
+     */
+    if (popup.hasImage) {
+      var frame = h('div', { class: 'pop-img' });
+      if (popup.imageW && popup.imageH) {
+        frame.style.aspectRatio = popup.imageW + ' / ' + popup.imageH;
+      }
+      frame.appendChild(h('img', {
+        src: '/api/push?do=popup-image&id=' + encodeURIComponent(popup.id),
+        alt: popup.title,
+        loading: 'eager',
+      }));
+      parts.push(frame);
+    }
+
+    parts.push(h('h2', { class: 'pop-title', text: popup.title }));
+    // The body keeps the line breaks whoever wrote it typed, and nothing else:
+    // one <p> per line rather than innerHTML, so a notice can never carry markup.
+    if (popup.body) {
+      parts.push(h('div', { class: 'pop-body' }, String(popup.body).split('\n').map(function (line) {
+        return line.trim() ? h('p', { text: line }) : h('br', {});
+      })));
+    }
+
+    var footer = [];
+    if (popup.linkUrl) {
+      footer.push(h('a', {
+        class: 'btn primary grow', href: popup.linkUrl, target: '_blank', rel: 'noopener noreferrer',
+        text: popup.linkLabel || t('popOpen'),
+        onclick: function () { finish(true); },
+      }));
+    }
+    footer.push(h('button', {
+      type: 'button', class: 'btn' + (popup.linkUrl ? '' : ' primary grow'),
+      text: t('popDismiss'), onclick: function () { finish(false); },
+    }));
+
+    var modal = h('div', { class: 'modal pop-modal', role: 'dialog', 'aria-modal': 'true' }, [
+      h('header', {}, [
+        h('span', { class: 'pop-tag', text: t('popTag') }),
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn ghost sm', text: '✕', 'aria-label': t('close'),
+          onclick: function () { finish(false); } }),
+      ]),
+      h('div', { class: 'body pop-content' }, parts),
+      h('footer', {}, footer),
+    ]);
+
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+  }
+
+  /* ======================================================================
+     The shelf: important links, in folders
+     ====================================================================== */
+
+  /**
+   * One page, one fetch, and the folders are walked in the browser.
+   *
+   * The whole shelf arrives at once — a few hundred titles is a few kilobytes
+   * — so opening a folder, going back and following a breadcrumb cost nothing.
+   * That is the difference between a filing system people browse and one they
+   * learn to avoid, which is the thing this page exists to fix.
+   */
+  function pageShelf(main) {
+    var state = { nodes: [], mayAdd: false, maxDepth: 6, myDepartments: [] };
+    var notice = h('div', { class: 'notice', hidden: true });
+    var crumbs = h('nav', { class: 'shelf-crumbs', 'aria-label': t('shelfWhere') });
+    var grid = h('div', { class: 'shelf-grid' });
+
+    function say(kind, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + kind;
+      notice.textContent = text;
+    }
+
+    var byId = function (id) {
+      return state.nodes.filter(function (n) { return n.id === id; })[0] || null;
+    };
+    var childrenOf = function (id) {
+      return state.nodes.filter(function (n) { return (n.parentId || null) === (id || null); })
+        .sort(function (a, b) {
+          // Folders above links, then the order somebody put them in.
+          if ((a.kind === 'folder') !== (b.kind === 'folder')) return a.kind === 'folder' ? -1 : 1;
+          return (a.position - b.position) || a.title.localeCompare(b.title, 'th');
+        });
+    };
+    var trail = function (id) {
+      var out = [];
+      var at = id;
+      var guard = 0;
+      while (at && guard++ < 20) {
+        var node = byId(at);
+        if (!node) break;
+        out.unshift(node);
+        at = node.parentId;
+      }
+      return out;
+    };
+    /** How deep the folder we are looking at sits, so "add folder" can stop. */
+    var depthHere = function () { return trail(S.shelfAt).length; };
+
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navShelf') })]));
+    main.appendChild(h('p', { class: 'hint', text: t('shelfIntro') }));
+    main.appendChild(notice);
+    main.appendChild(crumbs);
+
+    var addLinkBtn = h('button', {
+      class: 'btn primary', text: t('shelfAddLink'),
+      onclick: function () { openShelfEditor(null, 'link', S.shelfAt, load); },
+    });
+    var addFolderBtn = h('button', {
+      class: 'btn', text: t('shelfAddFolder'),
+      onclick: function () { openShelfEditor(null, 'folder', S.shelfAt, load); },
+    });
+    var bar = h('div', { class: 'shelf-bar' }, [addLinkBtn, addFolderBtn]);
+    main.appendChild(bar);
+    main.appendChild(grid);
+
+    function drawCrumbs() {
+      clear(crumbs);
+      var path = trail(S.shelfAt);
+      crumbs.appendChild(h('button', {
+        type: 'button', class: 'crumb' + (path.length ? '' : ' on'),
+        text: t('shelfRoot'),
+        onclick: function () { S.shelfAt = null; draw(); },
+      }));
+      path.forEach(function (node, i) {
+        crumbs.appendChild(h('span', { class: 'crumb-sep', text: '›', 'aria-hidden': 'true' }));
+        crumbs.appendChild(h('button', {
+          type: 'button', class: 'crumb' + (i === path.length - 1 ? ' on' : ''),
+          text: node.title,
+          onclick: function () { S.shelfAt = node.id; draw(); },
+        }));
+      });
+    }
+
+    function card(node) {
+      var isFolder = node.kind === 'folder';
+      var head = [
+        h('span', {
+          class: 'shelf-ico' + (isFolder ? ' folder' : ''),
+          style: node.colour ? 'background:' + shelfHex(node.colour) : null,
+          text: node.icon || (isFolder ? '📁' : '🔗'),
+        }),
+        h('span', { class: 'shelf-name', text: node.title }),
+      ];
+
+      var meta = [];
+      if (isFolder) {
+        meta.push(h('span', { class: 'shelf-count', text: t('shelfItems').replace('%s', node.count) }));
+      } else {
+        // The host, not the whole address: "docs.google.com" tells somebody
+        // what they are about to open; 90 characters of query string does not.
+        meta.push(h('span', { class: 'shelf-host', text: hostOfUrl(node.url) }));
+      }
+      if (node.department) {
+        meta.push(h('span', { class: 'chip dept', text: deptLabel(node.department) }));
+      }
+
+      var body = [
+        h('div', { class: 'shelf-head' }, head),
+        node.note ? h('p', { class: 'shelf-note', text: node.note }) : null,
+        h('div', { class: 'shelf-meta' }, meta),
+      ];
+
+      /**
+       * A folder is a button, a link is an anchor.
+       *
+       * Not cosmetic: an anchor is what gives "open in a new tab" on a
+       * middle-click and a long-press menu on a phone, which is how people
+       * actually use a page of links. A folder is not a destination, so it
+       * must not pretend to be one.
+       */
+      var tile = isFolder
+        ? h('button', {
+          type: 'button', class: 'shelf-card folder',
+          onclick: function () { S.shelfAt = node.id; draw(); window.scrollTo(0, 0); },
+        }, body)
+        : h('a', {
+          class: 'shelf-card', href: node.url, target: '_blank', rel: 'noopener noreferrer',
+        }, body);
+
+      var tools = [];
+      if (node.mayEdit) {
+        tools.push(h('button', {
+          type: 'button', class: 'btn ghost sm', text: t('edit'), title: t('edit'),
+          onclick: function () { openShelfEditor(node, node.kind, node.parentId, load); },
+        }));
+      }
+      if (node.mayDelete) {
+        tools.push(h('button', {
+          type: 'button', class: 'btn ghost sm danger', text: t('remove'), title: t('remove'),
+          onclick: function () { removeNode(node); },
+        }));
+      }
+
+      return h('div', { class: 'shelf-slot' }, [tile, tools.length ? h('div', { class: 'shelf-tools' }, tools) : null]);
+    }
+
+    function removeNode(node) {
+      /**
+       * A folder with things in it says how many are about to go.
+       *
+       * "ลบโฟลเดอร์นี้ไหม" is a question somebody says yes to; "ลบโฟลเดอร์นี้
+       * และ 19 รายการข้างในไหม" is a question they read.
+       */
+      var question = node.kind === 'folder' && node.count
+        ? t('shelfDeleteFolder').replace('%1', node.title).replace('%2', node.count)
+        : t('shelfDeleteOne').replace('%s', node.title);
+      if (!window.confirm(question)) return;
+
+      api('/api/meta?do=shelf-delete&id=' + encodeURIComponent(node.id), { method: 'DELETE' })
+        .then(function (d) {
+          say('ok', d.alsoRemoved
+            ? t('shelfDeletedWith').replace('%s', d.alsoRemoved)
+            : t('shelfDeleted'));
+          load();
+        })
+        .catch(function (err) {
+          say('err', err.code === 'FOLDER_NOT_EMPTY'
+            ? t('errFolderNotEmpty').replace('%s', (err.data && err.data.inside) || '')
+            : errText(err.code));
+        });
+    }
+
+    function draw() {
+      drawCrumbs();
+      clear(grid);
+      bar.hidden = !state.mayAdd;
+      // Six levels deep, "new folder" stops being offered rather than being
+      // offered and refused by the server.
+      addFolderBtn.hidden = depthHere() >= state.maxDepth;
+
+      var here = childrenOf(S.shelfAt);
+      if (!here.length) {
+        grid.appendChild(h('div', { class: 'empty' }, [
+          h('strong', { text: S.shelfAt ? t('shelfFolderEmpty') : t('shelfNone') }),
+          h('p', { text: state.mayAdd ? t('shelfEmptyAdd') : t('shelfEmptyAsk') }),
+        ]));
+        return;
+      }
+      here.forEach(function (node) { grid.appendChild(card(node)); });
+    }
+
+    function load() {
+      return api('/api/meta?do=shelf').then(function (d) {
+        state = d;
+        // A folder somebody else deleted while this page was open would
+        // otherwise leave the page looking at nothing, with a breadcrumb to
+        // a folder that is gone.
+        if (S.shelfAt && !byId(S.shelfAt)) S.shelfAt = null;
+        draw();
+      }).catch(function (err) { say('err', errText(err.code)); });
+    }
+
+    load();
+  }
+
+  var SHELF_HEX = {
+    pink: '#e0457b', indigo: '#5b5bd6', teal: '#0fa5a0', amber: '#f59e0b',
+    violet: '#8b5cf6', green: '#12a36b', blue: '#2f7ff0', red: '#e5484d',
+  };
+  var SHELF_COLOURS = Object.keys(SHELF_HEX);
+  function shelfHex(key) { return SHELF_HEX[key] || SHELF_HEX.pink; }
+
+  /** The host of an address, for a label somebody can read at a glance. */
+  function hostOfUrl(url) {
+    try { return new URL(url).host.replace(/^www\./, ''); } catch (e) { return url; }
+  }
+
+  /**
+   * Making or changing one.
+   *
+   * The same dialog for a folder and a link, because they differ in one field
+   * — a link has an address and a folder does not — and two dialogs that are
+   * nine tenths identical drift apart.
+   */
+  function openShelfEditor(node, kind, parentId, onSaved) {
+    var isFolder = kind === 'folder';
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+
+    var title = h('input', { type: 'text', maxlength: '120', value: (node && node.title) || '' });
+    var url = h('input', {
+      type: 'url', maxlength: '1000', placeholder: t('shelfUrlPlaceholder'),
+      value: (node && node.url) || '',
+    });
+    var note = h('textarea', { rows: '2', maxlength: '600' });
+    note.value = (node && node.note) || '';
+
+    var iconIn = h('input', {
+      type: 'text', maxlength: '8', class: 'shelf-icon-in',
+      placeholder: isFolder ? '📁' : '🔗', value: (node && node.icon) || '',
+    });
+
+    /** Who the branch is for. Blank means the whole committee. */
+    var dept = h('select', {});
+    dept.appendChild(h('option', { value: '', text: t('shelfEveryone') }));
+    (myDeptKeys()).forEach(function (key) {
+      dept.appendChild(h('option', { value: key, text: deptLabel(key) }));
+    });
+    dept.value = (node && node.department) || '';
+
+    var swatches = h('div', { class: 'shelf-swatches' });
+    var chosen = (node && node.colour) || '';
+    SHELF_COLOURS.forEach(function (key) {
+      var b = h('button', {
+        type: 'button', class: 'swatch' + (chosen === key ? ' on' : ''),
+        style: 'background:' + shelfHex(key), title: key, 'aria-label': key,
+        onclick: function () {
+          chosen = chosen === key ? '' : key;
+          Array.prototype.forEach.call(swatches.children, function (el) {
+            el.classList.toggle('on', el.title === chosen);
+          });
+        },
+      });
+      swatches.appendChild(b);
+    });
+
+    var saveBtn = h('button', {
+      class: 'btn primary',
+      text: node ? t('save') : (isFolder ? t('shelfAddFolder') : t('shelfAddLink')),
+      onclick: function () {
+        var body = {
+          kind: kind,
+          title: title.value.trim(),
+          note: note.value,
+          icon: iconIn.value.trim(),
+          colour: chosen,
+          department: dept.value,
+        };
+        if (!isFolder) body.url = url.value.trim();
+        if (!body.title) { say('err', t('shelfNeedTitle')); title.focus(); return; }
+        if (!isFolder && !body.url) { say('err', t('shelfNeedUrl')); url.focus(); return; }
+
+        saveBtn.disabled = true;
+        var call = node
+          ? api('/api/meta?do=shelf-edit', { method: 'PATCH', body: Object.assign({ id: node.id }, body) })
+          : api('/api/meta?do=shelf-add', { method: 'POST', body: Object.assign({ parentId: parentId || '' }, body) });
+
+        call.then(function () { veil.remove(); if (onSaved) onSaved(); })
+          .catch(function (err) { say('err', errText(err.code)); })
+          .then(function () { saveBtn.disabled = false; });
+      },
+    });
+
+    function say(cls, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + cls;
+      notice.textContent = text;
+    }
+
+    var modal = h('div', { class: 'modal', style: 'width:min(32rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: node ? t('shelfEdit') : (isFolder ? t('shelfNewFolder') : t('shelfNewLink')) }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        h('div', { class: 'field' }, [h('label', { text: t('shelfTitle') }), title]),
+        isFolder ? null : h('div', { class: 'field' }, [h('label', { text: t('shelfUrl') }), url]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('shelfNote') }), note,
+          h('small', { class: 'hint', text: t('shelfNoteWhy') }),
+        ]),
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('shelfIcon') }), iconIn]),
+          h('div', { class: 'field' }, [h('label', { text: t('shelfColour') }), swatches]),
+        ]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('shelfWho') }), dept,
+          h('small', { class: 'hint', text: t('shelfWhoWhy') }),
+        ]),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+    title.focus();
+  }
+
+  /**
+   * The ฝ่าย this person may scope a branch to.
+   *
+   * Taken from what the task API already told the page about this person
+   * rather than asked for again — it is the same list, and the shelf should
+   * not be able to disagree with the rest of the app about which ฝ่าย
+   * somebody is in.
+   */
+  function myDeptKeys() {
+    if (S.seesEverything) return (S.departments || []).map(function (d) { return d.key; });
+    return (S.myDepartments || []).filter(function (k) { return k && k !== 'all'; });
+  }
+
+  /* ======================================================================
+     Reporting a bug, suggesting a feature
+     ====================================================================== */
+
+  var REPORT_SEVS = ['urgent', 'high', 'normal'];
+  var REPORT_STATES = ['new', 'planned', 'fixed', 'declined', 'duplicate'];
+
+  /**
+   * What the page can say about the browser, without asking anybody.
+   *
+   * Nobody knows their own user agent, and a report filed against a build
+   * from last week usually explains itself — so the page fills this in. It is
+   * SHOWN to the person before they send it, in plain words, because quietly
+   * attaching facts about somebody's device to something they wrote is not a
+   * thing to do behind their back.
+   */
+  function deviceLine() {
+    var ua = navigator.userAgent || '';
+    var browser = /Edg\//.test(ua) ? 'Edge'
+      : /OPR\//.test(ua) ? 'Opera'
+      : /Chrome\//.test(ua) && !/Chromium/.test(ua) ? 'Chrome'
+      : /Firefox\//.test(ua) ? 'Firefox'
+      : /Safari\//.test(ua) ? 'Safari'
+      : 'เบราว์เซอร์อื่น';
+    var os = /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+      : /Android/.test(ua) ? 'Android'
+      : /Mac OS X/.test(ua) ? 'macOS'
+      : /Windows/.test(ua) ? 'Windows'
+      : /Linux/.test(ua) ? 'Linux'
+      : '';
+    var screenSize = window.innerWidth + 'x' + window.innerHeight;
+    // Whether they are in the installed app rather than a browser tab: half
+    // the phone-only faults in this project have turned out to be that.
+    var installed = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+    return [os, browser, screenSize, installed ? t('repInstalled') : null]
+      .filter(Boolean).join(' · ');
+  }
+
+  function severityLabel(key) {
+    return t({ urgent: 'repSevUrgent', high: 'repSevHigh', normal: 'repSevNormal' }[key] || 'repSevNormal');
+  }
+  function stateLabel(key) {
+    return t({
+      new: 'repStateNew', planned: 'repStatePlanned', fixed: 'repStateFixed',
+      declined: 'repStateDeclined', duplicate: 'repStateDuplicate',
+    }[key] || 'repStateNew');
+  }
+
+  function pageReports(main) {
+    var state = { reports: [], mayReport: false, mayTriage: false, maySetTeam: false, nudgeAt: 5 };
+    var notice = h('div', { class: 'notice', hidden: true });
+    var list = h('div', { class: 'rep-list' });
+    var tabs = h('div', { class: 'seg rep-tabs' });
+
+    function say(kind, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + kind;
+      notice.textContent = text;
+    }
+
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navReports') })]));
+    main.appendChild(h('p', { class: 'hint', text: t('repIntro') }));
+    main.appendChild(notice);
+
+    var newBtn = h('button', {
+      class: 'btn primary', text: t('repNew'),
+      onclick: function () { openReportForm(state, load); },
+    });
+    main.appendChild(h('div', { class: 'shelf-bar' }, [newBtn]));
+    main.appendChild(tabs);
+    main.appendChild(list);
+
+    /**
+     * The tabs, which differ by who is looking.
+     *
+     * Everyone gets ทั้งหมด and ของฉัน. The rota also gets ยังไม่ได้ดู — the
+     * queue they actually work from — and สรุปรายวัน. Somebody who is not on
+     * the rota is not shown a tab that would be empty of meaning to them.
+     */
+    function drawTabs() {
+      clear(tabs);
+      var items = [['open', t('repTabOpen')], ['all', t('repTabAll')], ['mine', t('repTabMine')]];
+      if (state.mayTriage) items.push(['digest', t('repTabDigest')]);
+      items.forEach(function (pair) {
+        tabs.appendChild(h('button', {
+          type: 'button', class: S.repTab === pair[0] ? 'on' : '',
+          text: pair[1],
+          onclick: function () { S.repTab = pair[0]; draw(); },
+        }));
+      });
+    }
+
+    function row(rep) {
+      var sev = h('span', { class: 'rep-sev sev-' + rep.severity, text: severityLabel(rep.severity) });
+      var st = h('span', { class: 'rep-state st-' + rep.state, text: stateLabel(rep.state) });
+      var kind = h('span', {
+        class: 'rep-kind k-' + rep.kind,
+        text: rep.kind === 'bug' ? t('repKindBug') : t('repKindIdea'),
+      });
+
+      /**
+       * "เจอเหมือนกัน", with the count on the button itself.
+       *
+       * One control rather than a count beside a button: the number IS how
+       * many people pressed it, so putting them apart invites the reader to
+       * wonder whether they mean the same thing.
+       */
+      var meToo = h('button', {
+        type: 'button', class: 'rep-metoo' + (rep.voted ? ' on' : ''),
+        title: rep.voted ? t('repMeTooUndo') : t('repMeToo'),
+        onclick: function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          meToo.disabled = true;
+          api('/api/meta?do=report-vote', { method: 'POST', body: { id: rep.id } })
+            .then(function (d) {
+              rep.voted = d.voted;
+              rep.votes = d.votes;
+              meToo.classList.toggle('on', d.voted);
+              count.textContent = String(d.votes);
+              if (d.nudged) say('ok', t('repNudged').replace('%s', state.nudgeAt));
+            })
+            .catch(function (err) { say('err', errText(err.code)); })
+            .then(function () { meToo.disabled = false; });
+        },
+      });
+      var count = h('b', { text: String(rep.votes) });
+      meToo.appendChild(h('span', { class: 'rep-metoo-ic', text: '👋', 'aria-hidden': 'true' }));
+      meToo.appendChild(count);
+
+      var line2 = [kind, sev, st];
+      if (rep.shots) line2.push(h('span', { class: 'rep-shots', text: '🖼 ' + rep.shots }));
+      if (rep.dupOf) line2.push(h('span', { class: 'chip', text: t('repDupOf').replace('%s', rep.dupOf) }));
+
+      return h('div', { class: 'rep-row' + (rep.severity === 'urgent' && rep.state === 'new' ? ' hot' : '') }, [
+        h('button', {
+          type: 'button', class: 'rep-open',
+          onclick: function () { openReport(rep, state, load); },
+        }, [
+          h('div', { class: 'rep-top' }, [
+            h('code', { class: 'rep-code', text: rep.code || '' }),
+            h('span', { class: 'rep-title', text: rep.title }),
+          ]),
+          h('div', { class: 'rep-tags' }, line2),
+          h('div', { class: 'rep-by' }, [
+            avatarNode(rep.createdBy),
+            h('span', { text: nameOf(rep.createdBy) }),
+            h('span', { class: 'rep-when', text: fmtStamp(rep.createdAt) }),
+          ]),
+        ]),
+        meToo,
+      ]);
+    }
+
+    function visible() {
+      var all = state.reports;
+      if (S.repTab === 'mine') return all.filter(function (r) { return r.mine; });
+      if (S.repTab === 'open') {
+        return all.filter(function (r) { return r.state === 'new' || r.state === 'planned'; });
+      }
+      return all;
+    }
+
+    function draw() {
+      drawTabs();
+      clear(list);
+      newBtn.hidden = !state.mayReport;
+
+      if (S.repTab === 'digest') { drawDigest(list, state); return; }
+
+      var rows = visible();
+      if (!rows.length) {
+        list.appendChild(h('div', { class: 'empty' }, [
+          h('strong', { text: S.repTab === 'mine' ? t('repNoneMine') : t('repNone') }),
+          h('p', { text: t('repNoneWhy') }),
+        ]));
+        return;
+      }
+      /**
+       * Worst first, and a crowd counts.
+       *
+       * The same rule the daily summary uses, for the same reason — and
+       * because a list ordered differently from the summary it feeds would
+       * make the two look like they disagree.
+       */
+      rows.slice().sort(function (a, b) {
+        var rank = function (r) {
+          var sev = REPORT_SEVS.indexOf(r.severity);
+          var crowded = r.votes >= state.nudgeAt;
+          var open = r.state === 'new' || r.state === 'planned' ? 0 : 1;
+          return open * 10000 + Math.max(0, sev - (crowded ? 1 : 0)) * 1000 - r.votes;
+        };
+        return rank(a) - rank(b) || String(b.createdAt).localeCompare(String(a.createdAt));
+      }).forEach(function (rep) { list.appendChild(row(rep)); });
+    }
+
+    function load() {
+      return api('/api/meta?do=reports').then(function (d) {
+        state = d;
+        if (!state.mayTriage && S.repTab === 'digest') S.repTab = 'open';
+        draw();
+      }).catch(function (err) { say('err', errText(err.code)); });
+    }
+
+    if (!S.repTab) S.repTab = 'open';
+    load();
+  }
+
+  /**
+   * The day's summary, as one block to copy.
+   *
+   * The whole point of this tab is the copy button: the text is assembled by
+   * the server so that what gets pasted is the same whoever pastes it, and
+   * the page's job is to hand it over in one press.
+   */
+  function drawDigest(into, state) {
+    var box = h('pre', { class: 'rep-digest', text: t('loading') });
+    var when = h('input', { type: 'date', value: todayIso() });
+    var counts = h('div', { class: 'rep-digest-counts' });
+
+    var copyBtn = h('button', {
+      class: 'btn primary', text: t('repCopy'),
+      onclick: function (e) { copyText(box.textContent, e.target); },
+    });
+    var saveBtn = h('button', {
+      class: 'btn', text: t('repSaveTxt'),
+      onclick: function () {
+        var blob = new Blob([box.textContent], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = h('a', { href: url, download: 'cuftm-reports-' + when.value + '.txt' });
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      },
+    });
+
+    function fetchDay() {
+      box.textContent = t('loading');
+      api('/api/meta?do=report-digest&day=' + encodeURIComponent(when.value))
+        .then(function (d) {
+          box.textContent = d.text;
+          clear(counts);
+          counts.appendChild(h('span', { class: 'chip', text: t('repCountToday').replace('%s', d.counts.today) }));
+          counts.appendChild(h('span', { class: 'chip', text: t('repCountOpen').replace('%s', d.counts.open) }));
+          if (d.counts.urgent) {
+            counts.appendChild(h('span', { class: 'chip danger', text: t('repCountUrgent').replace('%s', d.counts.urgent) }));
+          }
+        })
+        .catch(function (err) { box.textContent = errText(err.code); });
+    }
+    when.addEventListener('change', fetchDay);
+
+    into.appendChild(h('div', { class: 'rep-digest-bar' }, [
+      h('div', { class: 'field' }, [h('label', { text: t('repDigestDay') }), when]),
+      h('span', { class: 'grow' }),
+      saveBtn, copyBtn,
+    ]));
+    into.appendChild(h('p', { class: 'hint', text: t('repDigestWhy') }));
+    into.appendChild(counts);
+    into.appendChild(box);
+
+    if (state.maySetTeam) {
+      into.appendChild(h('div', { class: 'rep-team-link' }, [
+        h('button', {
+          class: 'btn', text: t('repTeamOpen'),
+          onclick: function () { openReportTeam(state); },
+        }),
+        h('small', { class: 'hint', text: t('repTeamWhy') }),
+      ]));
+    }
+
+    fetchDay();
+  }
+
+  /**
+   * Who else gets woken by an urgent report.
+   *
+   * Admins are listed but not tickable: they are always told, and a checkbox
+   * that cannot be unticked is worse than a sentence saying so.
+   */
+  function openReportTeam(state) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+    var rota = state.rota || { chosen: [], candidates: [], always: [] };
+    var picked = {};
+    rota.chosen.forEach(function (u) { picked[u] = true; });
+
+    var boxes = h('div', { class: 'rep-team' }, rota.candidates.map(function (person) {
+      var cb = h('input', { type: 'checkbox', checked: picked[person.username] || null });
+      cb.addEventListener('change', function () { picked[person.username] = cb.checked; });
+      return h('label', { class: 'rep-team-row' }, [
+        cb,
+        avatarNode(person.username),
+        h('span', { class: 'grow', text: person.name || person.username }),
+      ]);
+    }));
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'),
+      onclick: function () {
+        var names = Object.keys(picked).filter(function (u) { return picked[u]; });
+        saveBtn.disabled = true;
+        api('/api/meta?do=report-team', { method: 'POST', body: { usernames: names } })
+          .then(function () { veil.remove(); renderPage(); })
+          .catch(function (err) {
+            notice.hidden = false;
+            notice.className = 'notice err';
+            notice.textContent = errText(err.code);
+          })
+          .then(function () { saveBtn.disabled = false; });
+      },
+    });
+
+    var modal = h('div', { class: 'modal', style: 'width:min(30rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('repTeamTitle') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        h('p', { class: 'hint', text: t('repTeamHelp') }),
+        rota.always.length ? h('div', { class: 'rep-always' }, [
+          h('small', { text: t('repTeamAlways') }),
+          h('div', { class: 'rep-team' }, rota.always.map(function (p) {
+            return h('div', { class: 'rep-team-row fixed' }, [
+              avatarNode(p.username),
+              h('span', { class: 'grow', text: p.name || p.username }),
+              h('span', { class: 'chip', text: t('repTeamFixed') }),
+            ]);
+          })),
+        ]) : null,
+        rota.candidates.length
+          ? h('div', {}, [h('small', { text: t('repTeamPick') }), boxes])
+          : h('p', { class: 'hint', text: t('repTeamNoCoadmins') }),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+  }
+
+  /**
+   * Filing one.
+   *
+   * The order of the fields is the argument of this whole feature. "ตอนนั้น
+   * กำลังทำอะไรอยู่" comes BEFORE the description, because it is the single
+   * most useful sentence in any bug report and the one people leave out when
+   * the form is a blank box — asked first, it gets answered; asked last, it
+   * gets skipped.
+   *
+   * The duplicate check is live: as somebody types a title, anything already
+   * reported that matches appears underneath with a เจอเหมือนกัน button. That
+   * is the point — five people reporting one fault becomes one report with
+   * five people on it, which is both less work to read and better evidence.
+   */
+  function openReportForm(state, onSaved) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+    var kind = 'bug';
+    var severity = 'high';
+    var shots = [];
+
+    function say(cls, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + cls;
+      notice.textContent = text;
+    }
+
+    var title = h('input', { type: 'text', maxlength: '160', placeholder: t('repTitlePlaceholder') });
+    var doing = h('textarea', { rows: '2', maxlength: '1000', placeholder: t('repDoingPlaceholder') });
+    var body = h('textarea', { rows: '4', maxlength: '4000', placeholder: t('repBodyPlaceholder') });
+
+    /* ---- bug or idea ---- */
+    var kindSeg = h('div', { class: 'seg rep-kindseg' });
+    var sevField = h('div', { class: 'field' });
+
+    function drawKind() {
+      clear(kindSeg);
+      [['bug', t('repKindBug'), t('repKindBugWhy')], ['idea', t('repKindIdea'), t('repKindIdeaWhy')]]
+        .forEach(function (k) {
+          kindSeg.appendChild(h('button', {
+            type: 'button', class: kind === k[0] ? 'on' : '', title: k[2],
+            onclick: function () {
+              kind = k[0];
+              // A suggestion is never urgent — the server enforces it, and the
+              // form should not offer a choice that is about to be overruled.
+              if (kind === 'idea' && severity === 'urgent') severity = 'high';
+              drawKind();
+              drawSeverity();
+              drawLabels();
+            },
+          }, [h('b', { text: k[1] }), h('small', { text: k[2] })]));
+        });
+    }
+
+    function drawSeverity() {
+      clear(sevField);
+      sevField.appendChild(h('label', { text: kind === 'bug' ? t('repHowBad') : t('repHowSoon') }));
+      var seg = h('div', { class: 'seg rep-sevseg' });
+      REPORT_SEVS.forEach(function (key) {
+        if (kind === 'idea' && key === 'urgent') return;
+        seg.appendChild(h('button', {
+          type: 'button', class: (severity === key ? 'on ' : '') + 'sev-' + key,
+          onclick: function () { severity = key; drawSeverity(); },
+        }, [
+          h('b', { text: severityLabel(key) }),
+          h('small', { text: t('repSev' + key.charAt(0).toUpperCase() + key.slice(1) + 'Why') }),
+        ]));
+      });
+      sevField.appendChild(seg);
+      if (kind === 'bug' && severity === 'urgent') {
+        /**
+         * Said plainly, because it is true: this wakes people up. Somebody
+         * who knows that ticks it when they mean it, and the alert stays
+         * worth answering.
+         */
+        sevField.appendChild(h('p', { class: 'notice warn', text: t('repUrgentWarns') }));
+      }
+    }
+
+    var labels = { doing: h('label', {}), body: h('label', {}) };
+    function drawLabels() {
+      labels.doing.textContent = t('repDoing');
+      labels.body.textContent = kind === 'bug' ? t('repBodyBug') : t('repBodyIdea');
+      body.placeholder = kind === 'bug' ? t('repBodyPlaceholder') : t('repIdeaPlaceholder');
+      doing.parentNode.hidden = kind === 'idea';
+    }
+
+    /* ---- the duplicate check ---- */
+    var dupBox = h('div', { class: 'rep-dups', hidden: true });
+    function checkDups() {
+      var q = title.value.trim().toLowerCase();
+      clear(dupBox);
+      if (q.length < 4) { dupBox.hidden = true; return; }
+
+      // Word overlap rather than a substring match: "กดปุ่มบันทึกไม่ได้" and
+      // "ปุ่มบันทึกกดไม่ติด" are the same fault and share no substring.
+      var words = q.split(/\s+/).filter(function (w) { return w.length > 2; });
+      var hits = (state.reports || []).filter(function (r) {
+        if (r.state === 'fixed' || r.state === 'declined' || r.state === 'duplicate') return false;
+        var hay = r.title.toLowerCase();
+        if (hay.indexOf(q) !== -1 || q.indexOf(hay) !== -1) return true;
+        return words.length > 1 && words.filter(function (w) { return hay.indexOf(w) !== -1; }).length >= 2;
+      }).slice(0, 4);
+
+      if (!hits.length) { dupBox.hidden = true; return; }
+      dupBox.hidden = false;
+      dupBox.appendChild(h('small', { class: 'rep-dups-head', text: t('repMaybeDup') }));
+      hits.forEach(function (r) {
+        var btn = h('button', {
+          type: 'button', class: 'btn sm' + (r.voted ? ' on' : ''),
+          text: r.voted ? t('repMeTooDone') : t('repMeTooShort'),
+          onclick: function () {
+            btn.disabled = true;
+            api('/api/meta?do=report-vote', { method: 'POST', body: { id: r.id } })
+              .then(function (d) {
+                r.voted = d.voted;
+                r.votes = d.votes;
+                btn.textContent = d.voted ? t('repMeTooDone') : t('repMeTooShort');
+                btn.classList.toggle('on', d.voted);
+                if (d.voted) say('ok', t('repMeTooThanks').replace('%s', r.code));
+              })
+              .catch(function (err) { say('err', errText(err.code)); })
+              .then(function () { btn.disabled = false; });
+          },
+        });
+        dupBox.appendChild(h('div', { class: 'rep-dup-row' }, [
+          h('code', { text: r.code || '' }),
+          h('span', { class: 'grow', text: r.title }),
+          h('span', { class: 'rep-dup-votes', text: '👋 ' + r.votes }),
+          btn,
+        ]));
+      });
+    }
+    title.addEventListener('input', debounceDup(checkDups));
+
+    /* ---- screenshots ---- */
+    var shotStrip = h('div', { class: 'rep-shotstrip' });
+    var fileIn = h('input', {
+      type: 'file', accept: 'image/png,image/jpeg,image/webp', multiple: true, id: 'rep-shots',
+    });
+    fileIn.addEventListener('change', function () {
+      var chosen = Array.prototype.slice.call(fileIn.files || []);
+      fileIn.value = '';
+      chosen.forEach(function (file) {
+        if (shots.length >= (state.maxShots || 3)) { say('err', t('repTooManyShots').replace('%s', state.maxShots || 3)); return; }
+        if (file.size > (state.maxShot || 2097152)) { say('err', t('repShotTooBig').replace('%s', Math.round((state.maxShot || 2097152) / 1048576 * 10) / 10)); return; }
+        fileToBase64(file).then(function (b64) {
+          shots.push({ data: b64, name: file.name, url: URL.createObjectURL(file) });
+          drawShots();
+        });
+      });
+    });
+
+    function drawShots() {
+      clear(shotStrip);
+      shots.forEach(function (shot, i) {
+        shotStrip.appendChild(h('div', { class: 'rep-shot' }, [
+          h('img', { src: shot.url, alt: shot.name }),
+          h('button', {
+            type: 'button', class: 'rep-shot-x', text: '✕', 'aria-label': t('remove'),
+            onclick: function () {
+              URL.revokeObjectURL(shot.url);
+              shots.splice(i, 1);
+              drawShots();
+            },
+          }),
+        ]));
+      });
+      if (shots.length < (state.maxShots || 3)) {
+        shotStrip.appendChild(h('label', { class: 'rep-shot-add', for: 'rep-shots' }, [
+          h('span', { text: '+' }),
+          h('small', { text: t('repAddShot') }),
+        ]));
+      }
+    }
+
+    /* ---- what the page is sending about this device ---- */
+    var device = deviceLine();
+    var where = (location.hash || '#/home');
+    var auto = h('details', { class: 'rep-auto' }, [
+      h('summary', { text: t('repAutoHead') }),
+      h('ul', {}, [
+        h('li', { text: t('repAutoPage') + ': ' + where }),
+        h('li', { text: t('repAutoDevice') + ': ' + device }),
+        h('li', { text: t('repAutoVersion') + ': ' + APP_VERSION }),
+      ]),
+      h('small', { class: 'hint', text: t('repAutoWhy') }),
+    ]);
+
+    var sendBtn = h('button', {
+      class: 'btn primary', text: t('repSend'),
+      onclick: function () {
+        if (!title.value.trim()) { say('err', t('repNeedTitle')); title.focus(); return; }
+        sendBtn.disabled = true;
+        api('/api/meta?do=report', {
+          method: 'POST',
+          body: {
+            kind: kind,
+            title: title.value.trim(),
+            severity: severity,
+            doing: kind === 'bug' ? doing.value : '',
+            body: body.value,
+            page: where,
+            device: device,
+            appVersion: APP_VERSION,
+            shots: shots.map(function (s) { return s.data; }),
+          },
+        }).then(function (d) {
+          shots.forEach(function (s) { URL.revokeObjectURL(s.url); });
+          veil.remove();
+          if (onSaved) onSaved();
+          /**
+           * The code goes in the confirmation, because it is the handle
+           * people use with each other — "R0042 ยังไม่ได้แก้เหรอ" is a
+           * question somebody can answer.
+           */
+          openReportSent(d.report);
+        }).catch(function (err) { say('err', errText(err.code)); })
+          .then(function () { sendBtn.disabled = false; });
+      },
+    });
+
+    var modal = h('div', { class: 'modal', style: 'width:min(38rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('repNew') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        kindSeg,
+        h('div', { class: 'field' }, [
+          h('label', { text: t('repTitle') }), title,
+          h('small', { class: 'hint', text: t('repTitleWhy') }),
+        ]),
+        dupBox,
+        sevField,
+        h('div', { class: 'field' }, [labels.doing, doing, h('small', { class: 'hint', text: t('repDoingWhy') })]),
+        h('div', { class: 'field' }, [labels.body, body]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('repShots') }),
+          shotStrip, fileIn,
+          h('small', { class: 'hint', text: t('repShotsWhy') }),
+        ]),
+        auto,
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        sendBtn,
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+    drawKind();
+    drawSeverity();
+    drawLabels();
+    drawShots();
+    title.focus();
+  }
+
+  /** A short debounce, so the duplicate check runs on pauses rather than keystrokes. */
+  function debounceDup(fn) {
+    var timer = null;
+    return function () {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(fn, 250);
+    };
+  }
+
+  function openReportSent(rep) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var modal = h('div', { class: 'modal', style: 'width:min(26rem,100%)' }, [
+      h('header', {}, [h('h2', { text: t('repSentTitle') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } })]),
+      h('div', { class: 'body' }, [
+        h('p', { class: 'rep-sent-code' }, [h('code', { text: rep.code || '' })]),
+        h('p', { text: rep.severity === 'urgent' ? t('repSentUrgent') : t('repSentNormal') }),
+        h('small', { class: 'hint', text: t('repSentTold') }),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn primary', text: t('close'), onclick: function () { veil.remove(); } }),
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+  }
+
+  /**
+   * One report, opened.
+   *
+   * What everybody sees: the words, who reported it, how many others hit it,
+   * and what became of it. What only the rota and the reporter see: the
+   * screenshots, the browser line and the triage note — a screenshot is
+   * whatever was on somebody's screen at the time, which may be a letter or a
+   * private message.
+   */
+  function openReport(rep, state, onChanged) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+    var bodyBox = h('div', { class: 'body' });
+
+    function say(cls, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + cls;
+      notice.textContent = text;
+    }
+
+    function draw() {
+      clear(bodyBox);
+      bodyBox.appendChild(notice);
+
+      bodyBox.appendChild(h('div', { class: 'rep-tags' }, [
+        h('span', { class: 'rep-kind k-' + rep.kind, text: rep.kind === 'bug' ? t('repKindBug') : t('repKindIdea') }),
+        h('span', { class: 'rep-sev sev-' + rep.severity, text: severityLabel(rep.severity) }),
+        h('span', { class: 'rep-state st-' + rep.state, text: stateLabel(rep.state) }),
+        h('span', { class: 'rep-shots', text: '👋 ' + t('repPeopleHit').replace('%s', rep.votes) }),
+      ]));
+
+      bodyBox.appendChild(h('h3', { class: 'rep-detail-title', text: rep.title }));
+      bodyBox.appendChild(h('div', { class: 'rep-by' }, [
+        avatarNode(rep.createdBy),
+        h('span', { text: nameOf(rep.createdBy) }),
+        h('span', { class: 'rep-when', text: fmtStamp(rep.createdAt) }),
+      ]));
+
+      if (rep.doing) {
+        bodyBox.appendChild(field(t('repDoing'), rep.doing));
+      }
+      if (rep.body) {
+        bodyBox.appendChild(field(rep.kind === 'bug' ? t('repBodyBug') : t('repBodyIdea'), rep.body));
+      }
+
+      /* ---- the private half ----
+       * Gated on the DETAIL having come back, not on the screenshot count.
+       * The count is in the open half of the payload so the list can show
+       * it, but the images themselves are closed — drawing the strip for
+       * somebody who may not fetch them is a row of broken pictures and a
+       * row of 403s in their console.
+       */
+      var maySeeDetail = rep.device !== undefined;
+      if (maySeeDetail && rep.shots) {
+        var strip = h('div', { class: 'rep-shotstrip' });
+        for (var i = 0; i < rep.shots; i++) {
+          (function (n) {
+            var src = '/api/meta?do=report-shot&id=' + encodeURIComponent(rep.id) + '&i=' + n;
+            strip.appendChild(h('a', { class: 'rep-shot', href: src, target: '_blank', rel: 'noopener' }, [
+              h('img', { src: src, alt: t('repShots') + ' ' + (n + 1), loading: 'lazy' }),
+            ]));
+          }(i));
+        }
+        bodyBox.appendChild(h('div', { class: 'field' }, [h('label', { text: t('repShots') }), strip]));
+      }
+
+      if (maySeeDetail) {
+        bodyBox.appendChild(h('div', { class: 'rep-tech' }, [
+          rep.page ? h('div', {}, [h('b', { text: t('repAutoPage') + ': ' }), h('code', { text: rep.page })]) : null,
+          rep.device ? h('div', {}, [h('b', { text: t('repAutoDevice') + ': ' }), h('span', { text: rep.device })]) : null,
+          rep.appVersion ? h('div', {}, [h('b', { text: t('repAutoVersion') + ': ' }), h('code', { text: rep.appVersion })]) : null,
+        ]));
+      }
+
+      if (rep.note) {
+        bodyBox.appendChild(h('div', { class: 'rep-note' }, [
+          h('small', { text: t('repNoteFrom').replace('%s', nameOf(rep.triagedBy || '')) }),
+          h('p', { text: rep.note }),
+        ]));
+      }
+
+      if (state.mayTriage) bodyBox.appendChild(triageBox());
+    }
+
+    function field(label, value) {
+      return h('div', { class: 'field' }, [
+        h('label', { text: label }),
+        h('div', { class: 'rep-pre' }, String(value).split('\n').map(function (line) {
+          return line.trim() ? h('p', { text: line }) : h('br', {});
+        })),
+      ]);
+    }
+
+    /* ---- triage, for the rota only ---- */
+    function triageBox() {
+      var stateSel = h('select', {}, REPORT_STATES.map(function (k) {
+        return h('option', { value: k, text: stateLabel(k), selected: rep.state === k ? true : null });
+      }));
+      var sevSel = h('select', {}, REPORT_SEVS.filter(function (k) {
+        return !(rep.kind === 'idea' && k === 'urgent');
+      }).map(function (k) {
+        return h('option', { value: k, text: severityLabel(k), selected: rep.severity === k ? true : null });
+      }));
+      var noteIn = h('textarea', { rows: '2', maxlength: '2000', placeholder: t('repNotePlaceholder') });
+      noteIn.value = rep.note || '';
+      var dupIn = h('input', {
+        type: 'text', maxlength: '16', placeholder: 'R0001', class: 'code-input',
+        value: rep.dupOf || '',
+      });
+
+      var apply = h('button', {
+        class: 'btn primary', text: t('repTriageSave'),
+        onclick: function () {
+          apply.disabled = true;
+          var patch = { id: rep.id };
+          if (stateSel.value !== rep.state) patch.state = stateSel.value;
+          if (sevSel.value !== rep.severity) patch.severity = sevSel.value;
+          if (noteIn.value !== (rep.note || '')) patch.note = noteIn.value;
+          if (dupIn.value.trim() !== (rep.dupOf || '')) patch.dupOf = dupIn.value.trim();
+
+          api('/api/meta?do=report', { method: 'PATCH', body: patch })
+            .then(function (d) {
+              rep = d.report;
+              say('ok', t('repTriaged'));
+              draw();
+              if (onChanged) onChanged();
+            })
+            .catch(function (err) { say('err', errText(err.code)); })
+            .then(function () { apply.disabled = false; });
+        },
+      });
+
+      return h('div', { class: 'rep-triage' }, [
+        h('h4', { text: t('repTriage') }),
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('repTriageState') }), stateSel]),
+          h('div', { class: 'field' }, [h('label', { text: t('repTriageSev') }), sevSel]),
+        ]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('repTriageNote') }), noteIn,
+          h('small', { class: 'hint', text: t('repTriageNoteWhy') }),
+        ]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('repTriageDup') }), dupIn,
+          h('small', { class: 'hint', text: t('repTriageDupWhy') }),
+        ]),
+        h('div', {}, [apply]),
+      ]);
+    }
+
+    var modal = h('div', { class: 'modal', style: 'width:min(38rem,100%)' }, [
+      h('header', {}, [
+        h('code', { class: 'rep-code', text: rep.code || '' }),
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      bodyBox,
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }),
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+    draw();
+  }
+
+
+  /* ======================================================================
+     Composing the pop-up — on the announce page, where admins already are
+     ====================================================================== */
+
+  /**
+   * The list of pop-ups, under the announcement form.
+   *
+   * Put here rather than on a page of its own because it is the same job: an
+   * admin deciding how loudly to say something. A pop-up and an announcement
+   * differ only in how hard they interrupt, and seeing both in one place is
+   * what makes that a choice rather than two separate habits.
+   */
+  function popupSection(main) {
+    var box = h('div', {});
+    var notice = h('div', { class: 'notice', hidden: true });
+    var state = { popups: [], maxLive: 3, liveNow: 0, people: 0, maxImage: 1572864 };
+
+    function say(cls, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + cls;
+      notice.textContent = text;
+    }
+
+    main.appendChild(h('h2', { class: 'section-head', text: t('popManage') }));
+    main.appendChild(h('p', { class: 'hint', text: t('popManageWhy') }));
+    main.appendChild(notice);
+    var newBtn = h('button', {
+      class: 'btn primary', text: t('popNew'),
+      onclick: function () { openPopupEditor(null, state, load); },
+    });
+    main.appendChild(h('div', { class: 'shelf-bar' }, [newBtn]));
+    main.appendChild(box);
+
+    function draw() {
+      clear(box);
+      // Offered only while there is room, rather than offered and refused.
+      newBtn.disabled = state.liveNow >= state.maxLive;
+      newBtn.title = newBtn.disabled ? t('errTooManyLive').replace('%s', state.maxLive) : '';
+
+      if (!state.popups.length) {
+        box.appendChild(h('div', { class: 'empty' }, [
+          h('strong', { text: t('popNoneYet') }),
+          h('p', { text: t('popNoneWhy') }),
+        ]));
+        return;
+      }
+
+      state.popups.forEach(function (p) {
+        var when = [
+          p.startsAt ? fmtStamp(p.startsAt) : null,
+          p.endsAt ? '→ ' + fmtStamp(p.endsAt) : null,
+        ].filter(Boolean).join(' ');
+
+        box.appendChild(h('div', { class: 'sent-row' + (p.live ? ' urgent' : '') }, [
+          p.hasImage ? h('img', {
+            class: 'pop-thumb',
+            src: '/api/push?do=popup-image&id=' + encodeURIComponent(p.id),
+            alt: '',
+          }) : null,
+          h('div', { class: 'grow' }, [
+            h('b', {}, [
+              p.live ? h('span', { class: 'chip urgent-dot', text: t('popLiveNow') }) : null,
+              p.title,
+            ]),
+            p.body ? h('div', { class: 'sub', text: p.body }) : null,
+            h('small', {
+              text: [
+                nameOf(p.createdBy),
+                when || t('popWhenWhy').split('—')[0].trim(),
+                t('popSeenBy').replace('%1', p.stats.shown).replace('%2', state.people),
+                p.linkUrl ? t('popClicked').replace('%s', p.stats.clicked) : null,
+                !p.active ? t('popActive') + ': ✕' : null,
+              ].filter(Boolean).join(' · '),
+            }),
+          ]),
+          h('div', { class: 'stat' }, [
+            h('button', {
+              class: 'btn ghost sm', text: t('edit'),
+              onclick: function () { openPopupEditor(p, state, load); },
+            }),
+            h('button', {
+              class: 'btn ghost sm danger', text: t('remove'),
+              onclick: function () {
+                if (!confirm(t('popDeleteAsk').replace('%s', p.title))) return;
+                api('/api/push?do=popup-delete&id=' + encodeURIComponent(p.id), { method: 'DELETE' })
+                  .then(function () { say('ok', t('popDeleted')); load(); })
+                  .catch(function (err) { say('err', errText(err.code)); });
+              },
+            }),
+          ]),
+        ]));
+      });
+    }
+
+    function load() {
+      return api('/api/push?do=popups').then(function (d) {
+        state = d;
+        draw();
+      }).catch(function (err) { say('err', errText(err.code)); });
+    }
+
+    load();
+  }
+
+  /**
+   * Writing one.
+   *
+   * The preview is the important part of this dialog: a pop-up is the only
+   * thing in the app that appears over somebody's work, so whoever writes one
+   * should see exactly what lands — including how much of the screen it takes
+   * on a phone, which is the thing people get wrong.
+   */
+  function openPopupEditor(popup, state, onSaved) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+
+    var title = h('input', { type: 'text', maxlength: '120', placeholder: t('popTitlePlaceholder'), value: (popup && popup.title) || '' });
+    var body = h('textarea', { rows: '4', maxlength: '1200', placeholder: t('popBodyPlaceholder') });
+    body.value = (popup && popup.body) || '';
+    var linkUrl = h('input', { type: 'url', maxlength: '1000', value: (popup && popup.linkUrl) || '' });
+    var linkLabel = h('input', { type: 'text', maxlength: '40', placeholder: t('popLinkLabelPlaceholder'), value: (popup && popup.linkLabel) || '' });
+    var startsAt = h('input', { type: 'datetime-local', value: toLocalInput(popup && popup.startsAt) });
+    var endsAt = h('input', { type: 'datetime-local', value: toLocalInput(popup && popup.endsAt) });
+    var activeCb = h('input', { type: 'checkbox', checked: popup ? (popup.active ? true : null) : true });
+
+    var repeat = (popup && popup.repeat) || 'once';
+    var repSeg = h('div', { class: 'seg wrap' });
+    [['once', t('popRepeatOnce'), t('popRepeatOnceWhy')],
+      ['daily', t('popRepeatDaily'), t('popRepeatDailyWhy')],
+      ['always', t('popRepeatAlways'), t('popRepeatAlwaysWhy')]].forEach(function (r) {
+      repSeg.appendChild(h('button', {
+        type: 'button', class: repeat === r[0] ? 'on' : '', title: r[2],
+        onclick: function () {
+          repeat = r[0];
+          repSeg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+          this.classList.add('on');
+        },
+      }, [h('b', { text: r[1] }), h('small', { text: r[2] })]));
+    });
+
+    /* ---- the poster ---- */
+    var image; // undefined = leave as it is · null = remove · {data} = replace
+    var imgBox = h('div', { class: 'pop-img-pick' });
+    var imgIn = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', id: 'pop-img' });
+    imgIn.addEventListener('change', function () {
+      var file = (imgIn.files || [])[0];
+      imgIn.value = '';
+      if (!file) return;
+      if (file.size > state.maxImage) {
+        say('err', t('popImageWhy').replace('%s', Math.round(state.maxImage / 1048576 * 10) / 10));
+        return;
+      }
+      fileToBase64(file).then(function (b64) {
+        image = { data: b64, url: URL.createObjectURL(file) };
+        drawImage();
+        drawPreview();
+      });
+    });
+
+    function currentImageSrc() {
+      if (image === null) return null;
+      if (image) return image.url;
+      if (popup && popup.hasImage) return '/api/push?do=popup-image&id=' + encodeURIComponent(popup.id);
+      return null;
+    }
+
+    function drawImage() {
+      clear(imgBox);
+      var src = currentImageSrc();
+      if (src) {
+        imgBox.appendChild(h('img', { src: src, alt: '' }));
+        imgBox.appendChild(h('button', {
+          type: 'button', class: 'btn ghost sm danger', text: t('popImageRemove'),
+          onclick: function () {
+            if (image && image.url) URL.revokeObjectURL(image.url);
+            image = null;
+            drawImage();
+            drawPreview();
+          },
+        }));
+      }
+      imgBox.appendChild(h('label', { class: 'btn', for: 'pop-img', text: src ? t('edit') : t('popImage') }));
+      imgBox.appendChild(imgIn);
+    }
+
+    /* ---- who sees it ---- */
+    var audKind = (popup && popup.audience && popup.audience.kind) || 'everyone';
+    var audDepts = (popup && popup.audience && popup.audience.departments) || [];
+    var audBox = h('div', { class: 'picker' });
+
+    function drawAud() {
+      clear(audBox);
+      var seg = h('div', { class: 'seg wrap' }, [
+        ['everyone', t('everyone')], ['departments', t('departments')],
+      ].map(function (pair) {
+        return h('button', {
+          type: 'button', class: audKind === pair[0] ? 'on' : '', text: pair[1],
+          onclick: function () { audKind = pair[0]; drawAud(); },
+        });
+      }));
+      audBox.appendChild(seg);
+
+      if (audKind === 'departments') {
+        var chips = h('div', { class: 'chips' }, (S.departments || []).map(function (d) {
+          var on = audDepts.indexOf(d.key) !== -1;
+          return h('button', {
+            type: 'button', class: 'chip dept' + (on ? ' on' : ''),
+            text: deptLabel(d.key),
+            onclick: function () {
+              var at = audDepts.indexOf(d.key);
+              if (at === -1) audDepts.push(d.key); else audDepts.splice(at, 1);
+              drawAud();
+            },
+          });
+        }));
+        audBox.appendChild(chips);
+      }
+    }
+
+    /* ---- the preview ---- */
+    var preview = h('div', { class: 'pop-preview' });
+    function drawPreview() {
+      clear(preview);
+      var src = currentImageSrc();
+      var card = h('div', { class: 'pop-preview-card' }, [
+        h('div', { class: 'pop-preview-tag', text: t('popTag') }),
+        src ? h('img', { src: src, alt: '' }) : null,
+        h('b', { text: title.value || t('popTitlePlaceholder') }),
+        body.value ? h('div', { class: 'pop-preview-body' }, body.value.split('\n').map(function (l) {
+          return l.trim() ? h('p', { text: l }) : h('br', {});
+        })) : null,
+        h('div', { class: 'pop-preview-btns' }, [
+          linkUrl.value ? h('span', { class: 'btn primary sm', text: linkLabel.value || t('popOpen') }) : null,
+          h('span', { class: 'btn sm', text: t('popDismiss') }),
+        ]),
+      ]);
+      preview.appendChild(card);
+    }
+    [title, body, linkUrl, linkLabel].forEach(function (el) {
+      el.addEventListener('input', drawPreview);
+    });
+
+    var resetCb = h('input', { type: 'checkbox' });
+
+    function say(cls, text) {
+      notice.hidden = false;
+      notice.className = 'notice ' + cls;
+      notice.textContent = text;
+    }
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: popup ? t('save') : t('popNew'),
+      onclick: function () {
+        if (!title.value.trim()) { say('err', t('shelfNeedTitle')); title.focus(); return; }
+        var payload = {
+          title: title.value.trim(),
+          body: body.value,
+          linkUrl: linkUrl.value.trim(),
+          linkLabel: linkLabel.value.trim(),
+          repeat: repeat,
+          startsAt: startsAt.value ? new Date(startsAt.value).toISOString() : null,
+          endsAt: endsAt.value ? new Date(endsAt.value).toISOString() : null,
+          active: activeCb.checked,
+          audience: audKind === 'everyone'
+            ? { kind: 'everyone' }
+            : { kind: 'departments', departments: audDepts },
+        };
+        if (popup) {
+          payload.id = popup.id;
+          payload.resetSeen = resetCb.checked;
+        }
+        if (image !== undefined) payload.image = image === null ? null : image.data;
+
+        saveBtn.disabled = true;
+        api('/api/push?do=popup-save', { method: 'POST', body: payload })
+          .then(function () {
+            if (image && image.url) URL.revokeObjectURL(image.url);
+            veil.remove();
+            if (onSaved) onSaved();
+          })
+          .catch(function (err) {
+            say('err', err.code === 'TOO_MANY_LIVE'
+              ? t('errTooManyLive').replace('%s', (err.data && err.data.limit) || state.maxLive)
+              : errText(err.code));
+          })
+          .then(function () { saveBtn.disabled = false; });
+      },
+    });
+
+    var modal = h('div', { class: 'modal pop-editor', style: 'width:min(52rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: popup ? t('popEdit') : t('popNew') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body pop-editor-body' }, [
+        notice,
+        h('div', { class: 'pop-editor-cols' }, [
+          h('div', { class: 'pop-editor-form' }, [
+            h('div', { class: 'field' }, [h('label', { text: t('popTitle') }), title]),
+            h('div', { class: 'field' }, [h('label', { text: t('popBody') }), body]),
+            h('div', { class: 'field' }, [
+              h('label', { text: t('popImage') }), imgBox,
+              h('small', { class: 'hint', text: t('popImageWhy').replace('%s', Math.round(state.maxImage / 1048576 * 10) / 10) }),
+            ]),
+            h('div', { class: 'two' }, [
+              h('div', { class: 'field' }, [h('label', { text: t('popLink') }), linkUrl]),
+              h('div', { class: 'field' }, [h('label', { text: t('popLinkLabel') }), linkLabel]),
+            ]),
+            h('div', { class: 'field' }, [h('label', { text: t('popWho') }), audBox]),
+            h('div', { class: 'field' }, [
+              h('label', { text: t('popWhen') }),
+              h('div', { class: 'two' }, [
+                h('div', { class: 'field' }, [h('small', { text: t('popFrom') }), startsAt]),
+                h('div', { class: 'field' }, [h('small', { text: t('popTo') }), endsAt]),
+              ]),
+              h('small', { class: 'hint', text: t('popWhenWhy') }),
+            ]),
+            h('div', { class: 'field' }, [h('label', { text: t('popRepeat') }), repSeg]),
+            h('label', { class: 'rep-team-row' }, [activeCb, h('span', { text: t('popActive') })]),
+            popup ? h('label', { class: 'rep-team-row' }, [
+              resetCb,
+              h('span', {}, [
+                h('span', { text: t('popResetSeen') }),
+                h('small', { class: 'hint', text: t('popResetSeenWhy') }),
+              ]),
+            ]) : null,
+          ]),
+          h('div', { class: 'pop-editor-prev' }, [
+            h('small', { class: 'hint', text: t('popTag') }),
+            preview,
+          ]),
+        ]),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]);
+    veil.appendChild(modal);
+    $('modal-root').appendChild(veil);
+    drawImage();
+    drawAud();
+    drawPreview();
+    title.focus();
+  }
+
+  /** An ISO stamp as the local wall time a datetime-local input wants. */
+  function toLocalInput(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
 
   /**
    * A last resort for the splash.
