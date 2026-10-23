@@ -11,6 +11,63 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-24 — two bug reports, and the committee's own org chart · version `2026-10-24a`
+Schema **`2026-10-24a`** (migrates itself: `meetings.circles`, `users.off_sheet`, and the two `org_*` tables). Still 12 functions.
+
+Two ประธานฝ่าย reported problems in LINE on the same evening. Both turned out to be rules rather than faults, and neither rule said so — which is the actual bug in both cases.
+
+### "มันแจ้งว่าเกิดการผิดพลาดขึ้นตลอด"
+ดาริณ (ประธาน Stage) and วุ้นเส้น (ประธาน Merch) both tapped นัดประชุม and got **เกิดข้อผิดพลาด กรุณาลองใหม่** every time — a message that tells somebody to repeat the exact thing that will not work.
+
+`canCreateMeeting` allowed editors and above. Both of them are **Unit lead**, which sits below Editor, so the server refused with `CANNOT_CALL_MEETING` — and that code was not in `window.ERROR_KEYS`, so it fell through to the generic string. Three things were wrong and all three are fixed:
+
+- **A ประธานฝ่ายย่อย can now call a meeting.** They run something; convening their own unit is the job. A สมาชิกฝ่าย still cannot.
+- **The page no longer offers what the server will refuse.** `mayCallMeeting()` in `public/app.js` mirrors the server's rule and gates all three entry points — the + sheet, the calendar button, the teamspace button. They were gated on `mayCreate()`, which only excludes viewers.
+- **Every meeting refusal now says what is wrong.** `CANNOT_CALL_MEETING`, `NOT_MY_MEETING`, `TITLE_REQUIRED`, `NOT_YOUR_ITEM`, `NO_SUCH_MEETING`, `MEETING_IS_OVER`, `CANNOT_REWORD_OTHERS` and nine more were all unmapped. run.mjs §95 now fails if any of the four worst of them falls back to `errGeneric`.
+
+### "รบกวนดูให้หน่อยว่าแอดหนูเข้าไปรึยัง"
+วุ้นเส้น could not see a รายงานการประชุม other people had. She had not been invited — and she could not have been, because **the invitation was a list of names frozen on the day it was sent.**
+
+The picker expands ทุกคน into usernames in the browser and sends only the names. Her account was created on 22 October; the meeting predated it; nothing would ever have added her. This is the whole class of "am I added yet" messages.
+
+- **A meeting now stores the circle it was invited on** (`meetings.circles`) as well as the names. The page sends both: the names are what the organiser looked at and approved, the circle is what they meant.
+- **`topUpStandingInvites()` re-applies every standing circle after a roster sync** — the one moment the answer can change. Only to meetings still ahead and still `planned`: adding a name to last week's attendance would be a lie. It never removes anybody, because somebody taken off a circle may still have been at the meeting and may already have replied. The sync reports how many it added.
+- **The reply route covers the gap between syncs**: somebody inside a stored circle who is not yet on the list gets their row written when they answer, instead of `NOT_INVITED`.
+- A note on the edge: a selection that happens to cover a circle exactly is treated as that circle. Inviting precisely the two people in คณะกรรมการบริหาร means a co-admin appointed later joins those meetings. That is the behaviour the group names imply, and it is why only the **widest** covered circle is used for the label.
+
+### A ฝ่าย's own meeting is that ฝ่าย's business
+`canSeeMeeting` now also passes for anybody with access to the meeting's `department`. The column was being written on every meeting and read by nothing. A ประธานฝ่าย should not have to be named on the invitation to read what their own section decided.
+
+Deliberately narrow: a meeting with **no** ฝ่าย — which is what the chair's committee-wide meetings are, since the ฝ่าย comes from whoever called it — stays exactly as private as its guest list. The merchant head still cannot see เนื้อหา's meetings; §95 checks both directions.
+
+### The committee changes its own org chart
+เสื้อโครงการ existed in the committee for a month before it existed in the app, because adding a หน่วย meant editing `lib/departments.js` and shipping a deployment. Adding a person meant a row in the roster sheet and a wait for the next sync. Neither is a decision anybody outside the committee should be standing in the middle of.
+
+**`lib/departments.js` is now a base, not the whole truth.** `DEPARTMENTS`, `DEPARTMENT_KEYS` and the lookup map are rebuilt **in place** by `applyOrg()` from two overlay tables — in place, because every other module imports them once at load and handing out a fresh array would leave half the app reading last request's chart. `getSql()` folds the overlay into the `ready` promise every endpoint already awaits, cached 30 seconds per warm instance and cleared by `forgetOrg()` the moment the admin page changes something.
+
+What an admin or co-admin can now do, from the admin page:
+
+- **Add a ฝ่าย**, optionally under another one — the parent rule still means granting the parent grants the children. Its Thai and English labels become spellings the roster sheet's Department column is matched against, so a new ฝ่าย can place people without anybody editing aliases.
+- **Rename a ฝ่าย.** The key never changes and is shown on the card, because the key is what every task, grant, meeting and document points at.
+- **Add or put away a หน่วย**, which is where "unit workspace as a sub-category of departments" lands: each ฝ่าย's card lists its หน่วย as chips underneath it, and one of the buttons on a chip makes that หน่วย a teamspace whose membership rule is the หน่วย itself — everybody filed there joins automatically.
+- **Add a member** the sheet has not caught up with. No password is set: the person claims the account the same way everybody else does, so the rule that no admin ever knows another person's password is untouched. A co-admin cannot create an admin, which would otherwise be the way around `ONLY_ADMIN_SETS_ACCESS`.
+
+**Nothing is ever deleted.** Putting a ฝ่าย or a หน่วย away takes it out of the pickers; everything already pointing at it is left alone, and the หน่วย case says how many people are still filed there rather than letting an admin find out later.
+
+`users.off_sheet` marks somebody added here. The sync closes every account it cannot find a row for, which is right for a roster the sheet owns and would have closed these the same hour. The flag clears itself the moment their name does appear in the sheet.
+
+### The one that would have been missed
+`/api/meta` serves the reference data — including the chart — **without touching the database on purpose**: it is the cheapest thing the app serves and the page asks for it on every load. So the admin page showed a new หน่วย and every picker in the app did not. `dev-tests/org.mjs` caught it; the branch now awaits `ready` when there is a database and falls back to the transcribed chart when there is not.
+
+The second one it caught: `makeDepartmentKey` only avoided keys in the *live* chart, so re-adding a ฝ่าย that had been put away collided on the primary key. Keys of hidden ฝ่าย count as taken — handing the same key to a new one would quietly merge the two.
+
+### Tests
+- **run.mjs §95 (16 checks)** — who may call a meeting, the error strings not being generic, ฝ่าย visibility both ways, the circle stored as a rule, a new member picked up by a top-up and not before, no double-adding, and a meeting that has happened never being added to.
+- **run.mjs §96 (20 checks)** — adding a person and the chart: an editor refused both, a duplicate username whatever the capitals, a co-admin refused an admin, a sync not closing an app-created account, a renamed ฝ่าย keeping its key, a หน่วย added to a transcribed ฝ่าย, the same หน่วย spelled with a stray space not added twice, and putting one away reporting who is still filed under it.
+- The reset block now clears `org_units` and `org_departments`. Without it a run that added a ฝ่าย left the next one working from a chart nobody wrote down.
+- **`dev-tests/org.mjs` is new** — the section exists, a ฝ่าย shows its หน่วย underneath it, adding a หน่วย reaches the pickers and not only the chart, adding a ฝ่าย, adding a member, and an editor being offered none of it. It clears its own fixtures at both ends.
+- **1473 checks**, 31 browser suites.
+
 ## 2026-10-23 — the feed · version `2026-10-23b`
 Schema **`2026-10-23b`** (migrates itself: two columns on `posts`). Still 12 functions.
 

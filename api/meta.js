@@ -111,6 +111,25 @@ async function handler(request) {
     }
   }
 
+  /**
+   * The org chart this answers with has to be the live one.
+   *
+   * This branch deliberately touches no database — it is the cheapest thing
+   * the app serves and the page asks for it on every load. But the chart is
+   * no longer only what lib/departments.js transcribed: a ฝ่าย or a หน่วย
+   * added on the admin page lives in the database, and serving the built-in
+   * list here meant the admin page showed the change and every picker in the
+   * app did not. Awaiting `ready` applies the overlay; a database that is
+   * asleep or unreachable falls back to the transcribed chart rather than
+   * failing a request that never needed one.
+   */
+  if (hasDatabase) {
+    try {
+      const { ready } = getSql();
+      await ready;
+    } catch (error) { /* the chart as transcribed is a fine answer */ }
+  }
+
   return json({
     hasDatabase,
     // What the SERVER is running — see lib/version.js.
@@ -137,6 +156,8 @@ async function handler(request) {
     accessOrder: ACCESS_ORDER,
     departments: DEPARTMENTS.map((d) => ({
       key: d.key, th: d.th, en: d.en, units: d.units, parent: d.parent || null,
+      // Added on the admin page rather than transcribed from the org chart.
+      added: Boolean(d.added),
     })),
     statuses: STATUSES,
     priorities: PRIORITIES,

@@ -1969,3 +1969,33 @@ tr.urow[hidden] { display: none !important; }
 .feed-dept-wrap select { border: 0; background: none; font: inherit; color: var(--ink-faint); padding: 6px 10px; cursor: pointer; }
 .feed-dept-wrap.on { background: var(--accent); border-radius: 9px; }
 .feed-dept-wrap.on select { color: var(--accent-ink); font-weight: 600; }
+
+/* ---------------------------------------------------------------------------
+   The org chart on the admin page.
+
+   A flat list of ฝ่าย, each with its หน่วย as chips underneath — which is
+   what makes a หน่วย read as a sub-category of its ฝ่าย rather than as a
+   free-text field somebody has to spell exactly right.
+--------------------------------------------------------------------------- */
+.org-admin { margin-top: 28px; }
+.page-head.sub { margin-top: 0; }
+.page-head.sub h2 { font-size: 1.1rem; margin: 0; font-weight: 700; flex: 1; }
+.org-list { display: grid; gap: 10px; margin-top: 12px; }
+.org-dept {
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; background: var(--card);
+}
+.org-dept-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.org-key {
+  font-size: .75rem; color: var(--ink-faint);
+  background: var(--chip); border-radius: 6px; padding: 1px 6px;
+}
+.org-units { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.org-units .chip.unit { display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; }
+.org-units .chip.add { border-style: dashed; cursor: pointer; }
+.chip-act {
+  border: 0; background: none; cursor: pointer; font: inherit;
+  color: var(--ink-faint); padding: 0 3px; line-height: 1; border-radius: 5px;
+}
+.chip-act:hover { background: var(--chip-hover, rgba(0,0,0,.07)); color: var(--ink); }
+.chip-act.danger:hover { color: var(--danger); }

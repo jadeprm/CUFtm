@@ -1,12 +1,13 @@
-import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
+import { getSql, json, noDatabase, hasDatabase, requestUrl, forgetOrg } from '../lib/db.js';
 import {
   currentUser, canManageAccounts, cannotActOn, ACCESS, newToken,
-  departmentsByUser, departmentsOf, setDepartments,
+  departmentsByUser, departmentsOf, setDepartments, normaliseAccess, ACCESS_ORDER,
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
 import { writeAccess, sheetWriteConfigured } from '../lib/sheets.js';
 import {
   isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
+  DEPARTMENTS, unitsOf, makeDepartmentKey,
 } from '../lib/departments.js';
 import { driveStatus } from '../lib/drive.js';
 import {
@@ -101,7 +102,7 @@ async function handler(request) {
       return checkClashes(sql, me, await request.json().catch(() => ({})),
         { json, people: roster.map((p) => ({ ...p, displayName: p.display_name })) });
     }
-    return json({ error: 'UNKNOWN_ACTION' }, 400);
+  
   }
 
   /**
@@ -269,7 +270,9 @@ async function handler(request) {
   }
 
   // ---- directory ---------------------------------------------------------
-  if (request.method === 'GET') {
+  // `?do=org` is the one other GET on this endpoint, and it is answered
+  // further down; without this it would be swallowed by the directory.
+  if (request.method === 'GET' && action !== 'org') {
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
     const [meta] = await sql`SELECT value FROM meta WHERE key = 'last_sync'`;
@@ -650,6 +653,186 @@ async function handler(request) {
     } catch (error) {
       return json({ error: 'SHEET_UNREADABLE', message: error.message }, 502);
     }
+  }
+
+  // ---- add somebody the sheet does not have yet --------------------------
+  /**
+   * Creating an account without going through the roster sheet.
+   *
+   * The sheet is still the roster of record, and the ordinary path is to add
+   * a row there and sync. But a sheet round trip is minutes at best and a
+   * conversation at worst, and the committee gains people in the middle of a
+   * week — so an admin can put somebody in now and let the sheet catch up.
+   *
+   * No password is set here. The person claims the account the same way
+   * everybody else does, which is what keeps the rule that no admin ever
+   * knows or types somebody else's password.
+   */
+  if (request.method === 'POST' && action === 'add') {
+    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+    const body = await request.json().catch(() => ({}));
+
+    const username = String(body.username ?? '').trim().slice(0, 64);
+    if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username)) return json({ error: 'BAD_USERNAME' }, 400);
+    const [clash] = await sql`SELECT username FROM users WHERE lower(username) = ${username.toLowerCase()}`;
+    if (clash) return json({ error: 'USERNAME_TAKEN', username: clash.username }, 409);
+
+    const nickname = String(body.nickname ?? '').trim().slice(0, 60);
+    if (!nickname) return json({ error: 'NICKNAME_REQUIRED' }, 400);
+    const displayName = String(body.displayName ?? '').trim().slice(0, 120) || nickname;
+    const position = String(body.position ?? '').trim().slice(0, 120);
+
+    /**
+     * Only an admin hands out admin. The same rule the manage route applies
+     * when changing somebody's level — creating a person at that level would
+     * otherwise be the way round it.
+     */
+    const access = normaliseAccess(body.access);
+    if (access === ACCESS.ADMIN && me.access !== ACCESS.ADMIN) {
+      return json({ error: 'ONLY_ADMIN_SETS_ACCESS' }, 403);
+    }
+    if (ACCESS_ORDER.indexOf(access) >= ACCESS_ORDER.indexOf(ACCESS.COADMIN)
+        && me.access !== ACCESS.ADMIN) {
+      return json({ error: 'ONLY_ADMIN_SETS_ACCESS' }, 403);
+    }
+
+    const all = Boolean(body.allDepartments);
+    const asked = Array.isArray(body.departments) ? body.departments.map(String) : [];
+    const bad = asked.filter((key) => !isDepartment(key));
+    if (bad.length) return json({ error: 'BAD_DEPARTMENT', departments: bad }, 400);
+    const departments = all ? [] : expandAccess(asked);
+
+    const home = String(body.department ?? '').trim() || departments[0] || null;
+    if (home && !isDepartment(home)) return json({ error: 'BAD_DEPARTMENT', departments: [home] }, 400);
+    // A home department somebody can work in — the same rule the manage route
+    // applies, so the admin page cannot create what it would then refuse.
+    if (home && !all && !departments.includes(home)) departments.push(home);
+
+    const unit = body.unit ? matchUnit(home, body.unit) : null;
+    if (body.unit && !unit) return json({ error: 'UNIT_NOT_IN_DEPARTMENT', unit: String(body.unit) }, 400);
+
+    await sql`
+      INSERT INTO users (username, nickname, sheet_name, display_name, position, access,
+                         department, all_departments, unit, is_head, active, off_sheet,
+                         access_pinned, depts_pinned)
+      VALUES (${username}, ${nickname}, ${displayName}, ${displayName}, ${position}, ${access},
+              ${home}, ${all}, ${unit}, ${Boolean(body.isHead)}, true, true, true, true)`;
+    if (!all) await setDepartments(sql, username, departments);
+
+    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const grants = await departmentsByUser(sql);
+    return json({ ok: true, username, users: rows.map((u) => directoryRow(u, grants)) }, 201);
+  }
+
+  // ---- the org chart -----------------------------------------------------
+  /**
+   * Departments and the หน่วย inside them, editable without a deployment.
+   *
+   * What the admin page may change is deliberately narrow: labels, which
+   * ฝ่าย a new one sits under, the list of หน่วย, and whether something is
+   * still in use. Keys are never editable and nothing is ever deleted,
+   * because a key is written on tasks, grants, meetings and documents, and a
+   * chart that can orphan those is worse than one that needs a deployment.
+   */
+  if (action === 'org') {
+    if (request.method === 'GET') {
+      return json({
+        departments: DEPARTMENTS.map((d) => ({
+          key: d.key, th: d.th, en: d.en, parent: d.parent || null,
+          units: unitsOf(d.key), added: Boolean(d.added),
+        })),
+        hidden: (await sql`SELECT key FROM org_departments WHERE hidden ORDER BY key`)
+          .map((r) => r.key),
+        mayEdit: canManageAccounts(me),
+      });
+    }
+
+    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+    const body = await request.json().catch(() => ({}));
+
+    // --- a ฝ่าย ----------------------------------------------------------
+    if (body.kind === 'department') {
+      const th = String(body.th ?? '').trim().slice(0, 80);
+      const en = String(body.en ?? '').trim().slice(0, 80);
+
+      if (request.method === 'POST') {
+        if (!th && !en) return json({ error: 'NAME_REQUIRED' }, 400);
+        const parent = body.parent ? String(body.parent) : null;
+        if (parent && !isDepartment(parent)) return json({ error: 'BAD_DEPARTMENT', departments: [parent] }, 400);
+        /**
+         * Keys of ฝ่าย that are put away count as taken. They are gone from
+         * the live chart but still written on everything that ever pointed
+         * at them, so handing the same key to a new one would quietly merge
+         * the two.
+         */
+        const alreadyUsed = (await sql`SELECT key FROM org_departments`).map((r) => r.key);
+        const key = makeDepartmentKey(en, th, alreadyUsed);
+        await sql`
+          INSERT INTO org_departments (key, th, en, parent, sort, added_by)
+          VALUES (${key}, ${th || en}, ${en || th}, ${parent},
+                  ${DEPARTMENTS.length}, ${me.username})`;
+        forgetOrg();
+        return json({ ok: true, key }, 201);
+      }
+
+      if (request.method === 'PATCH') {
+        const key = String(body.key ?? '');
+        if (!isDepartment(key) && !(await sql`SELECT 1 FROM org_departments WHERE key = ${key}`).length) {
+          return json({ error: 'NO_SUCH_DEPARTMENT' }, 404);
+        }
+        const current = departmentByKey(key);
+        const hidden = body.hidden === undefined ? null : Boolean(body.hidden);
+        await sql`
+          INSERT INTO org_departments (key, th, en, parent, hidden, added_by)
+          VALUES (${key}, ${th || current?.th || key}, ${en || current?.en || key},
+                  ${body.parent === undefined ? (current?.parent || null) : (body.parent || null)},
+                  ${hidden ?? false}, ${me.username})
+          ON CONFLICT (key) DO UPDATE SET
+            th     = COALESCE(${th || null}, org_departments.th),
+            en     = COALESCE(${en || null}, org_departments.en),
+            parent = ${body.parent === undefined ? null : (body.parent || null)},
+            hidden = COALESCE(${hidden}, org_departments.hidden),
+            updated_at = now()`;
+        forgetOrg();
+        return json({ ok: true, key });
+      }
+    }
+
+    // --- a หน่วย ---------------------------------------------------------
+    if (body.kind === 'unit') {
+      const department = String(body.department ?? '');
+      if (!isDepartment(department)) return json({ error: 'BAD_DEPARTMENT', departments: [department] }, 400);
+      const name = String(body.name ?? '').trim().slice(0, 80);
+      if (!name) return json({ error: 'NAME_REQUIRED' }, 400);
+
+      if (request.method === 'POST') {
+        if (matchUnit(department, name)) return json({ error: 'UNIT_ALREADY_THERE', unit: name }, 409);
+        await sql`
+          INSERT INTO org_units (department, name, sort, added_by)
+          VALUES (${department}, ${name}, ${unitsOf(department).length}, ${me.username})
+          ON CONFLICT (department, name) DO UPDATE SET hidden = false`;
+        forgetOrg();
+        return json({ ok: true, department, name }, 201);
+      }
+
+      if (request.method === 'DELETE') {
+        /**
+         * Putting a หน่วย away, not deleting it. People already filed under
+         * it keep the label — the admin page says so — because clearing it
+         * would quietly lose the only record of which section they were in.
+         */
+        await sql`
+          INSERT INTO org_units (department, name, hidden, added_by)
+          VALUES (${department}, ${name}, true, ${me.username})
+          ON CONFLICT (department, name) DO UPDATE SET hidden = true`;
+        forgetOrg();
+        const [{ n }] = await sql`SELECT count(*)::int AS n FROM users
+                                  WHERE department = ${department} AND unit = ${name}`;
+        return json({ ok: true, stillFiledHere: n });
+      }
+    }
+
+    return json({ error: 'BAD_KIND' }, 400);
   }
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);

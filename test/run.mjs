@@ -332,7 +332,8 @@ const { default: calApi } = await import('../api/calendar.js');
 const { default: notifApi } = await import('../api/notifications.js');
 const { default: lineApi } = await import('../api/line.js');
 const { default: docsApi } = await import('../api/documents.js');
-const { getSql } = await import('../lib/db.js');
+const { getSql, forgetOrg } = await import('../lib/db.js');
+const { topUpStandingInvites } = await import('../lib/meetingstore.js');
 const { createHmac } = await import('node:crypto');
 
 /** A webhook call signed exactly the way LINE signs one. */
@@ -408,6 +409,15 @@ await sql`DELETE FROM task_parts`;
 await sql`DELETE FROM push_subscriptions`;
 await sql`DELETE FROM announcements`;
 await sql`DELETE FROM user_departments`;
+/**
+ * The org chart's overlay. Without this a run that added a ฝ่าย or put a
+ * หน่วย away left the next one working from a chart nobody wrote down —
+ * which is the kind of failure that looks like a bug in whatever happened
+ * to read the chart first.
+ */
+await sql`DELETE FROM org_units`;
+await sql`DELETE FROM org_departments`;
+forgetOrg();
 await sql`DELETE FROM sessions`;
 await sql`DELETE FROM meta`;
 /**
@@ -8444,6 +8454,209 @@ ok('the author can', r.status === 200);
 const gonePics = await sql`SELECT count(*)::int AS n FROM post_files WHERE post_id = ${postA}`;
 ok('...and its pictures and replies go with it', gonePics[0].n === 0);
 
+
+
+// ===========================================================================
+head('95. Who may call a meeting, and an invitation that keeps up with the roster');
+// ===========================================================================
+/**
+ * Two ประธานฝ่าย reported the same thing on the same evening: tapping
+ * "นัดประชุม" and getting "เกิดข้อผิดพลาด กรุณาลองใหม่" every time, and a
+ * third asking in LINE whether she had been added to a meeting yet. Both
+ * turned out to be rules rather than faults — a unit lead could not convene
+ * anything, and a circle invitation was a list of names frozen on the day it
+ * was sent. Neither said so.
+ */
+
+// ---- calling one ---------------------------------------------------------
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'unitlead',
+  body: { title: 'ประชุมหน่วย Stage', meetsOn: '2026-11-05', meetsAt: '10:00', people: [] } });
+ok('a ประธานฝ่ายย่อย can call their own meeting', r.status === 201, String(r.status));
+const unitLedMeeting = r.data.id;
+
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'member',
+  body: { title: 'ไม่ควรได้', meetsOn: '2026-11-05', people: [] } });
+ok('a member still cannot', r.status === 403 && r.data.error === 'CANNOT_CALL_MEETING', r.data.error);
+
+/**
+ * The refusal has to be a sentence somebody can act on. An unmapped code
+ * falls through to "เกิดข้อผิดพลาด กรุณาลองใหม่", which tells the person to
+ * do again the exact thing that will not work.
+ */
+const mtgStrings = (await import('node:fs')).readFileSync('public/i18n.js', 'utf8');
+const mtgErrorKeys = mtgStrings.slice(mtgStrings.indexOf('window.ERROR_KEYS'));
+for (const code of ['CANNOT_CALL_MEETING', 'NOT_MY_MEETING', 'TITLE_REQUIRED', 'NO_SUCH_MEETING']) {
+  const line = mtgErrorKeys.match(new RegExp('^\\s{2}' + code + ":\\s*'([^']+)'", 'm'));
+  ok(`${code} says what is wrong`, Boolean(line) && line[1] !== 'errGeneric', line ? line[1] : 'unmapped');
+}
+
+// ---- a ฝ่าย's own meeting is that ฝ่าย's business -------------------------
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'member' });
+ok('somebody in the ฝ่าย sees its meeting without being named on it',
+  r.data.meetings.some((m) => m.id === unitLedMeeting));
+
+r = await call(eventsApi, '/api/events?do=meetings', { as: 'merch' });
+ok('...and somebody in another ฝ่าย does not',
+  !r.data.meetings.some((m) => m.id === unitLedMeeting));
+
+// ---- an invitation written as a circle -----------------------------------
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin',
+  body: { title: 'ประชุมคณะกรรมการ (ทุกคน)', meetsOn: '2026-12-01', meetsAt: '18:00',
+    people: [], circles: ['everyone'] } });
+ok('a meeting can be called on a circle', r.status === 201, String(r.status));
+const wholeCommittee = r.data.id;
+
+const [mtgStoredRule] = await sql`SELECT circles FROM meetings WHERE id = ${wholeCommittee}`;
+ok('...and the circle is stored as the rule, not just expanded away',
+  mtgStoredRule.circles === 'everyone', mtgStoredRule.circles);
+
+/**
+ * The case that started it: somebody joins after the invitation went out.
+ * Before this they were simply never on the list, and the first anyone heard
+ * was a message asking whether they had been added.
+ */
+await sql`
+  INSERT INTO users (username, nickname, sheet_name, display_name, position, access, department, active)
+  VALUES ('Wawa_MemDecor', 'หว่าหวา', 'กิรณา เผชิญบารมี', 'หว่าหวา', 'สมาชิกฝ่ายตกแต่งสถานที่',
+          'inner', 'content', true)`;
+
+let mtgOnIt = await sql`SELECT 1 FROM meeting_people
+                     WHERE meeting_id = ${wholeCommittee} AND username = 'Wawa_MemDecor'`;
+ok('a new member is not on it the moment their row is written', mtgOnIt.length === 0);
+
+const mtgRoster = await sql`SELECT username, access, active, suspended FROM users`;
+const mtgToppedUp = await topUpStandingInvites(sql, mtgRoster);
+mtgOnIt = await sql`SELECT 1 FROM meeting_people
+                 WHERE meeting_id = ${wholeCommittee} AND username = 'Wawa_MemDecor'`;
+ok('...and is after a roster sync, without anybody re-opening the meeting',
+  mtgOnIt.length === 1, `${mtgToppedUp} added`);
+
+const mtgNamedOnly = await sql`SELECT count(*)::int AS n FROM meeting_people
+                        WHERE meeting_id = ${unitLedMeeting}`;
+ok('a meeting invited by name is left exactly as it was', mtgNamedOnly[0].n === 1, String(mtgNamedOnly[0].n));
+
+/** Running it mtgTwice must not double anybody up, or the counts go wrong. */
+await topUpStandingInvites(sql, mtgRoster);
+const mtgTwice = await sql`SELECT count(*)::int AS n FROM meeting_people
+                        WHERE meeting_id = ${wholeCommittee} AND username = 'Wawa_MemDecor'`;
+ok('topping up twice adds nobody twice', mtgTwice[0].n === 1);
+
+/** A meeting already held is history, not a guest list to amend. */
+await sql`UPDATE meetings SET status = 'held' WHERE id = ${wholeCommittee}`;
+await sql`DELETE FROM meeting_people
+          WHERE meeting_id = ${wholeCommittee} AND username = 'Wawa_MemDecor'`;
+await topUpStandingInvites(sql, mtgRoster);
+const mtgAfterwards = await sql`SELECT 1 FROM meeting_people
+                             WHERE meeting_id = ${wholeCommittee} AND username = 'Wawa_MemDecor'`;
+ok('a meeting that has happened is never added to', mtgAfterwards.length === 0);
+
+await sql`DELETE FROM users WHERE username = 'Wawa_MemDecor'`;
+
+// ===========================================================================
+head('96. The committee changes its own org chart, and adds its own people');
+// ===========================================================================
+/**
+ * เสื้อโครงการ existed in the committee for a month before it existed in the
+ * app, because adding a หน่วย meant editing a source file and shipping a
+ * deployment. None of that is a decision anybody outside the committee
+ * should be standing in the middle of.
+ */
+
+// ---- a person --------------------------------------------------------------
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'editor', body: {
+  username: 'Nope_Mem', nickname: 'ไม่', access: 'Member' } });
+ok('an editor cannot create an account', r.status === 403, r.data.error);
+
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
+  username: 'Erng_MemDecor', nickname: 'เอิง', displayName: 'Erng - Venue Decoration Member',
+  position: 'สมาชิกฝ่ายตกแต่งสถานที่', access: 'Member', department: 'content',
+  unit: 'ตกแต่งสถานที่' } });
+ok('an admin can add somebody the sheet has not caught up with', r.status === 201, r.data.error || '');
+
+const [orgMade] = await sql`SELECT * FROM users WHERE username = 'Erng_MemDecor'`;
+ok('...filed in the right ฝ่าย and หน่วย',
+  orgMade.department === 'content' && orgMade.unit === 'ตกแต่งสถานที่', `${orgMade.department}/${orgMade.unit}`);
+ok('...with no password, which is theirs to set', !orgMade.password_hash);
+ok('...and marked as not coming from the sheet', orgMade.off_sheet === true);
+
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
+  username: 'erng_memdecor', nickname: 'เอิง', access: 'Member' } });
+ok('the same name twice is refused, whatever the capitals',
+  r.status === 409 && r.data.error === 'USERNAME_TAKEN', r.data.error);
+
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
+  username: 'bad name!', nickname: 'x', access: 'Member' } });
+ok('a username that would not survive a URL is refused', r.data.error === 'BAD_USERNAME', r.data.error);
+
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'coadmin', body: {
+  username: 'Sneak_Admin', nickname: 'x', access: 'Admin' } });
+ok('a co-admin cannot create an admin and become one that way',
+  r.status === 403 && r.data.error === 'ONLY_ADMIN_SETS_ACCESS', r.data.error);
+
+/**
+ * The sync closes every account it cannot find a row for. That is right for
+ * the mtgRoster the sheet owns and would be badly wrong for somebody added here
+ * ten minutes earlier.
+ */
+await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+const [orgSurvived] = await sql`SELECT active, off_sheet FROM users WHERE username = 'Erng_MemDecor'`;
+ok('a sync does not close the account of somebody added in the app', orgSurvived.active === true);
+
+// ---- the chart -------------------------------------------------------------
+r = await call(usersApi, '/api/users?do=org', { method: 'POST', as: 'editor',
+  body: { kind: 'department', th: 'ฝ่ายลับ', en: 'Secret' } });
+ok('an editor cannot change the org chart', r.status === 403, r.data.error);
+
+r = await call(usersApi, '/api/users?do=org', { method: 'POST', as: 'admin',
+  body: { kind: 'department', th: 'ฝ่ายประเมินผล', en: 'Evaluation' } });
+ok('an admin can add a ฝ่าย', r.status === 201, r.data.error || '');
+const orgNewDept = r.data.key;
+ok('...with a readable key taken from its English name', orgNewDept === 'evaluation', orgNewDept);
+
+r = await call(usersApi, '/api/users?do=org', { as: 'admin' });
+ok('...which appears in the chart at once',
+  r.data.departments.some((d) => d.key === orgNewDept && d.added));
+
+r = await call(usersApi, '/api/users?do=org', { method: 'POST', as: 'admin',
+  body: { kind: 'unit', department: 'content', name: 'ตกแต่งสถานที่ 2' } });
+ok('a หน่วย can be added to a ฝ่าย that was transcribed in code', r.status === 201, r.data.error || '');
+
+r = await call(usersApi, '/api/users?do=org', { as: 'admin' });
+const orgContentUnits = r.data.departments.find((d) => d.key === 'content').units;
+ok('...and sits alongside the ones that were',
+  orgContentUnits.includes('ตกแต่งสถานที่') && orgContentUnits.includes('ตกแต่งสถานที่ 2'));
+
+r = await call(usersApi, '/api/users?do=org', { method: 'POST', as: 'admin',
+  body: { kind: 'unit', department: 'content', name: 'ตกแต่งสถานที่  2' } });
+ok('the same หน่วย spelled slightly differently is not added twice',
+  r.status === 409 && r.data.error === 'UNIT_ALREADY_THERE', r.data.error);
+
+/** Renaming changes the label and never the key, which is what tasks store. */
+r = await call(usersApi, '/api/users?do=org', { method: 'PATCH', as: 'admin',
+  body: { kind: 'department', key: 'hr', th: 'ฝ่ายบุคคลและประเมินผล' } });
+ok('a transcribed ฝ่าย can be renamed', r.status === 200, r.data.error || '');
+r = await call(usersApi, '/api/users?do=org', { as: 'admin' });
+const orgHr = r.data.departments.find((d) => d.key === 'hr');
+ok('...keeping its key, so nothing that points at it is orphaned',
+  orgHr.th === 'ฝ่ายบุคคลและประเมินผล' && orgHr.key === 'hr', `${orgHr.key}/${orgHr.th}`);
+
+/**
+ * Putting a หน่วย away takes it out of the pickers and leaves everybody
+ * already filed under it alone — and says how many that is, because an admin
+ * finding out later is how a section quietly disappears off a mtgRoster.
+ */
+r = await call(usersApi, '/api/users?do=org', { method: 'DELETE', as: 'admin',
+  body: { kind: 'unit', department: 'content', name: 'ตกแต่งสถานที่' } });
+ok('putting a หน่วย away says who is still filed under it',
+  r.data.stillFiledHere === 1, String(r.data.stillFiledHere));
+const [orgStillThere] = await sql`SELECT unit FROM users WHERE username = 'Erng_MemDecor'`;
+ok('...and does not quietly clear it off them', orgStillThere.unit === 'ตกแต่งสถานที่');
+
+// Back the way it was, so a later run starts from the transcribed chart.
+await sql`DELETE FROM org_units`;
+await sql`DELETE FROM org_departments`;
+await sql`DELETE FROM users WHERE username = 'Erng_MemDecor'`;
+forgetOrg();
 
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);

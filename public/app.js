@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-23b';
+  var APP_VERSION = '2026-10-24a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -991,7 +991,9 @@
     actionSheet(t('phCreateWhat'), [
       { icon: 'task', label: t('newTask'), sub: t('phNewTaskSub'), onclick: function () { openTask(null); } },
       { icon: 'event', label: t('newEvent'), sub: t('phNewEventSub'), onclick: function () { openEvent(null); } },
-      { icon: 'meeting', label: t('mtgNew'), sub: t('phNewMeetingSub'), onclick: function () { openMeeting(null); } },
+      mayCallMeeting()
+        ? { icon: 'meeting', label: t('mtgNew'), sub: t('phNewMeetingSub'), onclick: function () { openMeeting(null); } }
+        : null,
       { icon: 'upload', label: t('importTasks'), sub: t('phImportSub'), onclick: function () { openImport(); } },
     ]);
   }
@@ -3718,7 +3720,7 @@
        * in an error is worse than not offering it.
        */
       mayCreate() ? h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }) : null,
-      mayCreate() ? h('button', { class: 'btn', text: t('mtgNew'), onclick: function () { openMeeting(null); } }) : null,
+      mayCallMeeting() ? h('button', { class: 'btn', text: t('mtgNew'), onclick: function () { openMeeting(null); } }) : null,
       mayCreate() ? h('button', { class: 'btn', text: t('newEvent'), onclick: function () { openEvent(null); } }) : null,
       mayCreate() ? h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }) : null,
     ]));
@@ -8322,6 +8324,8 @@
       ]),
     ]));
 
+    if (S.canManage) orgSection(main, say);
+
     /**
      * The access level — Admin, Co-Admin or Editor.
      *
@@ -8519,6 +8523,20 @@
    */
   function mayCreate() { return S.user && S.user.access !== 'inner'; }
 
+  /**
+   * Who may call a meeting — the same rule the server applies.
+   *
+   * Offering the option to somebody the server will refuse is how two ประธาน
+   * ฝ่าย spent an evening tapping "นัดประชุม" and getting "เกิดข้อผิดพลาด
+   * กรุณาลองใหม่", which is both wrong and unhelpful. A member proposes items
+   * to a meeting they are in; they do not convene one.
+   */
+  function mayCallMeeting() {
+    if (!S.user) return false;
+    if (S.isSecretary) return true;
+    return ['admin', 'coadmin', 'editor', 'unitlead'].indexOf(S.user.access) !== -1;
+  }
+
   /** The people a unit editor may put work on: their own section, and themselves. */
   /**
    * Who is in a circle, worked out from the roster the page already holds.
@@ -8538,6 +8556,23 @@
       var mine = S.accessOrder.indexOf(u.access);
       return mine >= 0 && mine >= floor;
     }).map(function (u) { return u.username; });
+  }
+
+  /**
+   * Which circles a chosen list of people completely covers.
+   *
+   * Asked at save time rather than tracked as the organiser clicks, because
+   * what matters is the end state: a circle tapped on and then one person
+   * removed is no longer that circle, and saying it is would quietly put that
+   * person back at the next roster sync.
+   */
+  function circlesCovered(usernames) {
+    var chosen = usernames || [];
+    return (S.circles || []).map(function (c) { return c.key; }).filter(function (key) {
+      var members = circleMembers(key);
+      if (!members.length) return false;
+      return members.every(function (u) { return chosen.indexOf(u) !== -1; });
+    });
   }
 
   /** The circles a picker should offer, with how many people are in each. */
@@ -9752,6 +9787,15 @@
             meetsAt: draft.meetsAt || null, endsAt: draft.endsAt || null, place: draft.place,
             joinUrl: draft.joinUrl, agendaUrl: draft.agendaUrl,
             people: draft.assignees,
+            /**
+             * The circles the guest list adds up to, sent as well as the names.
+             *
+             * The names are what the organiser looked at and approved; the
+             * circles are what they meant. Only the circles survive as a rule,
+             * so somebody who joins the committee next week is on a meeting
+             * invited as "ทุกคน" without anybody re-opening it.
+             */
+            circles: circlesCovered(draft.assignees),
             guests: draft.guests,
             spaceId: draft.spaceId || null,
             notify: draft.notify,
@@ -12596,7 +12640,7 @@
         api('/api/tasks?do=space-leave', { method: 'POST', body: { id: sp.id } }).then(function (d) { S.spaces = d.spaces; location.hash = '#/home'; })
           .catch(function (e) { alert(errText(e.code)); });
       } }) : null,
-      mayCreate() ? h('button', { class: 'btn', onclick: function () { openMeeting(null, { spaceId: sp.id, people: people.slice(0, 40) }); } }, [icon('meeting'), phone ? null : h('span', { text: t('mtgNew') })]) : null,
+      mayCallMeeting() ? h('button', { class: 'btn', onclick: function () { openMeeting(null, { spaceId: sp.id, people: people.slice(0, 40) }); } }, [icon('meeting'), phone ? null : h('span', { text: t('mtgNew') })]) : null,
       mayCreate() ? h('button', { class: 'btn primary', onclick: function () { S.newTaskSpace = sp.id; openTask(null); } }, [icon('plus'), h('span', { text: t('newTask') })]) : null,
     ]));
 
@@ -13154,6 +13198,303 @@
    * The same dialog for a folder and a link, because they differ in one field
    * — a link has an address and a folder does not — and two dialogs that are
    * nine tenths identical drift apart.
+   */
+
+  /**
+   * The roster and the org chart, as things an admin can change here.
+   *
+   * Both used to mean editing something outside the app: a person meant a row
+   * in the Google Sheet and a wait for the next sync, and a ฝ่าย or a หน่วย
+   * meant editing lib/departments.js and a deployment — เสื้อโครงการ existed
+   * in the committee for a month before it existed in here. Neither is a
+   * decision anybody outside the committee should be in the middle of.
+   */
+  function orgSection(main, say) {
+    var box = h('section', { class: 'org-admin' });
+    main.appendChild(box);
+    drawOrg();
+
+    function drawOrg() {
+      clear(box);
+      box.appendChild(h('div', { class: 'page-head sub' }, [
+        h('h2', { text: t('orgTitle') }),
+        h('button', { class: 'btn', text: t('orgAddMember'), onclick: function () { openAddMember(say); } }),
+        h('button', { class: 'btn', text: t('orgAddDept'), onclick: function () { openDeptEditor(null, drawOrg, say); } }),
+      ]));
+      box.appendChild(h('p', { class: 'hint', text: t('orgWhy') }));
+
+      var list = h('div', { class: 'org-list' });
+      (S.departments || []).forEach(function (d) {
+        var units = h('div', { class: 'org-units' });
+        (d.units || []).forEach(function (name) { units.appendChild(unitChip(d, name, drawOrg, say)); });
+        units.appendChild(h('button', {
+          type: 'button', class: 'chip add', text: '+ ' + t('orgAddUnit'),
+          onclick: function () { addUnit(d, drawOrg, say); },
+        }));
+
+        list.appendChild(h('div', { class: 'org-dept' }, [
+          h('div', { class: 'org-dept-head' }, [
+            h('b', { text: S.lang === 'en' ? d.en : d.th }),
+            h('code', { class: 'org-key', text: d.key }),
+            d.parent ? h('small', { class: 'hint', text: t('orgUnder') + ' ' + deptLabel(d.parent) }) : null,
+            d.added ? h('span', { class: 'chip sm', text: t('orgAddedHere') }) : null,
+            h('span', { class: 'grow' }),
+            h('button', { class: 'btn ghost sm', text: t('rename'),
+              onclick: function () { openDeptEditor(d, drawOrg, say); } }),
+            h('button', { class: 'btn ghost sm danger', text: t('orgPutAway'),
+              onclick: function () { hideDept(d, drawOrg, say); } }),
+          ].filter(Boolean)),
+          units,
+        ]));
+      });
+      box.appendChild(list);
+    }
+  }
+
+  /**
+   * One หน่วย: the sub-category of a ฝ่าย.
+   *
+   * Tapping it offers the thing a หน่วย is usually wanted for — a teamspace
+   * of its own, which everybody filed under that section joins automatically
+   * rather than being added to by hand.
+   */
+  function unitChip(dept, name, redraw, say) {
+    return h('span', { class: 'chip unit' }, [
+      h('span', { text: name }),
+      h('button', {
+        type: 'button', class: 'chip-act', title: t('orgUnitSpace'), text: '⌸',
+        onclick: function () { makeUnitSpace(dept, name, say); },
+      }),
+      h('button', {
+        type: 'button', class: 'chip-act danger', title: t('orgPutAway'), text: '✕',
+        onclick: function () { hideUnit(dept, name, redraw, say); },
+      }),
+    ]);
+  }
+
+  function addUnit(dept, redraw, say) {
+    var name = prompt(t('orgUnitName') + ' — ' + (S.lang === 'en' ? dept.en : dept.th));
+    if (!name || !name.trim()) return;
+    api('/api/users?do=org', { method: 'POST', body: { kind: 'unit', department: dept.key, name: name.trim() } })
+      .then(function () { return refreshOrg(); })
+      .then(function () { say('ok', t('orgSaved')); redraw(); })
+      .catch(function (err) { say('err', errText(err.code)); });
+  }
+
+  function hideUnit(dept, name, redraw, say) {
+    if (!confirm(t('orgPutAwayAsk').replace('%s', name))) return;
+    api('/api/users?do=org', { method: 'DELETE', body: { kind: 'unit', department: dept.key, name: name } })
+      .then(function (d) { return refreshOrg().then(function () { return d; }); })
+      .then(function (d) {
+        // Said rather than hidden: the label stays on everybody already filed
+        // there, and an admin should know that before wondering where it went.
+        say('ok', d && d.stillFiledHere
+          ? t('orgPutAwayStill').replace('%n', String(d.stillFiledHere))
+          : t('orgSaved'));
+        redraw();
+      })
+      .catch(function (err) { say('err', errText(err.code)); });
+  }
+
+  function hideDept(dept, redraw, say) {
+    if (!confirm(t('orgPutAwayAsk').replace('%s', S.lang === 'en' ? dept.en : dept.th))) return;
+    api('/api/users?do=org', { method: 'PATCH', body: { kind: 'department', key: dept.key, hidden: true } })
+      .then(function () { return refreshOrg(); })
+      .then(function () { say('ok', t('orgSaved')); redraw(); })
+      .catch(function (err) { say('err', errText(err.code)); });
+  }
+
+  /** Re-read the chart so every picker on the page agrees with the change. */
+  function refreshOrg() {
+    return api('/api/meta').then(function (d) {
+      if (d && d.departments) S.departments = d.departments;
+    });
+  }
+
+  /** A teamspace for one หน่วย, with that หน่วย as its membership rule. */
+  function makeUnitSpace(dept, name, say) {
+    api('/api/tasks?do=space', {
+      method: 'POST',
+      body: { name: name, departments: [{ key: dept.key, unit: name }] },
+    })
+      .then(function () { say('ok', t('orgUnitSpaceMade').replace('%s', name)); reloadSpaces(); })
+      .catch(function (err) { say('err', errText(err.code)); });
+  }
+
+  /** New ฝ่าย, or the labels of one that exists. */
+  function openDeptEditor(dept, redraw, say) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var th = h('input', { type: 'text', maxlength: '80', value: (dept && dept.th) || '' });
+    var en = h('input', { type: 'text', maxlength: '80', value: (dept && dept.en) || '' });
+
+    var parent = h('select', {});
+    parent.appendChild(h('option', { value: '', text: t('orgNoParent') }));
+    (S.departments || []).forEach(function (d) {
+      if (dept && d.key === dept.key) return;
+      parent.appendChild(h('option', { value: d.key, text: S.lang === 'en' ? d.en : d.th }));
+    });
+    parent.value = (dept && dept.parent) || '';
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'),
+      onclick: function () {
+        if (!th.value.trim() && !en.value.trim()) { th.focus(); return; }
+        saveBtn.disabled = true;
+        var body = { kind: 'department', th: th.value.trim(), en: en.value.trim(), parent: parent.value || null };
+        if (dept) body.key = dept.key;
+        api('/api/users?do=org', { method: dept ? 'PATCH' : 'POST', body: body })
+          .then(function () { return refreshOrg(); })
+          .then(function () { veil.remove(); say('ok', t('orgSaved')); redraw(); })
+          .catch(function (err) { saveBtn.disabled = false; say('err', errText(err.code)); });
+      },
+    });
+
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(28rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: dept ? t('orgRenameDept') : t('orgAddDept') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        h('div', { class: 'field' }, [h('label', { text: t('orgNameTh') }), th]),
+        h('div', { class: 'field' }, [h('label', { text: t('orgNameEn') }), en]),
+        h('div', { class: 'field' }, [
+          h('label', { text: t('orgUnder') }), parent,
+          h('small', { class: 'hint', text: t('orgUnderWhy') }),
+        ]),
+        dept ? h('small', { class: 'hint', text: t('orgKeyFixed').replace('%s', dept.key) }) : null,
+      ].filter(Boolean)),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+    th.focus();
+  }
+
+  /**
+   * Somebody who has joined, before the sheet has caught up.
+   *
+   * No password is asked for and none is set: the person claims the account
+   * themselves the first time they sign in, which is the rule everywhere
+   * else here and the reason no admin ever knows anybody else's password.
+   */
+  function openAddMember(say) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+
+    var nickname = h('input', { type: 'text', maxlength: '60' });
+    var username = h('input', { type: 'text', maxlength: '64', autocapitalize: 'off', spellcheck: 'false' });
+    var displayName = h('input', { type: 'text', maxlength: '120' });
+    var position = h('input', { type: 'text', maxlength: '120' });
+
+    var access = h('select', {}, ['inner', 'unitlead', 'editor', 'coadmin', 'admin']
+      .filter(function (lv) { return S.canSetAccess || (lv !== 'admin' && lv !== 'coadmin'); })
+      .map(function (lv) {
+        return h('option', { value: lv, selected: lv === 'inner',
+          text: t('access' + lv.charAt(0).toUpperCase() + lv.slice(1)) });
+      }));
+
+    var dept = h('select', {});
+    var unit = h('select', {});
+    function fillDepts() {
+      clear(dept);
+      dept.appendChild(h('option', { value: '', text: t('orgPickDept') }));
+      (S.departments || []).forEach(function (d) {
+        dept.appendChild(h('option', { value: d.key, text: S.lang === 'en' ? d.en : d.th }));
+      });
+    }
+    function fillUnits() {
+      clear(unit);
+      unit.appendChild(h('option', { value: '', text: t('orgNoUnit') }));
+      var d = (S.departments || []).filter(function (x) { return x.key === dept.value; })[0];
+      (d ? d.units || [] : []).forEach(function (name) {
+        unit.appendChild(h('option', { value: name, text: name }));
+      });
+      unit.disabled = !dept.value;
+    }
+    fillDepts(); fillUnits();
+    dept.addEventListener('change', fillUnits);
+
+    /**
+     * The username, suggested from the nickname and the ตำแหน่ง, in the shape
+     * the roster already uses — Nickname_Role. Suggested, never imposed: it
+     * is the key every task assignment hangs off and the sheet owns it.
+     */
+    nickname.addEventListener('blur', function () {
+      if (username.value.trim()) return;
+      var base = nickname.value.trim().replace(/[^A-Za-z0-9]/g, '');
+      if (base) username.value = base.charAt(0).toUpperCase() + base.slice(1);
+    });
+
+    function say2(cls, text) {
+      notice.hidden = false; notice.className = 'notice ' + cls; notice.textContent = text;
+    }
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('orgAddMember'),
+      onclick: function () {
+        if (!nickname.value.trim()) { say2('err', t('orgNeedNickname')); nickname.focus(); return; }
+        if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username.value.trim())) {
+          say2('err', t('errBadUsername')); username.focus(); return;
+        }
+        saveBtn.disabled = true;
+        api('/api/users?do=add', { method: 'POST', body: {
+          username: username.value.trim(),
+          nickname: nickname.value.trim(),
+          displayName: displayName.value.trim(),
+          position: position.value.trim(),
+          access: access.value,
+          department: dept.value || null,
+          unit: unit.value || null,
+        } })
+          .then(function (d) {
+            S.users = d.users;
+            veil.remove();
+            say('ok', t('orgMemberAdded').replace('%s', d.username));
+            renderPage();
+          })
+          .catch(function (err) {
+            saveBtn.disabled = false;
+            say2('err', err.code === 'USERNAME_TAKEN'
+              ? t('errUsernameTaken') : errText(err.code));
+          });
+      },
+    });
+
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(32rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('orgAddMember') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('nickname') }), nickname]),
+          h('div', { class: 'field' }, [h('label', { text: t('username') }), username]),
+        ]),
+        h('div', { class: 'field' }, [h('label', { text: t('displayName') }), displayName]),
+        h('div', { class: 'field' }, [h('label', { text: t('position') }), position]),
+        h('div', { class: 'two' }, [
+          h('div', { class: 'field' }, [h('label', { text: t('department') }), dept]),
+          h('div', { class: 'field' }, [h('label', { text: t('orgUnit') }), unit]),
+        ]),
+        h('div', { class: 'field' }, [h('label', { text: t('access') }), access]),
+        h('small', { class: 'hint', text: t('orgAddMemberWhy') }),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+    nickname.focus();
+  }
+
+  /**
+   * Shelf editor: one folder or one link.
    */
   function openShelfEditor(node, kind, parentId, onSaved) {
     var isFolder = kind === 'folder';
