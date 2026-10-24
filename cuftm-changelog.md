@@ -11,6 +11,102 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-25 — a username can be corrected · version `2026-10-25a`
+Schema **`2026-10-25a`** (migrates itself: every foreign key gains ON UPDATE CASCADE). Still 12 functions.
+
+`Mochi_HeadOrganizer`, for somebody called Moji. The only way to fix that was to delete the account and make another one — which throws away every task she is on, every document she signed, every meeting she answered and her session. Jade's instruction was exactly the point: **แก้ username อย่าลบแอคเคาท์เดิม.**
+
+### Why it was not already possible
+A username here is not a label. It is the key about **sixty columns** hang off, across more than forty tables: `task_people`, `meeting_people`, `signatures`, `doc_steps`, `notifications`, `push_subscriptions`, `tasks.created_by`, `spaces.created_by`, and on. Changing it in one place and not the rest is worse than not changing it at all.
+
+### Two mechanisms, deliberately
+**Thirty-odd tables point at `users(username)` with a foreign key.** Those now carry `ON UPDATE CASCADE`, so they move inside the one `UPDATE`, atomically. That is the half that must not half-happen: a session or a signature pointing at a user who is not there is not a state worth risking, even for a moment.
+
+The migration adds it by **looping over what the database has** rather than thirty hand-written ALTERs, so a table added next month is covered by the next deployment without anybody remembering the block exists. It costs nothing the rest of the time — the other keys it now follows (a task id, a document id) never change.
+
+**The columns with no foreign key are swept afterwards**, in `lib/rename.js`, and are found by asking `information_schema` rather than from a list in the file. A list would be correct on the day it was written and quietly wrong the first time somebody adds a table. The pattern catches the house style — `username`, anything ending in `_by`, `owner`, `assignee` — plus two that do not follow it, and explicitly drops `line_user_id` and `user_agent`, which match the pattern and are not people.
+
+Order matters: the row first, the sweep after. At no point does a foreign key point at a user who is not there, and the sweep is idempotent, so the columns the cascade already moved simply match nothing.
+
+### What the server cannot fix
+**The sheet still says the old name.** The next sync would read that row as somebody who does not exist and make a *second* account under it. Renaming marks the person `off_sheet` so at least the real account survives, and says so on screen — but changing the Username column in the sheet is a cell nobody here can write for Jade, so the page tells her to, by name.
+
+### Smaller decisions
+- **It reports what moved**, table by table. A rename that silently touched nothing looks exactly like one that worked, and the difference matters when it is somebody's signature.
+- **Correcting only the capitals** (`jade_pres` → `Jade_Pres`) is a rename like any other. The uniqueness check excludes the row being renamed, or it would refuse to rename something for clashing with itself.
+- **Renaming yourself reloads the page.** Everything it did next would be about a name that no longer exists.
+- Identifiers go into the sweep by name, because Postgres will not take a table or column as `$1`. They come from `information_schema` and never from a request, and `quote()` refuses anything that is not a plain identifier anyway.
+
+### Tests
+- **run.mjs §99 is new (16 checks)** — an editor refused, a bad shape and a taken name refused, the account moving rather than being remade, her session surviving, every task and meeting coming with her and nothing left pointing at the old name, the sheet warning and the `off_sheet` mark, a capitals-only fix, renaming to the same thing, and a check straight at `pg_constraint` that no foreign key is left without `ON UPDATE`.
+- **`dev-tests/org.mjs` extended** — the box opening on the right name, the directory showing the new one and not the old one beside it, and the line about the sheet.
+- **1522 checks**, 33 browser suites.
+
+## 2026-10-24 — AdSense on the sign-in screen · version `2026-10-24c`
+No schema change. Still 12 functions. Shipped on top of `2026-10-24b` and `2026-10-24a` below, in one package.
+
+Jade's publisher id, `ca-pub-6829067770704612`, with Auto ads switched on for task.chulafair.com.
+
+### Why the tag is not in index.html
+Because **index.html is the whole app.** One page, every screen. The tag Google hands you goes in the head, and in a single-page app that is not "ads on the login page" — it is Auto ads over the task board, inside documents, and on top of the committee's meeting agendas, for two hundred people trying to work.
+
+So the script is injected by `renderAuth()` and by nothing else. Somebody who already has a session never draws that screen, so the script is never fetched for them at all.
+
+### Signing in starts the app over
+Auto ads does not stop when the screen it loaded on goes away: it keeps watching the page and placing anchors and overlays wherever it likes. Taking the elements away by hand is a game nobody wins, so `afterSignIn()` reloads instead — **but only when a script was actually loaded**, which is the signed-out case and only that.
+
+The cost is close to nothing. Somebody signing in is already waiting on a round trip, the signed-in app is about to fetch everything anyway, and anybody with a session skips the whole path.
+
+### It only runs on the real site
+`ADSENSE_HOSTS = ['task.chulafair.com']`, plus `?ads=1` for testing. AdSense serves nothing on localhost anyway, and without the gate every browser suite in `dev-tests` would have started reloading mid-sign-in for a feature none of them are about. Clearing `ADSENSE_CLIENT` to `''` switches the whole thing off: no script, no reload, no change in behaviour.
+
+### Worth knowing before expecting money
+- **A sign-in box is thin content.** AdSense's policies want pages with something on them; a login screen for a private committee tool is the kind of page that can be found non-compliant, and the account is Jade's to lose. Putting the ads on the public holding page instead (`COMING_SOON`) would be the safer surface — say the word and it is a one-line change.
+- **The audience is about two hundred people signing in a few times a week.** The number this earns is not going to be a number.
+
+### Tests
+- **run.mjs §98 is new (6 checks)** — nothing in index.html, the script loaded from `renderAuth` and nowhere else, the host gate present, the reload conditional on a script having loaded, and both sign-in paths going through `afterSignIn`.
+- **`dev-tests/ads.mjs` is new** — with Google's script answered locally, so the suite does not depend on a third party being up: the tag on the sign-in screen with the right publisher id, gone once inside the app, never loaded for somebody with a session, and never loaded on localhost.
+- **1506 checks**, 33 browser suites.
+
+## 2026-10-24 — groups, labels, and anybody may call a meeting · version `2026-10-24b`
+Schema **`2026-10-24b`** (migrates itself: `circle_groups`, `circle_people`, `user_tags`, `task_tags`). Still 12 functions. Shipped on top of `2026-10-24a` below, in one package.
+
+### สมาชิกฝ่ายเรียกประชุมได้
+`2026-10-24a` widened `canCreateMeeting` from editors to unit leads, which fixed the two ประธานฝ่าย who reported it and left the identical trap one rung lower. Jade asked for the rule to go, so it has: **anybody with an account may call a meeting.**
+
+Nothing is given away by that. Calling a meeting invites people, it does not oblige them — they decline, only the organiser can change it, and who may *see* one is a separate rule. The + sheet now asks its four choices separately rather than gating the whole thing on `mayCreate()`: a สมาชิกฝ่าย may book a room and may not put work on anybody, and one blanket gate gets one of those two wrong whichever way it is set. §67's old "a member cannot call a meeting" check is now the opposite assertion, with the reason beside it.
+
+### Who is on the board, when the ladder gets it wrong
+The four circles — คณะกรรมการบริหาร, คณะทำงานหลัก, หัวหน้าทั้งหมด, ทุกคน — were questions asked of the roster: "who is at least a co-admin right now". That is a good first answer and was treated as the only one, which left two things unsayable. ต๊อดติ is a co-admin because he manages people, which is *a* reason to be on the board; the ผู้ช่วยประธาน who sits on the board without that access level could not be on it at all.
+
+**`circle_people` holds `in` and `out` rows, not a membership list.** The derivation keeps running and these are the exceptions to it, which is why the admin page marks a pinned name as pinned: "on the board because they are a co-admin" and "on the board because somebody said so" are different facts, and only the second is anybody's to take back. Order matters in `inCircle` — a closed or suspended account is outside every circle whatever anybody pinned, because a circle is a way of reaching people.
+
+### Groups the committee invents
+`circle_groups` holds the ones nobody transcribed: "ทีมรื้อของวันเสาร์". A group has **no access floor**, so nothing derives membership — people are put in, or they walk in, and `selfJoin` is the difference. `applyCircles()` folds them into `CIRCLES` and `CIRCLE_KEYS` **in place**, on the same cached read as the org chart, so every picker in the app gets them without a single call site knowing they exist. Calling a meeting on one, and the standing-circle re-apply from `2026-10-24a`, both work for free; §97 checks the meeting case.
+
+The four built-in circles cannot be renamed from a form (`NOT_A_MADE_GROUP`). They are described in `lib/circles.js` and referred to by name across the app; renaming คณะทำงานหลัก from the admin page would leave the code and the committee talking about different things.
+
+### The page stopped working out who is in a circle
+`circleMembers()` recomputed the access ladder in the browser, which was the same rule the server used and is no longer the whole rule. The server now stamps every directory row with the circles that person is actually in, and the page reads rather than recomputes. One answer, from the side that owns it — and the ladder logic is gone from `public/app.js` entirely.
+
+### Labels people keep for themselves
+`user_tags` and `task_tags`, both scoped to a username. Deliberately **not a second ฝ่าย system**: a ฝ่าย says who you answer to and who may see what; "รอของ" means something only to the person who wrote it, and a shared label would have to be agreed on — which is the thing people reach for a private one to avoid. Up to twenty each, because a filter row of forty labels is not a filter row.
+
+Three decisions worth keeping:
+- **A label can go on anybody's task you can see**, not only your own. The case it is for is waiting on work that is not yours.
+- **It lives on the read pane, saved on the tap**, not in the form behind แก้ไข — otherwise the person who may not change a task could not label it, which is exactly that person.
+- **The same task going out to two people carries different labels**, and neither learns anything about the other's. §97 checks both directions, including that the tag list of somebody else comes back empty rather than filtered.
+
+Deleting a label takes it off the work it was on, by the foreign key: a label nobody can see is not worth keeping on anybody's task.
+
+### Tests
+- **run.mjs §97 is new (27 checks)** — pinning in and out and the directory agreeing, un-pinning handing somebody back to the ladder, a suspended account outside every circle anyway, an editor refused a group, a made group deriving nobody, walking into an open one, being refused the board and a closed group and somebody else's membership, the built-ins refusing a rename, a meeting called on a made group inviting everybody in it, and the whole of labels including the privacy in both directions.
+- §67's member-cannot-call-a-meeting check is now its opposite; §95 gained the สมาชิกฝ่าย case and a check that calling one does not make them able to rewrite it.
+- The reset block clears `circle_people`, `circle_groups` and `user_tags`.
+- **`dev-tests/org.mjs` extended** — the circles listed with what they derive from, inventing a group, putting somebody on the board through the members dialog and seeing them marked as pinned, and on the profile: joining an open group, making a label, and finding it above the work page. It clears its own groups, pins and labels at both ends.
+- **1500 checks**, 32 browser suites.
+
 ## 2026-10-24 — two bug reports, and the committee's own org chart · version `2026-10-24a`
 Schema **`2026-10-24a`** (migrates itself: `meetings.circles`, `users.off_sheet`, and the two `org_*` tables). Still 12 functions.
 

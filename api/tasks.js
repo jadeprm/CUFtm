@@ -167,6 +167,26 @@ async function readSpace(sql, me, value) {
   return { id };
 }
 
+/**
+ * The labels THIS person has put on these tasks.
+ *
+ * One query, and only ever their own rows: a tag is private, so the same
+ * task going out to two people carries different labels, and neither of
+ * them learns anything about the other's.
+ */
+async function myTags(sql, me) {
+  const rows = await sql`SELECT task_id, name FROM task_tags WHERE username = ${me.username}`;
+  const by = new Map();
+  for (const r of rows) {
+    if (!by.has(r.task_id)) by.set(r.task_id, []);
+    by.get(r.task_id).push(r.name);
+  }
+  return by;
+}
+
+const withTags = (tasks, by) =>
+  tasks.map((task) => ({ ...task, tags: (by.get(task.id) || []).slice().sort() }));
+
 /** Stamps each task with what this person is allowed to do to it. */
 const withRights = (me, tasks) =>
   tasks.map((task) => ({
@@ -373,9 +393,10 @@ async function ownerTask(sql, me, taskId) {
 
 const reply = async (sql, me, id) => {
   const all = await assembled(sql);
+  const tagged = await myTags(sql, me);
   return json({
-    task: withRights(me, all.filter((t) => t.id === id))[0],
-    tasks: withRights(me, all.filter((x) => canSeeTask(me, x))),
+    task: withTags(withRights(me, all.filter((t) => t.id === id)), tagged)[0],
+    tasks: withTags(withRights(me, all.filter((x) => canSeeTask(me, x))), tagged),
   });
 };
 
@@ -575,13 +596,45 @@ async function handler(request) {
 
     if (request.method === 'GET') {
       const all = await assembled(sql);
+      const tagged = await myTags(sql, me);
       // Filtering here rather than in SQL keeps one definition of the rule,
       // in lib/scope.js, shared with the client's own display logic.
       return json({
-        tasks: withRights(me, all.filter((task) => canSeeTask(me, task))),
+        tasks: withTags(withRights(me, all.filter((task) => canSeeTask(me, task))), tagged),
         seesEverything: seesEverything(me),
         myDepartments: [...accessSet(me)],
       });
+    }
+
+    /**
+     * Putting one of my own labels on a task, or taking it off.
+     *
+     * Allowed on any task this person can see, including somebody else's:
+     * the label says something about how THEY are tracking it, which is
+     * exactly the case where they are waiting on work that is not theirs.
+     */
+    if (action === 'tag' && (request.method === 'POST' || request.method === 'DELETE')) {
+      const body = await request.json().catch(() => ({}));
+      const id = clean(body.id ?? url.searchParams.get('id'), 64);
+      const name = clean(body.name ?? url.searchParams.get('name'), 40);
+      if (!id || !name) return json({ error: 'NOTHING_TO_DO' }, 400);
+
+      const [task] = (await assembled(sql)).filter((t) => t.id === id);
+      if (!task) return json({ error: 'NO_SUCH_TASK' }, 404);
+      if (!canSeeTask(me, task)) return json({ error: 'NOT_ALLOWED' }, 403);
+
+      if (request.method === 'POST') {
+        const [mine] = await sql`SELECT 1 FROM user_tags
+                                 WHERE username = ${me.username} AND name = ${name}`;
+        if (!mine) return json({ error: 'NO_SUCH_TAG' }, 404);
+        await sql`INSERT INTO task_tags (task_id, username, name)
+                  VALUES (${id}, ${me.username}, ${name}) ON CONFLICT DO NOTHING`;
+      } else {
+        await sql`DELETE FROM task_tags
+                  WHERE task_id = ${id} AND username = ${me.username} AND name = ${name}`;
+      }
+      const tagged = await myTags(sql, me);
+      return json({ ok: true, id, tags: tagged.get(id) || [] });
     }
 
     if (request.method === 'POST') {
@@ -693,9 +746,10 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
+      const tagged = await myTags(sql, me);
       return json({
-        task: withRights(me, all.filter((t) => t.id === id))[0],
-        tasks: withRights(me, all.filter((x) => canSeeTask(me, x))),
+        task: withTags(withRights(me, all.filter((t) => t.id === id)), tagged)[0],
+        tasks: withTags(withRights(me, all.filter((x) => canSeeTask(me, x))), tagged),
       }, 201);
     }
 
@@ -876,9 +930,10 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
+      const tagged = await myTags(sql, me);
       return json({
-        task: withRights(me, all.filter((t) => t.id === id))[0],
-        tasks: withRights(me, all.filter((x) => canSeeTask(me, x))),
+        task: withTags(withRights(me, all.filter((t) => t.id === id)), tagged)[0],
+        tasks: withTags(withRights(me, all.filter((x) => canSeeTask(me, x))), tagged),
       });
     }
 
@@ -893,7 +948,9 @@ async function handler(request) {
       if (target && !canDeleteTask(me, target)) return json({ error: 'NOT_TASK_OWNER' }, 403);
       await sql`DELETE FROM tasks WHERE id = ${id}`;
       await sql`DELETE FROM reminders_sent WHERE task_id = ${id}`;
-      return json({ ok: true, tasks: withRights(me, (await assembled(sql)).filter((x) => canSeeTask(me, x))) });
+      return json({ ok: true,
+        tasks: withTags(withRights(me, (await assembled(sql)).filter((x) => canSeeTask(me, x))),
+          await myTags(sql, me)) });
     }
 
     return json({ error: 'METHOD' }, 405);

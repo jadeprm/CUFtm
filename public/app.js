@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-24a';
+  var APP_VERSION = '2026-10-25a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -644,6 +644,72 @@
     };
   }
 
+
+  /* ---------- AdSense, on the sign-in screen and nowhere else ------------ */
+
+  /**
+   * The publisher id, or '' to switch the whole thing off.
+   *
+   * Jade's, and the one place to change or clear it. Everything below is
+   * written so that an empty string here means no script is fetched, no
+   * reload happens, and the app behaves exactly as it did before.
+   */
+  var ADSENSE_CLIENT = 'ca-pub-6829067770704612';
+
+  /**
+   * And where it is allowed to run.
+   *
+   * AdSense only serves on the site it approved, so a localhost or preview
+   * build asking for the script gets nothing but a failed request and, worse,
+   * the reload below for no reason — which would change the timing of every
+   * browser suite in dev-tests for a feature none of them are about. The
+   * one host that is the real site, plus ?ads=1 for testing the behaviour
+   * itself.
+   */
+  var ADSENSE_HOSTS = ['task.chulafair.com'];
+  var adsWanted = ADSENSE_HOSTS.indexOf(location.hostname) !== -1
+    || /[?&]ads=1/.test(location.search);
+
+  var adsLoaded = false;
+
+  /**
+   * Why this is injected rather than sitting in index.html.
+   *
+   * index.html is the whole app — one page, every screen. A script tag in
+   * the head would put Auto ads on the task board, inside documents, over
+   * the committee's meeting agendas, which is not what was asked for and is
+   * not something two hundred people should have to look at while working.
+   * Loading it when the sign-in screen draws keeps it to the one screen
+   * somebody sees before they are inside anything.
+   */
+  function loadLoginAds() {
+    if (adsLoaded || !adsWanted || !ADSENSE_CLIENT) return;
+    adsLoaded = true;
+    var s = document.createElement('script');
+    s.async = true;
+    s.crossOrigin = 'anonymous';
+    s.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=' +
+      encodeURIComponent(ADSENSE_CLIENT);
+    // A blocked or failed script must not take the sign-in box with it.
+    s.onerror = function () {};
+    document.head.appendChild(s);
+  }
+
+  /**
+   * Signing in starts the app over, when and only when an ad script loaded.
+   *
+   * Auto ads keeps watching the page after it loads and puts anchors and
+   * overlays wherever it likes, so taking the elements away by hand is a
+   * game nobody wins. A reload is the one thing that is certainly clean —
+   * and it costs almost nothing here, because the signed-in app is about to
+   * fetch everything anyway, and anybody who already has a session never
+   * draws the sign-in screen and so never loads the script at all.
+   */
+  function afterSignIn() {
+    if (adsLoaded) { location.reload(); return; }
+    boot();
+  }
+
   function renderAuth() {
     if (S.lang === 'en' && !window.STRINGS.en) { ensureLang('en', renderAuth); return; }
     bootDone();
@@ -694,6 +760,8 @@
         : '';
       $('in-password').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
     }
+
+    loadLoginAds();
   }
 
   $('auth-form').addEventListener('submit', function (e) {
@@ -725,7 +793,7 @@
         .then(function (data) {
           S.user = data.user; S.lang = data.user.lang || S.lang;
           if (data.user.theme) applyTheme(data.user.theme);
-          boot();
+          afterSignIn();
         })
         .catch(function (err) { showAuthNotice(errText(err.code)); });
     } else {
@@ -733,7 +801,7 @@
         .then(function (data) {
           S.user = data.user; S.lang = data.user.lang || S.lang;
           if (data.user.theme) applyTheme(data.user.theme);
-          boot();
+          afterSignIn();
         })
         .catch(function (err) {
           if (err.code === 'RESET_PENDING') {
@@ -986,15 +1054,21 @@
     return veil;
   }
 
-  /** What the + button offers on the work page and the calendar. */
+  /**
+   * What the + button offers, asked choice by choice.
+   *
+   * A สมาชิกฝ่าย may call a meeting and may not put work on anybody, so a
+   * single mayCreate() gate on the whole sheet gets one of those two wrong
+   * whichever way it is set.
+   */
   function openCreateSheet() {
     actionSheet(t('phCreateWhat'), [
-      { icon: 'task', label: t('newTask'), sub: t('phNewTaskSub'), onclick: function () { openTask(null); } },
-      { icon: 'event', label: t('newEvent'), sub: t('phNewEventSub'), onclick: function () { openEvent(null); } },
+      mayCreate() ? { icon: 'task', label: t('newTask'), sub: t('phNewTaskSub'), onclick: function () { openTask(null); } } : null,
+      mayCreate() ? { icon: 'event', label: t('newEvent'), sub: t('phNewEventSub'), onclick: function () { openEvent(null); } } : null,
       mayCallMeeting()
         ? { icon: 'meeting', label: t('mtgNew'), sub: t('phNewMeetingSub'), onclick: function () { openMeeting(null); } }
         : null,
-      { icon: 'upload', label: t('importTasks'), sub: t('phImportSub'), onclick: function () { openImport(); } },
+      mayCreate() ? { icon: 'upload', label: t('importTasks'), sub: t('phImportSub'), onclick: function () { openImport(); } } : null,
     ]);
   }
 
@@ -1007,9 +1081,9 @@
     var fab = $('fab');
     if (!fab) return;
     var action = null;
-    if ((S.page === 'work' || S.page === 'calendar') && mayCreate()) action = openCreateSheet;
+    if ((S.page === 'work' || S.page === 'calendar') && (mayCreate() || mayCallMeeting())) action = openCreateSheet;
     if (S.page === 'docs') action = function () { openDocUpload(); };
-    if (S.page === 'home' && mayCreate()) action = openCreateSheet;
+    if (S.page === 'home' && (mayCreate() || mayCallMeeting())) action = openCreateSheet;
     // On a phone the schedule's own buttons sit above the fold; the + adds an appointment.
     if (S.page === 'schedule') action = function () { openAppointment(null, { on: S.schedAnchor || todayIso() }); };
     if (S.page === 'space' && mayCreate()) action = function () { S.newTaskSpace = S.spaceId; openTask(null); };
@@ -3330,6 +3404,8 @@
       if (S.role && (roleOf(task) || 'none') !== S.role) return false;
       if (S.prio && task.priority !== S.prio) return false;
       if (S.unit && task.unit !== S.unit) return false;
+      // My own label, which nobody else's copy of this task carries.
+      if (S.tag && (task.tags || []).indexOf(S.tag) === -1) return false;
       if (S.dept) {
         var inDept = task.department === S.dept ||
           (task.departments || []).some(function (d) { return d.key === S.dept; });
@@ -3470,7 +3546,26 @@
 
   /** How many of the four are narrowing the list right now. */
   function taskFilterCount() {
-    return [S.prio, S.dept, S.unit, S.who].filter(Boolean).length;
+    return [S.prio, S.dept, S.unit, S.who, S.tag].filter(Boolean).length;
+  }
+
+  /**
+   * My labels as a row of chips above the list.
+   *
+   * A row rather than another dropdown: these are the person's own words for
+   * their own work, there are at most twenty of them, and one tap is the
+   * whole point. Drawn only once they have made one — an empty row of
+   * nothing would be a permanent reminder of a feature nobody asked for.
+   */
+  function tagChips() {
+    if (!(S.myTags || []).length) return null;
+    return h('div', { class: 'tag-row' }, S.myTags.map(function (tag) {
+      var n = S.tasks.filter(function (x) { return (x.tags || []).indexOf(tag.name) !== -1; }).length;
+      return h('button', {
+        type: 'button', class: 'chip' + (S.tag === tag.name ? ' on' : ''),
+        onclick: function () { S.tag = S.tag === tag.name ? '' : tag.name; renderPage(); },
+      }, [tag.name, h('span', { class: 'n', text: String(n) })]);
+    }));
   }
 
   /* ---------- the board ------------------------------------------------- */
@@ -3836,11 +3931,12 @@
         if (S.dept) named.push(deptLabel(S.dept));
         if (S.unit) named.push(S.unit);
         if (S.who) named.push(nameOf(S.who));
+        if (S.tag) named.push(S.tag);
         main.appendChild(h('div', { class: 'ph-active' }, named.map(function (x) {
           return h('span', { class: 'chip', text: x });
         }).concat([h('button', {
           type: 'button', text: t('phClearFilters'),
-          onclick: function () { S.prio = ''; S.dept = ''; S.unit = ''; S.who = ''; renderPage(); },
+          onclick: function () { S.prio = ''; S.dept = ''; S.unit = ''; S.who = ''; S.tag = ''; renderPage(); },
         })])));
       }
     } else {
@@ -3850,6 +3946,9 @@
         h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
       ]));
     }
+
+    var chips = tagChips();
+    if (chips) main.appendChild(chips);
 
     // On a phone this line cost two lines above the first task; the role tabs
     // say the same thing more usefully.
@@ -5097,6 +5196,30 @@
      * handed in get a line each with a count, because knowing there are three
      * attachments is half the reason to open the other tabs.
      */
+    /** My labels, as chips that save on the tap. */
+    function taskTagRow() {
+      var row = h('span', { class: 'selected tag-pick' });
+      (S.myTags || []).forEach(function (tag) {
+        var on = (task.tags || []).indexOf(tag.name) !== -1;
+        row.appendChild(h('button', {
+          type: 'button', class: 'chip' + (on ? ' on' : ''), text: tag.name,
+          onclick: function (e) {
+            e.target.disabled = true;
+            api('/api/tasks?do=tag', {
+              method: on ? 'DELETE' : 'POST',
+              body: { id: task.id, name: tag.name },
+            }).then(function (d) {
+              task.tags = d.tags || [];
+              var inList = (S.tasks || []).filter(function (x) { return x.id === task.id; })[0];
+              if (inList) inList.tags = task.tags;
+              paintPanes();
+            }).catch(function (err) { e.target.disabled = false; alert(errText(err.code)); });
+          },
+        }));
+      });
+      return row;
+    }
+
     function buildViewPane() {
       var parts = task.parts || [];
       var links = task.links || [];
@@ -5162,6 +5285,16 @@
       }
       rows.push(vRow(t('createdBy'), h('span', { class: 'selected' },
         [h('span', { class: 'chip who' }, [avatarNode(task.createdBy, 'sm'), nameOf(task.createdBy)])])));
+      /**
+       * My own labels on this task.
+       *
+       * On the read pane rather than in the form, and saved the moment they
+       * are tapped, because a label is not part of the task: nobody else can
+       * see it, and putting it behind แก้ไข would mean somebody who is not
+       * allowed to change the task could not label it — which is exactly the
+       * person waiting on work that is not theirs.
+       */
+      if ((S.myTags || []).length) rows.push(vRow(t('tagMine'), taskTagRow()));
       // What this person hears about this one task.
       rows.push(vRow(t('notifyThis'), notifyControl('task', task.id, taskCategory(task))));
 
@@ -6840,11 +6973,126 @@
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
         h('div', { class: 'field', id: 'notify-settings' }, [h('label', { text: t('notifySettings') }), notifyBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
+        h('div', { class: 'field' }, [h('label', { text: t('grpMine') }), myGroupsBox()]),
+        h('div', { class: 'field' }, [h('label', { text: t('tagMine') }), myTagsBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('sigTitle') }), signatureBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('freeTitle') }), availabilityBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
         versionBox(),
     ].filter(Boolean).forEach(function (el) { pfRight.appendChild(el); });
+  }
+
+
+  /**
+   * The groups I am in, and the open ones I could walk into.
+   *
+   * Only the ones the committee invented are shown as joinable. คณะกรรมการ
+   * บริหาร is not a thing somebody joins by saying so, and offering a button
+   * that the server will refuse is the mistake that cost two ประธานฝ่าย an
+   * evening on the meeting form.
+   */
+  function myGroupsBox() {
+    var box = h('div', { class: 'grp-mine' });
+    draw();
+    return box;
+
+    function draw() {
+      clear(box);
+      var made = (S.circles || []).filter(function (c) { return c.made; });
+      var born = (S.circles || []).filter(function (c) { return !c.made && inCircle(c.key); });
+
+      if (born.length) {
+        box.appendChild(h('div', { class: 'org-units' }, born.map(function (c) {
+          return h('span', { class: 'chip', title: c.note || '',
+            text: S.lang === 'en' ? c.en : c.th });
+        })));
+        box.appendChild(h('small', { class: 'hint', text: t('grpBornWhy') }));
+      }
+
+      if (!made.length) {
+        box.appendChild(h('small', { class: 'hint', text: t('grpNoneYet') }));
+        return;
+      }
+
+      box.appendChild(h('div', { class: 'org-units' }, made.map(function (c) {
+        var mine = inCircle(c.key);
+        // A closed group still shows, because being in one is worth knowing;
+        // it simply does not offer a button that would be refused.
+        if (!c.selfJoin) {
+          return h('span', { class: 'chip' + (mine ? ' on' : ''), title: c.note || '',
+            text: (S.lang === 'en' ? c.en : c.th) + (mine ? '' : ' ·') });
+        }
+        return h('button', {
+          type: 'button', class: 'chip' + (mine ? ' on' : ''), title: c.note || '',
+          text: (mine ? '✓ ' : '+ ') + (S.lang === 'en' ? c.en : c.th),
+          onclick: function () {
+            api('/api/users?do=groups', {
+              method: mine ? 'DELETE' : 'POST',
+              body: { kind: 'member', circle: c.key },
+            })
+              .then(function () { return api('/api/users'); })
+              .then(function (d) { S.users = d.users; draw(); })
+              .catch(function (err) { alert(errText(err.code)); });
+          },
+        });
+      })));
+    }
+  }
+
+  /**
+   * Labels I keep for my own work, which nobody else can see.
+   *
+   * Not a second ฝ่าย system and deliberately private: a ฝ่าย says who you
+   * answer to and who may see what; "รอของ" means something only to the
+   * person who wrote it. A shared label would have to be agreed on, which is
+   * the thing people reach for a private one to avoid.
+   */
+  function myTagsBox() {
+    var box = h('div', { class: 'tag-mine' });
+    draw();
+    return box;
+
+    function draw() {
+      clear(box);
+      var chips = h('div', { class: 'org-units' });
+      (S.myTags || []).forEach(function (tag) {
+        chips.appendChild(h('span', { class: 'chip unit' }, [
+          h('span', { text: tag.name }),
+          h('button', {
+            type: 'button', class: 'chip-act danger', text: '✕', title: t('tagRemove'),
+            onclick: function () {
+              if (!confirm(t('tagRemoveAsk').replace('%s', tag.name))) return;
+              api('/api/users?do=tags&name=' + encodeURIComponent(tag.name), { method: 'DELETE' })
+                .then(function (d) {
+                  S.myTags = d.tags || [];
+                  draw();
+                  // The rows on tasks went with it, so the page's copy is stale.
+                  return api('/api/tasks').then(function (x) { S.tasks = x.tasks; });
+                })
+                .catch(function (err) { alert(errText(err.code)); });
+            },
+          }),
+        ]));
+      });
+
+      var input = h('input', { type: 'text', maxlength: '40', placeholder: t('tagNew') });
+      function add() {
+        var name = input.value.trim();
+        if (!name) return;
+        api('/api/users?do=tags', { method: 'POST', body: { name: name } })
+          .then(function (d) { S.myTags = d.tags || []; draw(); })
+          .catch(function (err) { alert(errText(err.code)); });
+      }
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); add(); }
+      });
+
+      box.appendChild(chips);
+      box.appendChild(h('div', { class: 'tag-add' }, [
+        input, h('button', { class: 'btn sm', text: t('tagAdd'), onclick: add }),
+      ]));
+      box.appendChild(h('small', { class: 'hint', text: t('tagWhy') }));
+    }
   }
 
   /**
@@ -8243,6 +8491,10 @@
           ? [h('small', { style: 'color:var(--ink-faint)', text: errText(blocked) })]
           : [
             h('button', {
+              class: 'btn sm', text: t('renameUser'),
+              onclick: function () { openRename(u); },
+            }),
+            h('button', {
               class: 'btn sm', text: u.resetAllowed ? t('cancelReset') : t('allowReset'),
               onclick: function () { manage(u, { allowReset: !u.resetAllowed }); },
             }),
@@ -8325,6 +8577,7 @@
     ]));
 
     if (S.canManage) orgSection(main, say);
+    if (S.canManage) groupSection(main, say);
 
     /**
      * The access level — Admin, Co-Admin or Editor.
@@ -8524,38 +8777,37 @@
   function mayCreate() { return S.user && S.user.access !== 'inner'; }
 
   /**
-   * Who may call a meeting — the same rule the server applies.
+   * Who may call a meeting — the same rule the server applies: everybody.
    *
-   * Offering the option to somebody the server will refuse is how two ประธาน
-   * ฝ่าย spent an evening tapping "นัดประชุม" and getting "เกิดข้อผิดพลาด
-   * กรุณาลองใหม่", which is both wrong and unhelpful. A member proposes items
-   * to a meeting they are in; they do not convene one.
+   * Kept as its own function rather than inlined, because it is NOT the same
+   * question as mayCreate(). A สมาชิกฝ่าย cannot put work on other people and
+   * can book a room with them, and the + sheet offers each of its four
+   * choices on its own answer rather than on one blanket one.
    */
-  function mayCallMeeting() {
-    if (!S.user) return false;
-    if (S.isSecretary) return true;
-    return ['admin', 'coadmin', 'editor', 'unitlead'].indexOf(S.user.access) !== -1;
-  }
+  function mayCallMeeting() { return Boolean(S.user); }
 
   /** The people a unit editor may put work on: their own section, and themselves. */
   /**
-   * Who is in a circle, worked out from the roster the page already holds.
+   * Who is in a circle, read off the roster the page already holds.
    *
-   * The same rule as the server's: a circle is everybody at or above a floor
-   * on the access ladder, minus closed and suspended accounts. The server
-   * expands every circle again when anything is saved, so this list decides
-   * what the picker shows and never what is stored.
+   * This used to work the access ladder out here, which was the same rule
+   * the server used and is no longer the whole rule: an admin can put
+   * somebody into คณะกรรมการบริหาร or keep them out of it, and a group the
+   * committee invented derives nothing from access at all. So the server
+   * stamps every directory row with the circles that person is actually in,
+   * and the page reads rather than recomputes — one answer, from the side
+   * that owns it.
    */
   function circleMembers(key) {
-    var circle = (S.circles || []).filter(function (c) { return c.key === key; })[0];
-    if (!circle || !S.accessOrder) return [];
-    var floor = S.accessOrder.indexOf(circle.floor);
-    if (floor < 0) return [];
-    return (S.users || []).filter(function (u) {
-      if (!u.active || u.suspended) return false;
-      var mine = S.accessOrder.indexOf(u.access);
-      return mine >= 0 && mine >= floor;
-    }).map(function (u) { return u.username; });
+    return (S.users || [])
+      .filter(function (u) { return (u.circles || []).indexOf(key) !== -1; })
+      .map(function (u) { return u.username; });
+  }
+
+  /** Am I in this one? */
+  function inCircle(key) {
+    var me = (S.users || []).filter(function (u) { return u.username === S.user.username; })[0];
+    return Boolean(me && (me.circles || []).indexOf(key) !== -1);
   }
 
   /**
@@ -12774,8 +13026,12 @@
       api('/api/events'),
       api('/api/events?do=meetings').catch(function () { return { meetings: [] }; }),
       api('/api/tasks?do=spaces').catch(function () { return { spaces: [] }; }),
+      // My own labels. Caught rather than awaited hard: a page that will not
+      // load because somebody's private tags would not come back is absurd.
+      api('/api/users?do=tags').catch(function () { return { tags: [] }; }),
     ]).then(function (res) {
       S.spaces = (res[6] && res[6].spaces) || [];
+      S.myTags = (res[7] && res[7].tags) || [];
       S.serverVersion = res[0].version || null;
       S.departments = res[0].departments;
       S.circles = res[0].circles || [];
@@ -13199,6 +13455,279 @@
    * — a link has an address and a folder does not — and two dialogs that are
    * nine tenths identical drift apart.
    */
+
+
+
+  /**
+   * Correcting a username, with the account left where it is.
+   *
+   * The username is shown everywhere and editable nowhere, because it is the
+   * key every assignment, signature and invitation hangs off — so the only
+   * way to fix "Mochi_HeadOrganizer" for somebody called Moji used to be to
+   * delete the account and make another one, losing all of it. This moves
+   * the key instead, and says afterwards what moved with it.
+   */
+  function openRename(user) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+    var input = h('input', {
+      type: 'text', maxlength: '64', value: user.username,
+      autocapitalize: 'off', spellcheck: 'false',
+    });
+
+    function say(cls, text) {
+      notice.hidden = false; notice.className = 'notice ' + cls; notice.textContent = text;
+    }
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'),
+      onclick: function () {
+        var want = input.value.trim();
+        if (want === user.username) { veil.remove(); return; }
+        if (!/^[A-Za-z0-9_.-]{3,64}$/.test(want)) { say('err', t('errBadUsername')); input.focus(); return; }
+        saveBtn.disabled = true;
+        api('/api/users?do=rename', { method: 'POST', body: { username: user.username, newUsername: want } })
+          .then(function (d) {
+            /**
+             * Renaming yourself leaves this page holding a name that no
+             * longer exists, and everything it does next would be about
+             * nobody. Start again rather than patch it up.
+             */
+            if (d.itWasMe) { location.reload(); return; }
+            S.users = d.users;
+            veil.remove();
+            var carried = (d.moved || []).reduce(function (n, x) { return n + x.rows; }, 0);
+            S.adminNotice = {
+              kind: d.fixTheSheet ? 'warn' : 'ok',
+              text: t('renameDone').replace('%a', d.from).replace('%b', d.to)
+                .replace('%n', String(carried)) +
+                (d.fixTheSheet ? '  ·  ' + t('renameFixSheet').replace('%a', d.from) : ''),
+            };
+            renderPage();
+          })
+          .catch(function (err) {
+            saveBtn.disabled = false;
+            say('err', err.code === 'USERNAME_TAKEN' ? t('errUsernameTaken') : errText(err.code));
+          });
+      },
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); saveBtn.click(); }
+    });
+
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(28rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('renameUser') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        h('p', { class: 'hint', text: user.displayName }),
+        h('div', { class: 'field' }, [h('label', { text: t('username') }), input]),
+        h('small', { class: 'hint', text: t('renameWhy') }),
+        h('small', { class: 'hint', text: t('renameSheetWarn') }),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  /**
+   * The committee's groups, and who is in them.
+   *
+   * Four of these are questions asked of the roster — "who is at least an
+   * editor right now" — which was treated as the whole answer and is only a
+   * good first one. ต๊อดติ is a co-admin because he manages people; the
+   * ผู้ช่วยประธาน who sits on the board without that access level could not
+   * be on it at all. Both are decisions now, on top of the rule rather than
+   * instead of it, which is why a pinned person is marked as pinned.
+   */
+  function groupSection(main, say) {
+    var box = h('section', { class: 'org-admin' });
+    main.appendChild(box);
+    var state = { circles: [] };
+    load();
+
+    function load() {
+      return api('/api/users?do=groups').then(function (d) {
+        state.circles = d.circles || [];
+        draw();
+      }).catch(function (err) { say('err', errText(err.code)); });
+    }
+
+    function draw() {
+      clear(box);
+      box.appendChild(h('div', { class: 'page-head sub' }, [
+        h('h2', { text: t('grpTitle') }),
+        h('button', { class: 'btn', text: t('grpAdd'), onclick: function () { openGroupEditor(null, load, say); } }),
+      ]));
+      box.appendChild(h('p', { class: 'hint', text: t('grpWhy') }));
+
+      var list = h('div', { class: 'org-list' });
+      state.circles.forEach(function (c) {
+        list.appendChild(h('div', { class: 'org-dept' }, [
+          h('div', { class: 'org-dept-head' }, [
+            h('b', { text: S.lang === 'en' ? c.en : c.th }),
+            h('code', { class: 'org-key', text: c.key }),
+            c.made
+              ? h('span', { class: 'chip sm', text: c.selfJoin ? t('grpOpen') : t('grpClosed') })
+              : h('small', { class: 'hint', text: t('grpDerived') + ' ' + accessLabel(c.floor) }),
+            h('span', { class: 'grow' }),
+            h('span', { class: 'chip sm', text: String(c.members.length) }),
+            c.made ? h('button', { class: 'btn ghost sm', text: t('rename'),
+              onclick: function () { openGroupEditor(c, load, say); } }) : null,
+            c.made ? h('button', { class: 'btn ghost sm danger', text: t('orgPutAway'),
+              onclick: function () { hideGroup(c, load, say); } }) : null,
+            h('button', { class: 'btn ghost sm', text: t('grpWho'),
+              onclick: function () { openGroupPeople(c, load, say); } }),
+          ].filter(Boolean)),
+          h('div', { class: 'org-units' }, c.members.slice(0, 24).map(function (u) {
+            var pinned = c.pinnedIn.indexOf(u) !== -1;
+            return h('span', { class: 'chip unit' + (pinned ? ' pinned' : '') },
+              [h('span', { text: nameOfUser(u) }), pinned ? h('span', { class: 'pin-dot', text: '•' }) : null]
+                .filter(Boolean));
+          }).concat(c.members.length > 24
+            ? [h('span', { class: 'chip sm', text: '+' + (c.members.length - 24) })] : [])),
+        ]));
+      });
+      box.appendChild(list);
+    }
+  }
+
+  function accessLabel(level) {
+    if (!level) return '';
+    return t('access' + String(level).charAt(0).toUpperCase() + String(level).slice(1));
+  }
+
+  function nameOfUser(username) {
+    var u = (S.users || []).filter(function (x) { return x.username === username; })[0];
+    return u ? (u.nickname || u.displayName || u.username) : username;
+  }
+
+  function hideGroup(group, reload, say) {
+    if (!confirm(t('orgPutAwayAsk').replace('%s', S.lang === 'en' ? group.en : group.th))) return;
+    api('/api/users?do=groups', { method: 'PATCH', body: { kind: 'group', key: group.key, hidden: true } })
+      .then(refreshOrg).then(reload)
+      .then(function () { say('ok', t('orgSaved')); })
+      .catch(function (err) { say('err', errText(err.code)); });
+  }
+
+  /** A group the committee invented: its name, and whether people may walk in. */
+  function openGroupEditor(group, reload, say) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var th = h('input', { type: 'text', maxlength: '60', value: (group && group.th) || '' });
+    var en = h('input', { type: 'text', maxlength: '60', value: (group && group.en) || '' });
+    var note = h('input', { type: 'text', maxlength: '200', value: (group && group.note) || '' });
+    var open = h('input', { type: 'checkbox' });
+    open.checked = group ? group.selfJoin !== false : true;
+
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'),
+      onclick: function () {
+        if (!th.value.trim() && !en.value.trim()) { th.focus(); return; }
+        saveBtn.disabled = true;
+        var body = { kind: 'group', th: th.value.trim(), en: en.value.trim(),
+          note: note.value.trim(), selfJoin: open.checked };
+        if (group) body.key = group.key;
+        api('/api/users?do=groups', { method: group ? 'PATCH' : 'POST', body: body })
+          .then(refreshOrg).then(reload)
+          .then(function () { veil.remove(); say('ok', t('orgSaved')); })
+          .catch(function (err) { saveBtn.disabled = false; say('err', errText(err.code)); });
+      },
+    });
+
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(28rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: group ? t('grpRename') : t('grpAdd') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        h('div', { class: 'field' }, [h('label', { text: t('orgNameTh') }), th]),
+        h('div', { class: 'field' }, [h('label', { text: t('orgNameEn') }), en]),
+        h('div', { class: 'field' }, [h('label', { text: t('grpNote') }), note]),
+        h('label', { class: 'check' }, [open, h('span', { text: t('grpSelfJoin') })]),
+        h('small', { class: 'hint', text: t('grpSelfJoinWhy') }),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+    th.focus();
+  }
+
+  /**
+   * Who is in one, with each name saying how it got there.
+   *
+   * Three states rather than a tick box, because "in it because they are a
+   * co-admin" and "in it because somebody said so" are different facts and
+   * only the second is anybody's to take back.
+   */
+  function openGroupPeople(group, reload, say) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var find = h('input', { type: 'search', placeholder: t('findPerson') });
+    var rows = h('div', { class: 'grp-people' });
+
+    function paint() {
+      clear(rows);
+      var q = find.value.trim().toLowerCase();
+      (S.users || []).filter(function (u) {
+        if (!u.active) return false;
+        if (!q) return true;
+        return (u.displayName + ' ' + u.username + ' ' + (u.nickname || '')).toLowerCase().indexOf(q) !== -1;
+      }).forEach(function (u) {
+        var isIn = group.members.indexOf(u.username) !== -1;
+        var pinnedIn = group.pinnedIn.indexOf(u.username) !== -1;
+        var pinnedOut = group.pinnedOut.indexOf(u.username) !== -1;
+        var derived = isIn && !pinnedIn;
+
+        function set(what) {
+          var call = what === null
+            ? api('/api/users?do=groups', { method: 'DELETE', body: { kind: 'member', circle: group.key, username: u.username } })
+            : api('/api/users?do=groups', { method: 'POST', body: { kind: 'member', circle: group.key, username: u.username, state: what } });
+          call.then(refreshOrg).then(reload).then(function () { veil.remove(); say('ok', t('orgSaved')); })
+            .catch(function (err) { say('err', errText(err.code)); });
+        }
+
+        rows.appendChild(h('div', { class: 'grp-row' }, [
+          avatarNode(u.username, 'sm'),
+          h('span', { class: 'grow', text: nameOfUser(u.username) }),
+          derived ? h('small', { class: 'hint', text: t('grpByRule') }) : null,
+          pinnedIn ? h('small', { class: 'hint', text: t('grpByHand') }) : null,
+          pinnedOut ? h('small', { class: 'hint', text: t('grpKeptOut') }) : null,
+          isIn
+            ? h('button', { class: 'btn ghost sm', text: t('grpTakeOut'),
+                onclick: function () { set(group.made || pinnedIn ? null : 'out'); } })
+            : h('button', { class: 'btn ghost sm', text: t('grpPutIn'),
+                onclick: function () { set(pinnedOut ? null : 'in'); } }),
+        ].filter(Boolean)));
+      });
+    }
+    find.addEventListener('input', paint);
+    paint();
+
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(32rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: (S.lang === 'en' ? group.en : group.th) }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        h('div', { class: 'field' }, [find]),
+        h('small', { class: 'hint', text: group.made ? t('grpMadeWhy') : t('grpPinWhy') }),
+        rows,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+    find.focus();
+  }
 
   /**
    * The roster and the org chart, as things an admin can change here.

@@ -17,7 +17,7 @@ let failed = 0; const errs = [];
 const ok = (l, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${l}${d ? ' — ' + d : ''}`); if (!c) failed++; };
 const head = (s) => console.log('\n' + s);
 
-async function as(user, pass) {
+async function as(user, pass, where = '#/admin') {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } });
   const pg = await ctx.newPage();
   pg.on('pageerror', (e) => errs.push(`${user}: ${e.message}`));
@@ -29,7 +29,7 @@ async function as(user, pass) {
   await pg.fill('#in-password', pass);
   if (await pg.locator('#field-confirm:not([hidden])').count()) await pg.fill('#in-confirm', pass);
   await pg.click('#auth-submit'); await pg.waitForTimeout(2800);
-  await pg.goto(`http://localhost:${PORT}/#/admin`, { waitUntil: 'networkidle' });
+  await pg.goto(`http://localhost:${PORT}/${where}`, { waitUntil: 'networkidle' });
   await pg.waitForTimeout(2500);
   return pg;
 }
@@ -42,25 +42,37 @@ async function as(user, pass) {
 const TEST_UNIT = 'ทดสอบหน่วยใหม่';
 const TEST_DEPT_TH = 'ฝ่ายทดสอบ';
 const TEST_USER = 'Wawa_MemDecor';
+const TEST_GROUP = 'ทีมรื้อของวันเสาร์';
+const TEST_TAG = 'รอของ';
+const RENAMED_USER = 'Waawaa_MemDecor';
 
 async function tidy(pg) {
-  await pg.evaluate(async ([unit, user]) => {
+  await pg.evaluate(async ([unit, user, tag]) => {
     const send = (path, method, body) => fetch(path, {
       method, headers: { 'content-type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     }).catch(() => {});
     await send('/api/users?do=org', 'DELETE', { kind: 'unit', department: 'content', name: unit });
+    const groups = await fetch('/api/users?do=groups').then((r) => r.json()).catch(() => ({}));
+    for (const c of (groups.circles || [])) {
+      for (const u of (c.pinnedIn || []).concat(c.pinnedOut || [])) {
+        await send('/api/users?do=groups', 'DELETE', { kind: 'member', circle: c.key, username: u });
+      }
+      if (c.made) await send('/api/users?do=groups', 'PATCH', { kind: 'group', key: c.key, hidden: true });
+    }
     const chart = await fetch('/api/users?do=org').then((r) => r.json()).catch(() => ({}));
     for (const d of (chart.departments || [])) {
       if (d.added) await send('/api/users?do=org', 'PATCH', { kind: 'department', key: d.key, hidden: true });
     }
     // A user can only be removed once they are out of use, as the page itself
     // insists — suspend, then delete.
-    await send('/api/users?do=manage', 'PATCH', { username: user, suspended: true });
-    await send(`/api/users?do=user&username=${encodeURIComponent(user)}`, 'DELETE');
-  }, [unit_and_user()[0], unit_and_user()[1]]);
+    await send(`/api/users?do=tags&name=${encodeURIComponent(tag)}`, 'DELETE');
+    for (const name of [user, 'Waawaa_MemDecor']) {
+      await send('/api/users?do=manage', 'PATCH', { username: name, suspended: true });
+      await send(`/api/users?do=user&username=${encodeURIComponent(name)}`, 'DELETE');
+    }
+  }, [TEST_UNIT, TEST_USER, TEST_TAG]);
 }
-function unit_and_user() { return [TEST_UNIT, TEST_USER]; }
 
 head('The org chart is on the admin page, and an admin can reach it');
 const admin = await as('Jade_Pres', 'fairAdmin1');
@@ -68,12 +80,15 @@ await tidy(admin);
 await admin.reload({ waitUntil: 'networkidle' });
 await admin.waitForTimeout(2500);
 
-ok('the section is there', await admin.locator('.org-admin').count() === 1);
-const deptCards = admin.locator('.org-dept');
+// Two sections now: the chart, then the groups.
+ok('the section is there', await admin.locator('.org-admin').count() === 2,
+  String(await admin.locator('.org-admin').count()));
+const deptCards = admin.locator('.org-admin').first().locator('.org-dept');
 ok('every ฝ่าย is listed', await deptCards.count() >= 14, String(await deptCards.count()));
 
 /** A หน่วย reads as a sub-category of its ฝ่าย, not as a free-text field. */
-const contentCard = admin.locator('.org-dept', { hasText: 'ฝ่ายเนื้อหา' }).first();
+const contentCard = admin.locator('.org-admin').first()
+  .locator('.org-dept', { hasText: 'ฝ่ายเนื้อหา' }).first();
 ok('a ฝ่าย shows its หน่วย underneath it',
   await contentCard.locator('.chip.unit').count() >= 9,
   String(await contentCard.locator('.chip.unit').count()));
@@ -134,6 +149,85 @@ await form.locator('.btn.primary').click();
 const herRow = admin.locator('.users-table tbody tr', { hasText: 'หว่าหวา' });
 await herRow.first().waitFor({ timeout: 15000 }).catch(() => {});
 ok('she is in the directory a moment later', await herRow.count() >= 1);
+
+head('Groups, and who is in them');
+const groupCards = admin.locator('.org-admin').nth(1).locator('.org-dept');
+await groupCards.first().waitFor({ timeout: 15000 }).catch(() => {});
+ok('the four circles are listed', await groupCards.count() >= 4, String(await groupCards.count()));
+ok('...saying which access level each derives from',
+  await groupCards.first().locator('.hint').count() === 1);
+
+await admin.locator('.org-admin').nth(1).locator('.page-head.sub .btn', { hasText: 'สร้างกลุ่มใหม่' }).click();
+await admin.waitForTimeout(700);
+const gmodal = admin.locator('.veil .modal').last();
+await gmodal.locator('.field input').first().fill(TEST_GROUP);
+await gmodal.locator('.field input').nth(1).fill('Saturday crew');
+await gmodal.locator('.btn.primary').click();
+const groupCard = admin.locator('.org-dept', { hasText: TEST_GROUP });
+await groupCard.first().waitFor({ timeout: 15000 }).catch(() => {});
+ok('a group the committee invented appears', await groupCard.count() === 1);
+ok('...marked as one people may walk into',
+  (await groupCard.locator('.chip.sm').first().textContent() || '').indexOf('เข้าเอง') !== -1);
+
+/**
+ * Putting somebody on the board who would not qualify — the case the four
+ * derived circles could not express at all.
+ */
+await admin.locator('.org-dept', { hasText: 'คณะกรรมการบริหาร' }).first()
+  .locator('.btn', { hasText: 'จัดการสมาชิก' }).click();
+await admin.waitForTimeout(700);
+const people = admin.locator('.veil .modal').last();
+await people.locator('input[type=search]').fill('พลอย');
+await admin.waitForTimeout(400);
+await people.locator('.grp-row .btn', { hasText: 'ใส่เข้ากลุ่ม' }).first().click();
+await admin.waitForTimeout(3000);
+const boardCard = admin.locator('.org-dept', { hasText: 'คณะกรรมการบริหาร' }).first();
+ok('she is on the board a moment later',
+  await boardCard.locator('.chip.unit', { hasText: 'พลอย' }).count() === 1);
+ok('...and marked as put there rather than derived',
+  await boardCard.locator('.chip.unit.pinned').count() >= 1);
+
+head('My own groups and labels, on the profile');
+const member = await as('Ploy_StaffCon', 'memberPw11', '#/profile');
+ok('the open group is offered to join',
+  await member.locator('.grp-mine .chip', { hasText: TEST_GROUP }).count() === 1);
+await member.locator('.grp-mine .chip', { hasText: TEST_GROUP }).click();
+await member.waitForTimeout(2500);
+ok('...and joining it sticks',
+  (await member.locator('.grp-mine .chip', { hasText: TEST_GROUP }).first().textContent() || '').indexOf('✓') === 0);
+
+/** A label is made, used, and seen by nobody else. */
+await member.locator('.tag-mine .tag-add input').fill(TEST_TAG);
+await member.locator('.tag-mine .tag-add .btn').click();
+await member.waitForTimeout(2200);
+ok('a label of my own', await member.locator('.tag-mine .chip.unit', { hasText: TEST_TAG }).count() === 1);
+
+await member.goto(`http://localhost:${PORT}/#/work`, { waitUntil: 'networkidle' });
+await member.waitForTimeout(2500);
+ok('...and a row of them above my work',
+  await member.locator('.tag-row .chip', { hasText: TEST_TAG }).count() === 1);
+
+head('Correcting a username, through the page');
+await admin.bringToFront();
+await admin.goto(`http://localhost:${PORT}/#/admin`, { waitUntil: 'networkidle' });
+await admin.waitForTimeout(2500);
+const herRow2 = admin.locator('.users-table tbody tr', { hasText: TEST_USER }).first();
+await herRow2.locator('.who-cell').click();
+await admin.waitForTimeout(600);
+await herRow2.locator('.btn', { hasText: 'แก้ username' }).first().click();
+await admin.waitForTimeout(700);
+const rn = admin.locator('.veil .modal').last();
+ok('the box opens on the name it is about',
+  (await rn.locator('.field input').inputValue()) === TEST_USER);
+await rn.locator('.field input').fill(RENAMED_USER);
+await rn.locator('.btn.primary').click();
+await admin.waitForTimeout(3500);
+ok('the directory shows the corrected name',
+  await admin.locator('.users-table tbody tr', { hasText: RENAMED_USER }).count() >= 1);
+ok('...and the old one is gone rather than sitting beside it',
+  await admin.locator('.users-table tbody tr', { hasText: TEST_USER }).count() === 0);
+ok('...with a line saying what moved and to fix the sheet',
+  /ชีต/.test(await admin.locator('.notice.warn').last().textContent() || ''));
 
 head('An editor is offered none of it');
 const editor = await as('Kungking_HeadCon', 'brandNew22');

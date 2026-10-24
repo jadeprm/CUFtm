@@ -9,6 +9,11 @@ import {
   isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
   DEPARTMENTS, unitsOf, makeDepartmentKey,
 } from '../lib/departments.js';
+import {
+  CIRCLES, CIRCLE_KEYS, isCircle, inCircle, circleByKey, isMadeGroup,
+  makeCircleKey, pinnedState,
+} from '../lib/circles.js';
+import { renameUser, USERNAME_SHAPE } from '../lib/rename.js';
 import { driveStatus } from '../lib/drive.js';
 import {
   availabilityOf, setAvailability, addBlock, removeBlock, checkClashes,
@@ -27,6 +32,7 @@ import { prefsOf, setPref } from '../lib/notifyprefs.js';
  */
 
 const MAX_AVATAR = 200_000; // ~200 KB of data URL; the page downsizes before sending
+const MAX_TAGS = 20;        // a filter row of forty labels is not a filter row
 
 /**
  * How a set of department grants should read in the sheet's Department column.
@@ -38,6 +44,18 @@ const MAX_AVATAR = 200_000; // ~200 KB of data URL; the page downsizes before se
 const sheetDepartments = (keys, all) =>
   all ? ['All'] : keys.map((key) => departmentByKey(key)?.th || key);
 
+/**
+ * Which circles somebody is in, worked out once here.
+ *
+ * The page used to recompute this from the access ladder, which was right
+ * while a circle was nothing but the ladder. It no longer is: an admin can
+ * put somebody in or keep them out, and a group the committee invented
+ * derives nothing at all. One answer, from the side that owns the rule.
+ */
+const circlesOf = (u) => CIRCLE_KEYS.filter((key) => inCircle({
+  username: u.username, access: u.access, active: u.active, suspended: u.suspended,
+}, key));
+
 const directoryRow = (u, grants = {}) => ({
   username: u.username,
   nickname: u.nickname,
@@ -48,6 +66,7 @@ const directoryRow = (u, grants = {}) => ({
   access: u.access,
   department: u.department,
   departments: grants[u.username] || u.departments || [],
+  circles: circlesOf(u),
   allDepartments: Boolean(u.all_departments),
   deptsPinned: Boolean(u.depts_pinned),
   accessPinned: Boolean(u.access_pinned),
@@ -272,7 +291,7 @@ async function handler(request) {
   // ---- directory ---------------------------------------------------------
   // `?do=org` is the one other GET on this endpoint, and it is answered
   // further down; without this it would be swallowed by the directory.
-  if (request.method === 'GET' && action !== 'org') {
+  if (request.method === 'GET' && !['org', 'groups', 'tags'].includes(action)) {
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
     const [meta] = await sql`SELECT value FROM meta WHERE key = 'last_sync'`;
@@ -833,6 +852,243 @@ async function handler(request) {
     }
 
     return json({ error: 'BAD_KIND' }, 400);
+  }
+
+
+  // ---- circles: the committee's groups, and who is in them ---------------
+  /**
+   * Four of these were born with the app and are questions asked of the
+   * roster — "who is at least an editor right now". That is a good first
+   * answer and was treated as the only one, which left two things
+   * unsayable: the ผู้ช่วยประธาน who sits on the board without the access
+   * level to match, and any group the committee invents that the ladder
+   * knows nothing about. Both are answerable here now.
+   */
+  if (action === 'groups') {
+    if (request.method === 'GET') {
+      const rows = await sql`SELECT username, access, active, suspended FROM users
+                             ORDER BY active DESC, display_name`;
+      return json({
+        circles: CIRCLES.map((c) => ({
+          key: c.key, th: c.th, en: c.en, note: c.note, floor: c.floor || null,
+          made: Boolean(c.made), selfJoin: c.made ? c.selfJoin !== false : false,
+          members: rows.filter((u) => inCircle(u, c.key)).map((u) => u.username),
+          // Who was put in or kept out by hand, so the admin page can show
+          // which of its members are there by rule and which by decision.
+          pinnedIn: rows.filter((u) => pinnedState(c.key, u.username) === 'in').map((u) => u.username),
+          pinnedOut: rows.filter((u) => pinnedState(c.key, u.username) === 'out').map((u) => u.username),
+        })),
+        mayEdit: canManageAccounts(me),
+      });
+    }
+
+    const body = await request.json().catch(() => ({}));
+
+    // --- a group the committee invented -----------------------------------
+    if (body.kind === 'group') {
+      if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+      const th = String(body.th ?? '').trim().slice(0, 60);
+      const en = String(body.en ?? '').trim().slice(0, 60);
+      const note = String(body.note ?? '').trim().slice(0, 200);
+      const selfJoin = body.selfJoin === undefined ? true : Boolean(body.selfJoin);
+
+      if (request.method === 'POST') {
+        if (!th && !en) return json({ error: 'NAME_REQUIRED' }, 400);
+        const taken = (await sql`SELECT key FROM circle_groups`).map((r) => r.key);
+        const key = makeCircleKey(en, th, taken);
+        await sql`
+          INSERT INTO circle_groups (key, th, en, note, self_join, sort, added_by)
+          VALUES (${key}, ${th || en}, ${en || th}, ${note}, ${selfJoin},
+                  ${CIRCLES.length}, ${me.username})`;
+        forgetOrg();
+        return json({ ok: true, key }, 201);
+      }
+
+      if (request.method === 'PATCH') {
+        const key = String(body.key ?? '');
+        /**
+         * Only groups made here can be changed. The four built-in circles
+         * are described in lib/circles.js and referred to by name all over
+         * the app; renaming คณะทำงานหลัก from a form would leave the code
+         * and the committee talking about different things.
+         */
+        if (!isMadeGroup(key)) return json({ error: 'NOT_A_MADE_GROUP' }, 400);
+        const hidden = body.hidden === undefined ? null : Boolean(body.hidden);
+        await sql`
+          UPDATE circle_groups SET
+            th        = COALESCE(${th || null}, th),
+            en        = COALESCE(${en || null}, en),
+            note      = COALESCE(${body.note === undefined ? null : note}, note),
+            self_join = COALESCE(${body.selfJoin === undefined ? null : selfJoin}, self_join),
+            hidden    = COALESCE(${hidden}, hidden)
+          WHERE key = ${key}`;
+        forgetOrg();
+        return json({ ok: true, key });
+      }
+    }
+
+    // --- who is in one ----------------------------------------------------
+    if (body.kind === 'member') {
+      const circle = String(body.circle ?? '');
+      if (!isCircle(circle)) return json({ error: 'NO_SUCH_CIRCLE' }, 404);
+
+      const asked = String(body.username ?? '').trim();
+      const self = !asked || asked === me.username;
+      const username = self ? me.username : asked;
+
+      /**
+       * Somebody may walk into a group that is open, and out of one they
+       * walked into. Everything else — another person, a closed group, or
+       * any of the four built-in circles — is an admin's to decide, because
+       * คณะกรรมการบริหาร is not a thing one joins by saying so.
+       */
+      if (!canManageAccounts(me)) {
+        if (!self) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+        const group = circleByKey(circle);
+        if (!group?.made || group.selfJoin === false) return json({ error: 'GROUP_NOT_OPEN' }, 403);
+      }
+
+      if (request.method === 'POST') {
+        const [target] = await sql`SELECT username FROM users WHERE username = ${username}`;
+        if (!target) return json({ error: 'NO_SUCH_USER' }, 404);
+        const state = body.state === 'out' ? 'out' : 'in';
+        if (state === 'out' && isMadeGroup(circle)) {
+          // Nothing derives membership of a made group, so "kept out" of one
+          // would be a row that says exactly what no row already says.
+          return json({ error: 'NOTHING_TO_KEEP_OUT_OF' }, 400);
+        }
+        await sql`
+          INSERT INTO circle_people (circle, username, state, by_self, set_by)
+          VALUES (${circle}, ${username}, ${state}, ${self && !canManageAccounts(me)}, ${me.username})
+          ON CONFLICT (circle, username) DO UPDATE SET
+            state = EXCLUDED.state, set_by = EXCLUDED.set_by, set_at = now()`;
+        forgetOrg();
+        return json({ ok: true, circle, username, state });
+      }
+
+      if (request.method === 'DELETE') {
+        /**
+         * Taking the decision away, not replacing it with the opposite one.
+         * For a derived circle that hands the person back to the ladder; for
+         * a made group it takes them out of it.
+         */
+        await sql`DELETE FROM circle_people WHERE circle = ${circle} AND username = ${username}`;
+        forgetOrg();
+        return json({ ok: true, circle, username });
+      }
+    }
+
+    return json({ error: 'BAD_KIND' }, 400);
+  }
+
+  // ---- my own labels -----------------------------------------------------
+  /**
+   * Tags somebody keeps for their own work, seen by nobody else.
+   *
+   * Not a second department system and deliberately not shareable: a ฝ่าย
+   * says who you answer to, "รอของ" says something only to the person who
+   * wrote it. Shared labels would need agreeing on, which is the thing
+   * people reach for a private label to avoid.
+   */
+  if (action === 'tags') {
+    if (request.method === 'GET') {
+      const tags = await sql`SELECT name, colour FROM user_tags
+                             WHERE username = ${me.username} ORDER BY sort, name`;
+      return json({ tags });
+    }
+
+    const body = await request.json().catch(() => ({}));
+
+    if (request.method === 'POST') {
+      const name = String(body.name ?? '').trim().slice(0, 40);
+      if (!name) return json({ error: 'NAME_REQUIRED' }, 400);
+      const [{ n }] = await sql`SELECT count(*)::int AS n FROM user_tags WHERE username = ${me.username}`;
+      // A cap, because a filter row of forty labels is not a filter row.
+      if (n >= MAX_TAGS) return json({ error: 'TOO_MANY_TAGS', limit: MAX_TAGS }, 400);
+      const colour = String(body.colour ?? '').trim().slice(0, 16);
+      await sql`
+        INSERT INTO user_tags (username, name, colour, sort)
+        VALUES (${me.username}, ${name}, ${colour}, ${n})
+        ON CONFLICT (username, name) DO UPDATE SET colour = EXCLUDED.colour`;
+      const tags = await sql`SELECT name, colour FROM user_tags
+                             WHERE username = ${me.username} ORDER BY sort, name`;
+      return json({ ok: true, tags }, 201);
+    }
+
+    if (request.method === 'DELETE') {
+      const name = url.searchParams.get('name') || '';
+      // The rows on tasks go with it, by the foreign key — a label nobody
+      // can see is not worth keeping on anybody's work.
+      await sql`DELETE FROM user_tags WHERE username = ${me.username} AND name = ${name}`;
+      const tags = await sql`SELECT name, colour FROM user_tags
+                             WHERE username = ${me.username} ORDER BY sort, name`;
+      return json({ ok: true, tags });
+    }
+  }
+
+
+  // ---- correcting a username --------------------------------------------
+  /**
+   * A username is the key about sixty columns hang off — every assignment,
+   * signature, invitation and notification — so the only way to fix a typo
+   * used to be to delete the account and make another, which throws all of
+   * that away. "Mochi_HeadOrganizer" for somebody called Moji is not worth
+   * losing a term of work over.
+   *
+   * The move itself is in lib/rename.js. What belongs here is who may ask
+   * for it, what counts as a valid new name, and the one thing the server
+   * cannot fix by itself: the roster sheet.
+   */
+  if (request.method === 'POST' && action === 'rename') {
+    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+    const body = await request.json().catch(() => ({}));
+
+    const from = String(body.username ?? '').trim();
+    const to = String(body.newUsername ?? '').trim();
+    const [target] = await sql`SELECT * FROM users WHERE username = ${from}`;
+
+    const blocked = cannotActOn(me, target);
+    if (blocked) return json({ error: blocked }, blocked === 'NO_SUCH_USER' ? 404 : 403);
+    if (!USERNAME_SHAPE.test(to)) return json({ error: 'BAD_USERNAME' }, 400);
+    if (to === from) return json({ error: 'NOTHING_TO_DO' }, 400);
+
+    /**
+     * Case-insensitively unique, except against themselves — correcting
+     * `jade_pres` to `Jade_Pres` is a rename like any other and must not be
+     * refused for clashing with the row it is renaming.
+     */
+    const [clash] = await sql`
+      SELECT username FROM users
+      WHERE lower(username) = ${to.toLowerCase()} AND username <> ${from}`;
+    if (clash) return json({ error: 'USERNAME_TAKEN', username: clash.username }, 409);
+
+    const result = await renameUser(sql, from, to);
+
+    /**
+     * The sheet still says the old name, and the next sync would read that
+     * row as somebody who does not exist yet and make a second account for
+     * them. Marking the person off-sheet keeps THIS account from being
+     * closed; only changing the Username column in the sheet stops the
+     * duplicate, and that is a cell nobody here can write for Jade.
+     */
+    const wasOnSheet = !target.off_sheet;
+    if (wasOnSheet) await sql`UPDATE users SET off_sheet = true WHERE username = ${to}`;
+
+    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const grants = await departmentsByUser(sql);
+    return json({
+      ok: true,
+      from,
+      to,
+      // Which tables moved and how far, because a rename that silently
+      // touched nothing looks exactly like one that worked.
+      moved: result.moved,
+      columnsChecked: result.columnsChecked,
+      fixTheSheet: wasOnSheet,
+      // Renaming yourself leaves the page holding the old name.
+      itWasMe: from === me.username,
+      users: rows.map((u) => directoryRow(u, grants)),
+    });
   }
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);

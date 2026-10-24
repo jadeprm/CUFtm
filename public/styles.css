@@ -1999,3 +1999,18 @@ tr.urow[hidden] { display: none !important; }
 }
 .chip-act:hover { background: var(--chip-hover, rgba(0,0,0,.07)); color: var(--ink); }
 .chip-act.danger:hover { color: var(--danger); }
+
+/* Groups: who is in one, and how they got there. */
+.grp-people { display: grid; gap: 2px; max-height: 50vh; overflow: auto; margin-top: 8px; }
+.grp-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-radius: 8px; }
+.grp-row:hover { background: var(--chip); }
+.chip.unit.pinned { border-color: var(--accent); }
+.pin-dot { color: var(--accent); font-weight: 700; }
+
+/* Labels somebody keeps for their own work. */
+.tag-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+.tag-add { display: flex; gap: 6px; margin-top: 8px; }
+.tag-add input { flex: 1; min-width: 0; }
+.tag-pick { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag-pick .chip { cursor: pointer; }
+.grp-mine .chip, .tag-row .chip { cursor: pointer; }

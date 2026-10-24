@@ -152,7 +152,12 @@ async function handler(request) {
      * every circle when anything is actually saved, so the page's version of
      * the list is a convenience and never the thing of record.
      */
-    circles: CIRCLES.map((c) => ({ key: c.key, th: c.th, en: c.en, floor: c.floor, note: c.note })),
+    circles: CIRCLES.map((c) => ({
+      key: c.key, th: c.th, en: c.en, floor: c.floor, note: c.note,
+      // Made in the app rather than born with it, and whether somebody may
+      // walk into it themselves — the page needs both to know what to offer.
+      made: Boolean(c.made), selfJoin: c.made ? c.selfJoin !== false : false,
+    })),
     accessOrder: ACCESS_ORDER,
     departments: DEPARTMENTS.map((d) => ({
       key: d.key, th: d.th, en: d.en, units: d.units, parent: d.parent || null,

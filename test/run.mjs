@@ -415,6 +415,9 @@ await sql`DELETE FROM user_departments`;
  * which is the kind of failure that looks like a bug in whatever happened
  * to read the chart first.
  */
+await sql`DELETE FROM circle_people`;
+await sql`DELETE FROM circle_groups`;
+await sql`DELETE FROM user_tags`;
 await sql`DELETE FROM org_units`;
 await sql`DELETE FROM org_departments`;
 forgetOrg();
@@ -4494,12 +4497,15 @@ ok('editing the task does not throw away what people already answered',
 // ===========================================================================
 head('67. การประชุม: agendas, invitations and who is coming');
 
+/**
+ * Anybody with an account may call one. This check used to assert the
+ * opposite and was right at the time; §95 has the reasoning for the change.
+ */
 r = await call(eventsApi, '/api/events?do=meeting', {
   method: 'POST', as: 'member',
-  body: { title: 'ประชุมที่สมาชิกธรรมดาไม่ควรเรียกได้', meetsOn: '2026-12-05' },
+  body: { title: 'ประชุมย่อยที่สมาชิกเรียกเอง', meetsOn: '2026-12-05' },
 });
-ok('an ordinary member cannot call a meeting of the committee',
-  r.status === 403 && r.data.error === 'CANNOT_CALL_MEETING', JSON.stringify(r.data));
+ok('an ordinary member may call a meeting', r.status === 201, JSON.stringify(r.data));
 
 r = await call(eventsApi, '/api/events?do=meeting', {
   method: 'POST', as: 'admin',
@@ -8474,9 +8480,25 @@ r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'unitl
 ok('a ประธานฝ่ายย่อย can call their own meeting', r.status === 201, String(r.status));
 const unitLedMeeting = r.data.id;
 
+/**
+ * And so can a สมาชิกฝ่าย, which is where Jade landed after the first fix:
+ * widening the rule to unit leads left the same trap one rung lower.
+ */
 r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'member',
-  body: { title: 'ไม่ควรได้', meetsOn: '2026-11-05', people: [] } });
-ok('a member still cannot', r.status === 403 && r.data.error === 'CANNOT_CALL_MEETING', r.data.error);
+  body: { title: 'ประชุมย่อยสามคน', meetsOn: '2026-11-06', meetsAt: '09:00', people: [] } });
+ok('so can a สมาชิกฝ่าย — booking a room is not putting work on anybody',
+  r.status === 201, String(r.status));
+const memberMeeting = r.data.id;
+
+/**
+ * Calling one does not make them its owner for anybody else's purposes:
+ * somebody who was not invited and is not in its ฝ่าย still cannot see it,
+ * and nobody but the organiser can change it.
+ */
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'PATCH', as: 'editor2',
+  body: { id: memberMeeting, title: 'เปลี่ยนชื่อ' } });
+ok('...and somebody else still cannot rewrite it',
+  r.status === 403 && r.data.error === 'NOT_MY_MEETING', r.data.error);
 
 /**
  * The refusal has to be a sentence somebody can act on. An unmapped code
@@ -8657,6 +8679,291 @@ await sql`DELETE FROM org_units`;
 await sql`DELETE FROM org_departments`;
 await sql`DELETE FROM users WHERE username = 'Erng_MemDecor'`;
 forgetOrg();
+
+
+// ===========================================================================
+head('97. Groups the committee decides on, and labels people keep to themselves');
+// ===========================================================================
+/**
+ * The four circles were questions asked of the roster — "who is at least a
+ * co-admin right now" — and that was treated as the whole answer. It is a
+ * good first one: ต๊อดติ is a co-admin because he manages people, which is a
+ * reason to be on the board and not the only one, and the ผู้ช่วยประธาน who
+ * sits on it without that access level could not be represented at all.
+ */
+let grp = await call(usersApi, '/api/users?do=groups', { as: 'admin' });
+const boardBefore = grp.data.circles.find((c) => c.key === 'board').members.slice();
+ok('the four circles still derive from the ladder', boardBefore.length > 0, boardBefore.join(','));
+
+// ---- a decision on top of the rule ---------------------------------------
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'admin',
+  body: { kind: 'member', circle: 'board', username: 'Ploy_StaffCon', state: 'in' } });
+ok('an admin can put somebody on the board who would not qualify', r.status === 200, r.data.error || '');
+
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'admin',
+  body: { kind: 'member', circle: 'board', username: 'Gorn_VP', state: 'out' } });
+ok('...and keep somebody off it who would', r.status === 200, r.data.error || '');
+
+grp = await call(usersApi, '/api/users?do=groups', { as: 'admin' });
+let board = grp.data.circles.find((c) => c.key === 'board');
+ok('the board is what was decided, not only what was derived',
+  board.members.includes('Ploy_StaffCon') && !board.members.includes('Gorn_VP'),
+  board.members.join(','));
+ok('...and each name says which of the two it is',
+  board.pinnedIn.includes('Ploy_StaffCon') && board.pinnedOut.includes('Gorn_VP'));
+
+/**
+ * The decision has to reach everything that asks "who is in this circle",
+ * or the admin page and the invitation picker disagree about the committee.
+ */
+r = await call(usersApi, '/api/users', { as: 'admin' });
+const ployRow = r.data.users.find((u) => u.username === 'Ploy_StaffCon');
+ok('the directory agrees, which is where every picker reads it from',
+  ployRow.circles.includes('board'), (ployRow.circles || []).join(','));
+
+/** Taking the decision away hands the person back to the ladder. */
+r = await call(usersApi, '/api/users?do=groups', { method: 'DELETE', as: 'admin',
+  body: { kind: 'member', circle: 'board', username: 'Gorn_VP' } });
+grp = await call(usersApi, '/api/users?do=groups', { as: 'admin' });
+board = grp.data.circles.find((c) => c.key === 'board');
+ok('un-deciding puts a co-admin back on the board by rule',
+  board.members.includes('Gorn_VP') && !board.pinnedIn.includes('Gorn_VP'));
+
+/** A closed or suspended account is outside every circle, pinned or not. */
+await sql`UPDATE users SET suspended = true WHERE username = 'Ploy_StaffCon'`;
+grp = await call(usersApi, '/api/users?do=groups', { as: 'admin' });
+ok('a suspended account is outside every circle, whatever anybody pinned',
+  !grp.data.circles.find((c) => c.key === 'board').members.includes('Ploy_StaffCon'));
+await sql`UPDATE users SET suspended = false WHERE username = 'Ploy_StaffCon'`;
+
+// ---- a group the committee invented --------------------------------------
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'editor',
+  body: { kind: 'group', th: 'ไม่ควรได้', en: 'Nope' } });
+ok('an editor cannot invent a group', r.status === 403, r.data.error);
+
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'admin',
+  body: { kind: 'group', th: 'ทีมรื้อของวันเสาร์', en: 'Saturday crew', note: 'มาช่วยรื้อของ' } });
+ok('an admin can', r.status === 201, r.data.error || '');
+const crewKey = r.data.key;
+
+grp = await call(usersApi, '/api/users?do=groups', { as: 'admin' });
+const crewGroupRow = grp.data.circles.find((c) => c.key === crewKey);
+ok('...and it derives nobody, because nothing about access says who is in it',
+  crewGroupRow.members.length === 0 && crewGroupRow.floor === null);
+
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'member',
+  body: { kind: 'member', circle: crewKey } });
+ok('anybody can walk into an open group', r.status === 200, r.data.error || '');
+
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'member',
+  body: { kind: 'member', circle: 'board' } });
+ok('...and nobody walks onto the board', r.status === 403 && r.data.error === 'GROUP_NOT_OPEN', r.data.error);
+
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'member',
+  body: { kind: 'member', circle: crewKey, username: 'Kaew_VP' } });
+ok('...or puts somebody else in', r.status === 403, r.data.error);
+
+/** A group the admin closes is one only they can fill. */
+await call(usersApi, '/api/users?do=groups', { method: 'PATCH', as: 'admin',
+  body: { kind: 'group', key: crewKey, selfJoin: false } });
+r = await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'unitlead',
+  body: { kind: 'member', circle: crewKey } });
+ok('a closed group cannot be walked into', r.status === 403 && r.data.error === 'GROUP_NOT_OPEN', r.data.error);
+
+r = await call(usersApi, '/api/users?do=groups', { method: 'PATCH', as: 'admin',
+  body: { kind: 'group', key: 'core', th: 'เปลี่ยนไม่ได้' } });
+ok('the four built-in circles cannot be renamed from a form',
+  r.status === 400 && r.data.error === 'NOT_A_MADE_GROUP', r.data.error);
+
+/**
+ * A group is a circle like any other, so inviting a meeting on one works
+ * without the meeting code knowing these exist.
+ */
+await call(usersApi, '/api/users?do=groups', { method: 'POST', as: 'admin',
+  body: { kind: 'member', circle: crewKey, username: 'Kaew_VP' } });
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin',
+  body: { title: 'นัดรื้อของ', meetsOn: '2026-12-05', meetsAt: '09:00', people: [], circles: [crewKey] } });
+ok('a meeting can be called on a group the committee invented', r.status === 201, r.data.error || '');
+const crewMeeting = r.data.id;
+const crewAsked = await sql`SELECT username FROM meeting_people WHERE meeting_id = ${crewMeeting} ORDER BY username`;
+ok('...and everybody in it is invited',
+  crewAsked.map((x) => x.username).includes('Ploy_StaffCon') && crewAsked.map((x) => x.username).includes('Kaew_VP'),
+  crewAsked.map((x) => x.username).join(','));
+
+// ---- labels somebody keeps for themselves --------------------------------
+r = await call(usersApi, '/api/users?do=tags', { method: 'POST', as: 'member', body: { name: 'รอของ' } });
+ok('anybody can make a label of their own', r.status === 201, r.data.error || '');
+await call(usersApi, '/api/users?do=tags', { method: 'POST', as: 'member', body: { name: 'ทำที่บ้านได้' } });
+
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+const someTask = r.data.tasks[0].id;
+r = await call(tasksApi, '/api/tasks?do=tag', { method: 'POST', as: 'member',
+  body: { id: someTask, name: 'รอของ' } });
+ok('and put it on a task', r.status === 200 && r.data.tags.includes('รอของ'), r.data.error || '');
+
+r = await call(tasksApi, '/api/tasks?do=tag', { method: 'POST', as: 'member',
+  body: { id: someTask, name: 'ไม่เคยสร้าง' } });
+ok('...but not a label they never made', r.status === 404 && r.data.error === 'NO_SUCH_TAG', r.data.error);
+
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+ok('the label comes back on their own copy of the task',
+  (r.data.tasks.find((x) => x.id === someTask).tags || []).includes('รอของ'));
+
+/**
+ * The whole point of a private label is that it is private. The same task
+ * going out to somebody else must carry none of it.
+ */
+r = await call(tasksApi, '/api/tasks', { as: 'admin' });
+ok('...and on nobody else’s, which is the entire point',
+  (r.data.tasks.find((x) => x.id === someTask).tags || []).length === 0);
+
+r = await call(usersApi, '/api/users?do=tags', { as: 'admin' });
+ok('...and somebody else’s labels are not even listed', r.data.tags.length === 0, String(r.data.tags.length));
+
+/** Removing a label takes it off the work it was on, by the foreign key. */
+r = await call(usersApi, '/api/users?do=tags&name=' + encodeURIComponent('รอของ'),
+  { method: 'DELETE', as: 'member' });
+ok('removing a label leaves one behind', r.data.tags.length === 1, r.data.tags.map((x) => x.name).join(','));
+const tagOrphan = await sql`SELECT count(*)::int AS n FROM task_tags
+                         WHERE username = 'Ploy_StaffCon' AND name = 'รอของ'`;
+ok('...and takes itself off the work it was on', tagOrphan[0].n === 0);
+
+// Back the way it was: a pinned member and a live group outlive a crashed run.
+await sql`DELETE FROM circle_people`;
+await sql`DELETE FROM circle_groups`;
+await sql`DELETE FROM user_tags`;
+forgetOrg();
+
+
+// ===========================================================================
+head('98. AdSense, kept to the one screen it was asked for');
+// ===========================================================================
+/**
+ * index.html is the whole app — one page, every screen — so a script tag in
+ * its head is not "ads on the login page", it is ads over the task board,
+ * inside documents, and on top of the committee's meeting agendas. These
+ * checks are cheap and they are the ones that would catch somebody later
+ * doing the obvious thing.
+ */
+const adPageHtml = (await import('node:fs')).readFileSync('public/index.html', 'utf8');
+const adAppSource = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+
+ok('no ad script in index.html, which is every screen at once',
+  !/googlesyndication|adsbygoogle/i.test(adPageHtml));
+ok('the page loads it itself, so it can choose when',
+  /pagead2\.googlesyndication\.com/.test(adAppSource));
+ok('...only where the sign-in screen is drawn',
+  /loadLoginAds\(\);/.test(adAppSource) && /function renderAuth\(\)/.test(adAppSource));
+ok('...and only on the real site, so dev and the suites load nothing',
+  /ADSENSE_HOSTS\s*=\s*\['task\.chulafair\.com'\]/.test(adAppSource));
+
+/**
+ * Auto ads keeps placing anchors and overlays after it loads, so the only
+ * reliable way back to a clean page is a fresh one — and only when a script
+ * was actually fetched, which is never for somebody who already had a
+ * session and so never drew the sign-in screen.
+ */
+ok('signing in starts the app over when an ad script loaded',
+  /function afterSignIn\(\)[\s\S]{0,200}adsLoaded[\s\S]{0,80}location\.reload\(\)/.test(adAppSource));
+ok('...and both ways in go through it',
+  (adAppSource.match(/afterSignIn\(\);/g) || []).length === 2,
+  String((adAppSource.match(/afterSignIn\(\);/g) || []).length));
+
+
+// ===========================================================================
+head('99. Correcting a username, with the account left where it is');
+// ===========================================================================
+/**
+ * A username is the key about sixty columns hang off — every assignment,
+ * signature, invitation and notification — so a typo in one used to cost the
+ * whole account: delete and make another, and lose all of it. Jade hit it on
+ * "Mochi_HeadOrganizer" for somebody called Moji.
+ */
+const rnBeforeTasks = await sql`SELECT count(*)::int AS n FROM task_people WHERE username = 'Ploy_StaffCon'`;
+const rnBeforeMeets = await sql`SELECT count(*)::int AS n FROM meeting_people WHERE username = 'Ploy_StaffCon'`;
+ok('she has work and meetings to lose', rnBeforeTasks[0].n > 0 && rnBeforeMeets[0].n > 0,
+  `${rnBeforeTasks[0].n} tasks, ${rnBeforeMeets[0].n} meetings`);
+
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'editor',
+  body: { username: 'Ploy_StaffCon', newUsername: 'Nope' } });
+ok('an editor cannot rename anybody', r.status === 403, r.data.error);
+
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'Ploy_StaffCon', newUsername: 'bad name!' } });
+ok('a name that would not survive a URL is refused',
+  r.status === 400 && r.data.error === 'BAD_USERNAME', r.data.error);
+
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'Ploy_StaffCon', newUsername: 'jade_pres' } });
+ok('...and one somebody else already has, whatever the capitals',
+  r.status === 409 && r.data.error === 'USERNAME_TAKEN', r.data.error);
+
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'Ploy_StaffCon', newUsername: 'Ploy_MemCon' } });
+ok('an admin can correct it', r.status === 200, r.data.error || '');
+ok('...and is told what moved with it', (r.data.moved || []).length > 0,
+  (r.data.moved || []).map((m) => `${m.table}:${m.rows}`).join(' '));
+
+const rnGone = await sql`SELECT count(*)::int AS n FROM users WHERE username = 'Ploy_StaffCon'`;
+const rnHere = await sql`SELECT count(*)::int AS n FROM users WHERE username = 'Ploy_MemCon'`;
+ok('the account moved rather than being remade', rnGone[0].n === 0 && rnHere[0].n === 1);
+
+/**
+ * The half that must not half-happen: the tables with a foreign key move
+ * inside the one UPDATE, by ON UPDATE CASCADE. A session pointing at a user
+ * who is not there would sign somebody out mid-rename.
+ */
+const rnKeptSession = await sql`SELECT count(*)::int AS n FROM sessions WHERE username = 'Ploy_MemCon'`;
+ok('her session came with her, so she is not signed out by a typo fix',
+  rnKeptSession[0].n > 0, String(rnKeptSession[0].n));
+
+/** And the ones with no foreign key, swept afterwards. */
+const rnAfterTasks = await sql`SELECT count(*)::int AS n FROM task_people WHERE username = 'Ploy_MemCon'`;
+const rnAfterMeets = await sql`SELECT count(*)::int AS n FROM meeting_people WHERE username = 'Ploy_MemCon'`;
+ok('every task she is on came with her', rnAfterTasks[0].n === rnBeforeTasks[0].n,
+  `${rnAfterTasks[0].n} of ${rnBeforeTasks[0].n}`);
+ok('...and every meeting', rnAfterMeets[0].n === rnBeforeMeets[0].n,
+  `${rnAfterMeets[0].n} of ${rnBeforeMeets[0].n}`);
+const rnOrphans = await sql`SELECT count(*)::int AS n FROM task_people WHERE username = 'Ploy_StaffCon'`;
+ok('...with nothing left pointing at the old name', rnOrphans[0].n === 0);
+
+/**
+ * The thing the server cannot fix by itself. The sheet still says the old
+ * name, and the next sync would read that row as a person who does not exist
+ * and make a SECOND account. Marking them off-sheet at least keeps this one.
+ */
+ok('an admin is told to change the sheet as well', r.data.fixTheSheet === true);
+const [rnMarked] = await sql`SELECT off_sheet FROM users WHERE username = 'Ploy_MemCon'`;
+ok('...and the renamed account survives the next sync either way', rnMarked.off_sheet === true);
+
+/** Fixing only the capitals is a rename like any other. */
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'Ploy_MemCon', newUsername: 'ploy_memcon' } });
+ok('correcting only the capitals is not a clash with itself', r.status === 200, r.data.error || '');
+
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'ploy_memcon', newUsername: 'ploy_memcon' } });
+ok('renaming something to what it already is does nothing',
+  r.status === 400 && r.data.error === 'NOTHING_TO_DO', r.data.error);
+
+/**
+ * Every foreign key in the schema follows its parent, which is what makes
+ * the atomic half work. Checked against the database rather than a list,
+ * because the point is that a table added later is covered too.
+ */
+const rnNotCascading = await sql`
+  SELECT count(*)::int AS n
+  FROM pg_constraint c
+  JOIN pg_class cl ON cl.oid = c.conrelid
+  JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+  WHERE c.contype = 'f' AND ns.nspname = 'public'
+    AND pg_get_constraintdef(c.oid) NOT LIKE '%ON UPDATE%'`;
+ok('every foreign key follows its parent', rnNotCascading[0].n === 0, String(rnNotCascading[0].n));
+
+// Back the way it was, so the rest of a re-run finds her where it expects.
+await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'ploy_memcon', newUsername: 'Ploy_StaffCon' } });
+await sql`UPDATE users SET off_sheet = false WHERE username = 'Ploy_StaffCon'`;
 
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
