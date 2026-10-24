@@ -11,6 +11,44 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-25 — the sheet is written to, not only read · version `2026-10-25b`
+No schema change. Still 12 functions.
+
+### What was already there, and what was missing
+`lib/sheets.js` has authenticated write-back — a service account, the sheet shared with its robot address as Editor, the public link still view-only. It was written for **one** case: an access change. Two more had since appeared and neither reached the sheet:
+
+- **A member added in the app** existed nowhere the committee looks. The sheet is the register of record; a name that is only in the app falls out of every printed list and every ฝ่าย count.
+- **A corrected username** left the sheet saying the old one, so the next sync would read that row as somebody who does not exist and make a **second** account under it. The page warned about this in words; now it just does it.
+
+`appendPerson()` and `renameInSheet()` close both. Appending writes only the half-dozen cells an account is made of — the roster also carries phone numbers, allergies and emergency contacts that people fill in by hand, and an integration that wrote a whole row would overwrite one of those sooner or later.
+
+### The Access label the write-back could not spell
+`ACCESS_LABEL` knew Admin, Co-Admin and Editor, because when it was written those were the only levels settable from the app. A row appended for a สมาชิกฝ่าย would have left the Access cell blank — and a blank cell is read by `normaliseAccess` as **Editor**, the opposite of what was asked for. `Unit lead` and `Member` are written out now.
+
+### off_sheet is not cleared when the row lands
+Tempting and wrong. The sync reads the sheet through `export?format=csv`, which is close to live but not guaranteed to be; handing the row straight to the sheet's ownership means a sync in that window finds no such person and **closes an account ten minutes old**. `syncPeople` already clears the flag the first time it really sees the name, which is the moment that is actually safe.
+
+### Everything still works with it switched off
+Which is how the committee has been running: `GOOGLE_SA_EMAIL` and `GOOGLE_SA_PRIVATE_KEY` are not set, and the admin page says so. Adding somebody and renaming them both happen either way, and the page says which of the two it got — `เพิ่มแถวในชีตรายชื่อให้แล้ว`, or that the row has to be added by hand. A rename that could not reach the sheet marks the person off-sheet and names the old username to go and change.
+
+### Turning it on
+1. Google Cloud console → a project → enable the **Google Sheets API**.
+2. Credentials → **Service account** → Keys → **JSON**.
+3. Share the roster sheet with that service account's email as **Editor**. The link everyone else has stays Viewer, so nobody can still promote themselves to Admin by opening it — the rule from the start is intact.
+4. Vercel → Environment Variables: `GOOGLE_SA_EMAIL` and `GOOGLE_SA_PRIVATE_KEY` (either real newlines or `\n`; `readKey()` takes both). Redeploy.
+
+### Tests
+- **run.mjs §100 is new (14 checks)**, against the same Google stub §52 uses: the appended row landing below the last one in use with the username, nickname and ตำแหน่ง in their own columns, `Member` written rather than left blank, the person staying off-sheet until a sync has seen them, a rename moving exactly one cell in the Username column, and all of it degrading honestly when Google answers 403.
+- §96 and §99 were written when the write-back was off and asserted the old outcome; both now assert the new one.
+- **1536 checks**, 33 browser suites.
+
+---
+
+### Also diagnosed today, no code change
+**The hourly job stopped when the domain moved.** `cu-ftm.vercel.app/api/cron` now answers **302** to `task.chulafair.com`, because making the custom domain primary turns the old one into a redirect. cron-job.org's `redirectSuccess` defaults to **false** — a 3xx is scored as a failure — and it disables a job that keeps failing. The fix is the job's URL, not the code: point it at `https://task.chulafair.com/api/cron` and re-enable it. Vercel's own cron cannot replace it: Hobby is limited to **once per day**.
+
+**The live site is a half-deploy.** `index.html` says `2026-10-24a` and `/api/meta` says `2026-10-22d` — the page was deployed and `api/` and `lib/` were not. Every server-side feature from 10-23b on is missing behind a UI that offers it. This is exactly what the version string exists to catch, and the profile page shows both numbers side by side.
+
 ## 2026-10-25 — a username can be corrected · version `2026-10-25a`
 Schema **`2026-10-25a`** (migrates itself: every foreign key gains ON UPDATE CASCADE). Still 12 functions.
 

@@ -8932,9 +8932,9 @@ ok('...with nothing left pointing at the old name', rnOrphans[0].n === 0);
  * name, and the next sync would read that row as a person who does not exist
  * and make a SECOND account. Marking them off-sheet at least keeps this one.
  */
-ok('an admin is told to change the sheet as well', r.data.fixTheSheet === true);
-const [rnMarked] = await sql`SELECT off_sheet FROM users WHERE username = 'Ploy_MemCon'`;
-ok('...and the renamed account survives the next sync either way', rnMarked.off_sheet === true);
+ok('the sheet\u2019s Username cell moved with it', r.data.sheet && r.data.sheet.ok === true,
+  JSON.stringify(r.data.sheet));
+ok('...so nobody is asked to go and change it by hand', r.data.fixTheSheet === false);
 
 /** Fixing only the capitals is a rename like any other. */
 r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
@@ -8965,6 +8965,95 @@ await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
   body: { username: 'ploy_memcon', newUsername: 'Ploy_StaffCon' } });
 await sql`UPDATE users SET off_sheet = false WHERE username = 'Ploy_StaffCon'`;
 
+
+// ===========================================================================
+head('100. The roster sheet, written back to as well as read from');
+// ===========================================================================
+/**
+ * The sheet is the register of record and the app could only read it, with
+ * one exception — an access change. So somebody added here existed nowhere
+ * the committee looks, and a username corrected here left the sheet saying
+ * the old one, which the next sync reads as a person who does not exist and
+ * makes a SECOND account for.
+ *
+ * Google is stubbed the same way §52 stubs it: `sheetValues` is what the
+ * API hands back and `sheetWrites` collects what was sent to it.
+ */
+sheetValues = parseSheetCsv(SHEET_CSV);
+const shRowsBefore = sheetValues.length;
+sheetWrites.length = 0;
+
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
+  username: 'Wawa_MemDecor', nickname: 'หว่าหวา', displayName: 'Wawa - Venue Decoration',
+  position: 'สมาชิกฝ่ายตกแต่งสถานที่', access: 'Member', department: 'content' } });
+ok('adding somebody also writes them into the roster', r.status === 201 && r.data.sheet.ok === true,
+  JSON.stringify(r.data.sheet));
+ok('...on the first row below the last one in use', r.data.sheet.row === shRowsBefore + 1,
+  `${r.data.sheet.row} after ${shRowsBefore}`);
+
+const shAppended = Object.fromEntries(
+  (sheetWrites.at(-1)?.data || []).map((d) => [d.range.replace(/\d+$/, ''), d.values[0][0]]));
+ok('...with the username in the Username column', shAppended.C === 'Wawa_MemDecor', JSON.stringify(shAppended));
+ok('...the nickname and the ตำแหน่ง where people read them',
+  shAppended.B === 'หว่าหวา' && shAppended.E === 'สมาชิกฝ่ายตกแต่งสถานที่');
+/**
+ * The old write-back only knew Admin, Co-Admin and Editor, and a blank
+ * Access cell comes back from the next sync as an Editor — the opposite of
+ * what was asked for.
+ */
+ok('...and Member written out, not left blank for the sync to read as Editor',
+  shAppended.F === 'Member', shAppended.F);
+/**
+ * Still off-sheet, on purpose. The sync reads the PUBLISHED CSV, which
+ * Google refreshes minutes behind the write — handing the row straight to
+ * the sheet's ownership would let a sync in that window find no such person
+ * and close an account ten minutes old. syncPeople clears the flag itself
+ * the first time it really sees the name.
+ */
+ok('...and stays off-sheet until a sync has actually seen them there',
+  (await sql`SELECT off_sheet FROM users WHERE username = 'Wawa_MemDecor'`)[0].off_sheet === true);
+
+/**
+ * The sheet gains the row and a sync later sees it, which is the state a
+ * rename has to work in — a person the sheet owns, whose Username cell the
+ * app has to move with them.
+ */
+sheetValues.push(['', 'หว่าหวา', 'Wawa_MemDecor', 'Wawa - Venue Decoration',
+  'สมาชิกฝ่ายตกแต่งสถานที่', 'Member', '']);
+await sql`UPDATE users SET off_sheet = false WHERE username = 'Wawa_MemDecor'`;
+
+sheetWrites.length = 0;
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'Wawa_MemDecor', newUsername: 'Waawaa_MemDecor' } });
+ok('renaming moves the sheet’s Username cell too', r.data.sheet && r.data.sheet.ok === true,
+  JSON.stringify(r.data.sheet));
+ok('...one cell, in the Username column', (sheetWrites.at(-1)?.data || []).length === 1
+  && sheetWrites.at(-1).data[0].values[0][0] === 'Waawaa_MemDecor',
+  JSON.stringify(sheetWrites.at(-1)?.data));
+ok('...and nobody is told to go and fix it by hand', r.data.fixTheSheet === false);
+
+/**
+ * And when Google is unreachable, which is the state the committee has been
+ * running in: the account still happens, and the page is told the truth.
+ */
+sheetApiFails = true;
+await sql`UPDATE users SET off_sheet = false WHERE username = 'Waawaa_MemDecor'`;
+r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
+  body: { username: 'Waawaa_MemDecor', newUsername: 'Wawa_Decor' } });
+ok('a rename still happens when Google refuses', r.status === 200, r.data.error || '');
+ok('...and says so rather than claiming a cell it never wrote',
+  r.data.fixTheSheet === true && r.data.sheet.ok === false, JSON.stringify(r.data.sheet));
+ok('...marking them off-sheet so the next sync cannot close the account',
+  (await sql`SELECT off_sheet FROM users WHERE username = 'Wawa_Decor'`)[0].off_sheet === true);
+
+r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
+  username: 'Nofetch_Mem', nickname: 'ไร้ชีต', access: 'Member', department: 'content' } });
+ok('adding somebody still happens too', r.status === 201, r.data.error || '');
+ok('...and says the sheet did not get it', r.data.sheet.ok === false, JSON.stringify(r.data.sheet));
+sheetApiFails = false;
+
+await sql`DELETE FROM users WHERE username IN ('Wawa_Decor', 'Nofetch_Mem')`;
+sheetValues = parseSheetCsv(SHEET_CSV);
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

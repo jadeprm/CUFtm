@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-25a';
+  var APP_VERSION = '2026-10-25b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -13497,11 +13497,13 @@
             S.users = d.users;
             veil.remove();
             var carried = (d.moved || []).reduce(function (n, x) { return n + x.rows; }, 0);
+            var sheetSaid = d.fixTheSheet
+              ? t('renameFixSheet').replace('%a', d.from)
+              : (d.sheet && d.sheet.ok ? t('renameSheetDone') : '');
             S.adminNotice = {
               kind: d.fixTheSheet ? 'warn' : 'ok',
               text: t('renameDone').replace('%a', d.from).replace('%b', d.to)
-                .replace('%n', String(carried)) +
-                (d.fixTheSheet ? '  ·  ' + t('renameFixSheet').replace('%a', d.from) : ''),
+                .replace('%n', String(carried)) + (sheetSaid ? '  ·  ' + sheetSaid : ''),
             };
             renderPage();
           })
@@ -13981,7 +13983,15 @@
           .then(function (d) {
             S.users = d.users;
             veil.remove();
-            say('ok', t('orgMemberAdded').replace('%s', d.username));
+            /**
+             * Whether the roster sheet got the row as well. Said rather than
+             * assumed: an account the sheet has never heard of is one that
+             * falls out of every printed list and every ฝ่าย count.
+             */
+            var wrote = d.sheet && d.sheet.ok;
+            say(wrote ? 'ok' : 'warn',
+              t('orgMemberAdded').replace('%s', d.username) + '  ·  ' +
+              (wrote ? t('orgMemberInSheet') : t('orgMemberNotInSheet')));
             renderPage();
           })
           .catch(function (err) {

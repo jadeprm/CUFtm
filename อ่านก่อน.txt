@@ -1,38 +1,51 @@
-CUFTM 2026-10-25a — แทนที่ไฟล์เดิมใน CUFtm-clean ทั้ง 19 ไฟล์
+CUFTM 2026-10-25b — แทนที่ไฟล์เดิมใน CUFtm-clean ทั้ง 20 ไฟล์
 
-รวมงานของ 24–25 ต.ค. ไว้ชุดเดียว (10-24a + b + c + 10-25a) ลงทีเดียวจบ
-ชุดก่อนหน้าที่ส่งไปแล้ว ไม่ต้องใช้
+**** อ่านตรงนี้ก่อน ****
+เว็บจริงตอนนี้ดีพลอยมาไม่ครบ — หน้าเว็บเป็น 2026-10-24a แต่ api/ กับ lib/
+ยังเป็น 2026-10-22d อยู่ ปุ่มใหม่ขึ้นแต่กดแล้วเออเรอร์
 
-ของใหม่รอบนี้ — แก้ username ได้โดยไม่ต้องลบบัญชี
-  หน้าจัดการผู้ใช้ กดที่ชื่อคน แล้วกด "แก้ username"
-  บัญชีเดิมอยู่ครบทุกอย่าง — งาน ลายเซ็น การประชุม การแจ้งเตือน และ session
-  ย้ายตามไปหมด ไม่มีอะไรหาย และหน้าจอจะบอกว่าย้ายไปกี่แถว
+รอบนี้ต้องอัปขึ้นให้ครบ **ทั้ง 3 โฟลเดอร์** api/ lib/ public/
+ไม่ใช่แค่ public/ และต้องรวมไฟล์ของ 2026-10-23b (หน้าฟีด) ขึ้นไปด้วย
+เช็คหลังดีพลอย: โปรไฟล์ → เวอร์ชันที่ใช้งานอยู่ ต้องขึ้น 2026-10-25b
+ทั้งสองบรรทัด ถ้าไม่ตรงแปลว่าขึ้นไม่ครบ
 
-  *** สำคัญ *** ถ้าคนนั้นยังอยู่ในชีตรายชื่อ ต้องแก้ช่อง Username ในชีต
-  ให้ตรงกันด้วย ไม่งั้นซิงก์รอบหน้าจะสร้างบัญชีชื่อเดิมขึ้นมาใหม่อีกบัญชี
-  (ระบบเตือนให้บนหน้าจอหลังแก้เสร็จ)
+ของใหม่รอบนี้ — ชีตเชื่อมสองทางจริง
+  · เพิ่มสมาชิกในแอป → เพิ่มแถวในชีตรายชื่อให้เลย
+  · แก้ username ในแอป → แก้ช่อง Username ในชีตให้เลย
+  · เขียนช่อง Access เป็น "Unit lead" / "Member" ได้แล้ว (เดิมรู้จักแค่
+    Admin / Co-Admin / Editor ปล่อยว่างไว้แล้วซิงก์จะอ่านเป็น Editor)
+  · ถ้ายังไม่ได้ตั้งค่า ทุกอย่างทำงานเหมือนเดิม แค่บอกบนหน้าจอว่าชีตไม่ได้รับ
 
-ของเดิมที่รวมมาด้วย
-  · ทุกคนที่มีบัญชีนัดประชุมได้ รวมถึงสมาชิกฝ่าย
-  · เชิญประชุมด้วย "ทุกคน" เป็นกฎถาวร คนเข้าทีหลังถูกเพิ่มเองตอนซิงก์
-  · การประชุมของฝ่ายไหน คนในฝ่ายนั้นเห็นและอ่านรายงานได้
-  · ผังองค์กร — เพิ่ม/แก้ฝ่าย, เพิ่ม/เก็บหน่วยย่อย, สร้าง workspace ของหน่วย
-  · เพิ่มสมาชิกเองได้ ไม่ต้องรอแก้ชีท
-  · กลุ่มและวง — ใส่/ถอดคนในบอร์ดบริหารและหัวหน้าฝ่ายทุกคน, สร้างกลุ่มใหม่
-  · กลุ่มของฉัน + ป้ายของฉัน ที่หน้าโปรไฟล์
-  · AdSense เฉพาะหน้าล็อคอิน (ปิดได้ที่ ADSENSE_CLIENT ใน public/app.js)
+วิธีเปิดการเขียนกลับ (ทำที่ฝั่งพี่ ผมไม่แตะคีย์)
+  1. console.cloud.google.com → สร้าง/เลือกโปรเจกต์
+  2. APIs & Services → Library → เปิด "Google Sheets API"
+  3. Credentials → Create credentials → Service account → ตั้งชื่อ → Done
+  4. เปิด service account นั้น → Keys → Add key → Create new key → JSON
+  5. ในไฟล์ JSON เอาค่า client_email กับ private_key
+  6. แชร์ชีตรายชื่อให้ client_email นั้น เป็น Editor
+     (ลิงก์สาธารณะยังเป็น Viewer เหมือนเดิม ไม่ได้เปิดให้ใครแก้ได้)
+  7. Vercel → Settings → Environment Variables
+       GOOGLE_SA_EMAIL        = client_email
+       GOOGLE_SA_PRIVATE_KEY  = private_key ทั้งก้อน รวม BEGIN/END
+  8. Redeploy → คำเตือนสีเหลืองบนหน้าแอดมินจะหายไป
 
-ไฟล์ทั้งหมด (19 ไฟล์ + changelog)
+cron-job.org ไม่ทำงาน
+  เพราะ cu-ftm.vercel.app/api/cron ตอบ 302 redirect ไป task.chulafair.com
+  (ผลจากการตั้งโดเมนใหม่เป็น primary) cron-job.org นับ 3xx เป็น failure
+  แล้วปิด job ให้อัตโนมัติ
+  แก้: เปลี่ยน URL ของ job เป็น https://task.chulafair.com/api/cron
+       แล้วกดเปิด job ใหม่ (ถ้าตั้ง CRON_SECRET ไว้ ใส่ ?key=... ต่อท้ายด้วย)
+  Vercel Cron ใช้แทนไม่ได้ เพราะแผน Hobby จำกัดวันละครั้ง
+
+ไฟล์ทั้งหมด (20 ไฟล์ + changelog)
   api/meta.js        api/tasks.js        api/users.js
   lib/circles.js     lib/db.js           lib/departments.js  lib/meeting.js
-  lib/meetingstore.js lib/rename.js      lib/sheet.js        lib/version.js
+  lib/meetingstore.js lib/rename.js      lib/sheet.js        lib/sheets.js
+  lib/version.js
   public/app.js      public/i18n.js      public/i18n-en.js
   public/index.html  public/styles.css
   test/run.mjs       dev-tests/org.mjs   dev-tests/ads.mjs
 
 lib/rename.js เป็นไฟล์ใหม่ อย่าลืมอัปขึ้นด้วย
 
-หลังดีพลอย
-  เช็คที่ โปรไฟล์ → เวอร์ชันที่ใช้งานอยู่ ต้องขึ้น 2026-10-25a ทั้งสองบรรทัด
-
-ทดสอบแล้ว: run.mjs 1522 checks · browser suites 33 ชุด
+ทดสอบแล้ว: run.mjs 1536 checks · browser suites 33 ชุด

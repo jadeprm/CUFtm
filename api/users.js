@@ -4,7 +4,7 @@ import {
   departmentsByUser, departmentsOf, setDepartments, normaliseAccess, ACCESS_ORDER,
 } from '../lib/auth.js';
 import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
-import { writeAccess, sheetWriteConfigured } from '../lib/sheets.js';
+import { writeAccess, appendPerson, renameInSheet, sheetWriteConfigured } from '../lib/sheets.js';
 import {
   isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
   DEPARTMENTS, unitsOf, makeDepartmentKey,
@@ -738,9 +738,35 @@ async function handler(request) {
               ${home}, ${all}, ${unit}, ${Boolean(body.isHead)}, true, true, true, true)`;
     if (!all) await setDepartments(sql, username, departments);
 
+    /**
+     * And into the roster sheet, which is still the register of record.
+     *
+     * Best effort on purpose: the account exists either way, and an admin
+     * adding somebody while Google is unreachable should get the account
+     * and an honest note, not a failure. `off_sheet` above is what keeps
+     * the next sync from closing them when this did not land.
+     */
+    const wrote = await appendPerson({
+      username, nickname, displayName, position, access,
+      department: home ? (departmentByKey(home)?.th || home) : '',
+      unit: unit || '',
+    });
+    /**
+     * `off_sheet` is deliberately NOT cleared here, even when the row lands.
+     *
+     * The sync reads the sheet's PUBLISHED CSV, which Google refreshes on its
+     * own schedule — minutes behind the write. Handing the row straight to
+     * the sheet's ownership would mean a sync in that window finds no such
+     * person and closes the account ten minutes after it was made. syncPeople
+     * clears the flag itself the first time it actually sees the name.
+     */
+
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
-    return json({ ok: true, username, users: rows.map((u) => directoryRow(u, grants)) }, 201);
+    return json({
+      ok: true, username, sheet: wrote,
+      users: rows.map((u) => directoryRow(u, grants)),
+    }, 201);
   }
 
   // ---- the org chart -----------------------------------------------------
@@ -1071,8 +1097,18 @@ async function handler(request) {
      * closed; only changing the Username column in the sheet stops the
      * duplicate, and that is a cell nobody here can write for Jade.
      */
+    /**
+     * The sheet's Username cell moves too, when the write-back is set up.
+     * Without it the next sync reads the old name as somebody who does not
+     * exist and makes a second account under it — so when the cell cannot be
+     * written, the person is marked off-sheet and the page says to go and
+     * change it by hand.
+     */
     const wasOnSheet = !target.off_sheet;
-    if (wasOnSheet) await sql`UPDATE users SET off_sheet = true WHERE username = ${to}`;
+    const sheet = wasOnSheet ? await renameInSheet(from, to) : { ok: false, reason: 'OFF_SHEET' };
+    if (wasOnSheet && !sheet.ok) {
+      await sql`UPDATE users SET off_sheet = true WHERE username = ${to}`;
+    }
 
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
@@ -1084,7 +1120,9 @@ async function handler(request) {
       // touched nothing looks exactly like one that worked.
       moved: result.moved,
       columnsChecked: result.columnsChecked,
-      fixTheSheet: wasOnSheet,
+      // Only when the server could not do it itself.
+      fixTheSheet: wasOnSheet && !sheet.ok,
+      sheet,
       // Renaming yourself leaves the page holding the old name.
       itWasMe: from === me.username,
       users: rows.map((u) => directoryRow(u, grants)),
