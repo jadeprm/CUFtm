@@ -72,6 +72,8 @@ function collect(node, out) {
 }
 
 let sheetValues = null;
+/** §101 only: what the token endpoint should answer with. */
+let googleTokenReply = null;
 const sheetWrites = [];
 let sheetApiFails = false;
 
@@ -175,6 +177,12 @@ globalThis.fetch = async (url, init) => {
      */
     const form = new URLSearchParams(String(init?.body || ''));
     if (form.get('grant_type') === 'authorization_code') {
+      /**
+       * §101 sets this to say exactly what Google hands back, because what
+       * it is testing is the handling of the answer — a scope without
+       * drive.file in it, a replayed state — rather than the exchange.
+       */
+      if (googleTokenReply) return new Response(JSON.stringify(googleTokenReply), { status: 200 });
       const code = form.get('code');
       if (code === 'refuse') return new Response('{"error":"invalid_grant"}', { status: 400 });
       const idt = 'x.' + Buffer.from(JSON.stringify({ email: code.toLowerCase() + '@gmail.test' })).toString('base64url') + '.y';
@@ -3405,15 +3413,21 @@ await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
 await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Fah_StaffCon', unit: 'Exhibition' } });
 
-// ---- a member ------------------------------------------------------------
+/**
+ * ---- a member ------------------------------------------------------------
+ *
+ * These two asserted the opposite until Jade asked for the rule to go. The
+ * old one read "a member does the work they are given", which described
+ * nobody here and mostly produced messages asking somebody senior to type a
+ * task in. See canEditTasks in lib/auth.js and §102.
+ */
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member',
-  body: { title: 'งานที่สมาชิกพยายามสร้าง', assignees: ['Ploy_StaffCon'] } });
-ok('a member cannot create a task', r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE',
-  JSON.stringify(r.data));
+  body: { title: 'งานที่สมาชิกสร้างเอง', assignees: ['Ploy_StaffCon'] } });
+ok('a สมาชิกฝ่าย can write a task down', r.status === 201, JSON.stringify(r.data).slice(0, 80));
 
 r = await call(eventsApi, '/api/events', { method: 'POST', as: 'member',
-  body: { title: 'กิจกรรมที่สมาชิกพยายามสร้าง', startsOn: '2026-11-20' } });
-ok('...nor an event', r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE', JSON.stringify(r.data));
+  body: { title: 'กิจกรรมที่สมาชิกสร้างเอง', startsOn: '2026-11-20' } });
+ok('...and an event', r.status === 201, JSON.stringify(r.data).slice(0, 80));
 
 // ---- a unit editor -------------------------------------------------------
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'unitlead',
@@ -3470,14 +3484,13 @@ ok('...with both people really on it afterwards', widened.length === 2,
   widened.map((x) => x.username).join(', '));
 
 /**
- * The rank rules that did NOT change, checked here so that opening assignment
- * up cannot be mistaken for opening everything up. A member still cannot create
- * work, and a unit head still cannot touch anybody's account.
+ * The rank rules that did NOT change, checked here so that opening creation
+ * and assignment up cannot be mistaken for opening everything up.
  */
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member',
-  body: { title: 'สมาชิกยังสร้างไม่ได้', assignees: ['Fah_StaffCon'] } });
-ok('a member still cannot create work for anybody',
-  r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE', JSON.stringify(r.data));
+  body: { title: 'สมาชิกมอบงานให้คนอื่น', assignees: ['Fah_StaffCon'] } });
+ok('a สมาชิกฝ่าย can put work on somebody else too — it is an invitation, not an order',
+  r.status === 201, JSON.stringify(r.data).slice(0, 60));
 
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'unitlead',
   body: { username: 'Fah_StaffCon', access: 'editor' } });
@@ -8850,6 +8863,23 @@ const adAppSource = (await import('node:fs')).readFileSync('public/app.js', 'utf
 
 ok('no ad script in index.html, which is every screen at once',
   !/googlesyndication|adsbygoogle/i.test(adPageHtml));
+
+/**
+ * Verification is not advertising, and the two need opposite treatment.
+ *
+ * AdSense refused to verify the site because the crawler reads the HTML
+ * source and the script is injected by app.js — nothing to find. These two
+ * are what a crawler reads: a meta tag and a text file. Neither loads
+ * anything, draws anything or reaches a visitor, which is the whole point.
+ */
+ok('the account is claimed by a meta tag a crawler can actually read',
+  /<meta name="google-adsense-account" content="ca-pub-6829067770704612">/.test(adPageHtml));
+const adsTxt = (await import('node:fs')).readFileSync('public/ads.txt', 'utf8');
+ok('...and by ads.txt, which AdSense also requires before it will serve',
+  /^google\.com, pub-6829067770704612, DIRECT, f08c47fec0942fa0$/m.test(adsTxt), adsTxt.trim().split('\n').pop());
+ok('...and the publisher id is the same in all three places',
+  (adAppSource.match(/ca-pub-6829067770704612/g) || []).length >= 1
+  && /ca-pub-6829067770704612/.test(adPageHtml) && /pub-6829067770704612/.test(adsTxt));
 ok('the page loads it itself, so it can choose when',
   /pagead2\.googlesyndication\.com/.test(adAppSource));
 ok('...only where the sign-in screen is drawn',
@@ -9054,6 +9084,190 @@ sheetApiFails = false;
 
 await sql`DELETE FROM users WHERE username IN ('Wawa_Decor', 'Nofetch_Mem')`;
 sheetValues = parseSheetCsv(SHEET_CSV);
+
+// ===========================================================================
+head('101. Connecting the Drive archive with a button instead of a playground');
+// ===========================================================================
+/**
+ * Finished documents move to Drive and stop costing database storage — but
+ * only once somebody has produced a refresh token, which until now meant an
+ * OAuth playground, a scope typed by hand, a string pasted into Vercel and a
+ * redeploy. Four chances to get it wrong and one person who could do it, so
+ * it never got drvDone and every PDF the committee has ever signed is still in
+ * Neon.
+ */
+const { setStoredDriveToken, driveStatus } = await import('../lib/drive.js');
+const { startDriveLink, finishDriveLink, unlinkDrive, seal: sealToken } =
+  await import('../lib/googlecal.js');
+
+/**
+ * Earlier sections pin a token in the environment, which is the other way
+ * of connecting the archive and would mask everything below. Put back at
+ * the end of this section.
+ */
+const envToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+delete process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+setStoredDriveToken(null);
+ok('with no token the archive is off and says so', driveStatus().configured === false);
+
+/**
+ * The client id and secret are shared with the Calendar link on purpose: a
+ * committee that has already set that up should not paste the same two
+ * values again under a second pair of names.
+ */
+delete process.env.GOOGLE_OAUTH_CLIENT_ID;
+delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+process.env.GOOGLE_SIGNIN_CLIENT_ID = 'test-client.apps.googleusercontent.com';
+process.env.GOOGLE_SIGNIN_CLIENT_SECRET = 'test-secret';
+ok('the Calendar link’s OAuth client counts as the archive’s too',
+  driveStatus().hasClient === true);
+
+// ---- who may start it ----------------------------------------------------
+r = await call(authApi, '/api/auth?do=drive-start', { as: 'editor' });
+ok('an editor is turned away rather than sent to Google',
+  r.status === 302 || r.status === 200, String(r.status));
+
+const drvStarted = await startDriveLink(sql, 'Jade_Pres', 'https://task.chulafair.com');
+ok('an admin gets a consent URL', drvStarted.startsWith('https://accounts.google.com/'), drvStarted.slice(0, 48));
+ok('...for drive.file and nothing wider — it reaches only what this app made',
+  drvStarted.includes(encodeURIComponent('https://www.googleapis.com/auth/drive.file'))
+  && !/calendar|drive.readonly|%2Fdrive(&|$)/.test(drvStarted));
+ok('...asking offline, or there is no refresh token to keep',
+  drvStarted.includes('access_type=offline') && drvStarted.includes('prompt=consent'));
+
+const [drvPending] = await sql`SELECT purpose, username FROM oauth_states ORDER BY created_at DESC LIMIT 1`;
+ok('...and the state says which of the two flows it is',
+  drvPending.purpose === 'drive' && drvPending.username === 'Jade_Pres', JSON.stringify(drvPending));
+
+// ---- Google's answer -----------------------------------------------------
+const driveState = new URL(drvStarted).searchParams.get('state');
+googleTokenReply = { refresh_token: 'archive-refresh-1', scope: 'https://www.googleapis.com/auth/drive.file', access_token: 'at', expires_in: 3600 };
+let drvDone = await finishDriveLink(sql, { username: 'Jade_Pres' },
+  { code: 'c', state: driveState, origin: 'https://task.chulafair.com' });
+ok('the token comes back and is kept', drvDone.ok === true, JSON.stringify(drvDone));
+
+const [drvKept] = await sql`SELECT value FROM meta WHERE key = 'drive_refresh'`;
+ok('...sealed, so a database dump holds no usable Google credential',
+  drvKept.value.startsWith('v1.') && !drvKept.value.includes('archive-refresh-1'), drvKept.value.slice(0, 12));
+
+/**
+ * lib/db.js puts it on the module once per request, which is what lets
+ * driveConfigured() stay a plain synchronous check in cron and meetings.
+ */
+const { unseal: unsealToken } = await import('../lib/googlecal.js');
+setStoredDriveToken(unsealToken(drvKept.value));
+ok('...and the archive is on once a request has loaded it', driveStatus().configured === true);
+ok('...marked as connected from the app rather than pinned in the environment',
+  driveStatus().byButton === true);
+
+/** A state is good once, for one flow, for the person who drvStarted it. */
+drvDone = await finishDriveLink(sql, { username: 'Jade_Pres' },
+  { code: 'c', state: driveState, origin: 'https://task.chulafair.com' });
+ok('the same consent cannot be replayed', drvDone.error === 'GOOGLE_STATE', JSON.stringify(drvDone));
+
+const drvOther = await startDriveLink(sql, 'Jade_Pres', 'https://task.chulafair.com');
+drvDone = await finishDriveLink(sql, { username: 'Kaew_VP' },
+  { code: 'c', state: new URL(drvOther).searchParams.get('state'), origin: 'https://task.chulafair.com' });
+ok('...nor finished by somebody else', drvDone.error === 'GOOGLE_STATE', JSON.stringify(drvDone));
+
+/** Consent given without the Drive box ticked is not a connection. */
+const drvNarrow = await startDriveLink(sql, 'Jade_Pres', 'https://task.chulafair.com');
+googleTokenReply = { refresh_token: 'x', scope: 'openid email', access_token: 'at', expires_in: 3600 };
+drvDone = await finishDriveLink(sql, { username: 'Jade_Pres' },
+  { code: 'c', state: new URL(drvNarrow).searchParams.get('state'), origin: 'https://task.chulafair.com' });
+ok('...and consent without the Drive box ticked is refused, not half-stored',
+  drvDone.error === 'GOOGLE_NO_DRIVE', JSON.stringify(drvDone));
+
+// ---- disconnecting -------------------------------------------------------
+r = await call(usersApi, '/api/users?do=drive-unlink', { method: 'POST', as: 'editor' });
+ok('an editor cannot disconnect the archive', r.status === 403, r.data.error);
+
+r = await call(usersApi, '/api/users?do=drive-unlink', { method: 'POST', as: 'admin' });
+ok('an admin can', r.status === 200, r.data.error || '');
+const [drvAfter] = await sql`SELECT value FROM meta WHERE key = 'drive_refresh'`;
+ok('...and the token is gone from the database', !drvAfter);
+setStoredDriveToken(null);
+ok('...so the archive is off again', driveStatus().configured === false);
+
+googleTokenReply = null;
+delete process.env.GOOGLE_SIGNIN_CLIENT_ID;
+delete process.env.GOOGLE_SIGNIN_CLIENT_SECRET;
+if (envToken) process.env.GOOGLE_DRIVE_REFRESH_TOKEN = envToken;
+await sql`DELETE FROM oauth_states`;
+
+
+// ===========================================================================
+head('102. Everybody may write work down, and say whose it is');
+// ===========================================================================
+/**
+ * The access ladder was built around a distinction — "an editor runs a
+ * section and hands work out, a member does the work they are given" — that
+ * turned out to describe nobody on this committee. A สมาชิกฝ่าย who notices
+ * the posters have not been ordered writes it down; the alternative was
+ * messaging somebody senior to type it for them, which is how a tracker
+ * becomes a thing people work around rather than in.
+ *
+ * It went in three steps over three days: meetings first (§95), then tasks
+ * and events, and these are the checks that keep the whole shape in place.
+ */
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member', body: {
+  title: 'สั่งโปสเตอร์', assignees: ['Kungking_HeadCon', 'Totti_HeadOp'], notify: [] } });
+ok('a สมาชิกฝ่าย can put work on a ประธานฝ่าย and on a co-admin',
+  r.status === 201, JSON.stringify(r.data).slice(0, 60));
+const memTaskId = r.data.task.id;
+ok('...and both of them really are on it',
+  r.data.task.assignees.includes('Kungking_HeadCon') && r.data.task.assignees.includes('Totti_HeadOp'),
+  r.data.task.assignees.join(','));
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member', body: {
+  title: 'แท็กทั้งฝ่าย', departments: [{ key: 'content', scope: 'all' }], notify: [] } });
+ok('...and tag a whole ฝ่าย, which is the same act at a larger size',
+  r.status === 201 && r.data.task.assignees.length > 1,
+  String((r.data.task.assignees || []).length));
+
+r = await call(eventsApi, '/api/events', { method: 'POST', as: 'member', body: {
+  title: 'ซ้อมย่อย', startsOn: '2026-11-21', people: ['Kungking_HeadCon'] } });
+ok('an event, with somebody senior on it', r.status === 201, JSON.stringify(r.data).slice(0, 60));
+
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'member', body: {
+  title: 'คุยเรื่องโปสเตอร์', meetsOn: '2026-11-22', meetsAt: '17:00',
+  people: ['Kungking_HeadCon'] } });
+ok('and a meeting — the three Jade named, all open', r.status === 201, JSON.stringify(r.data).slice(0, 60));
+
+/**
+ * What stops this being a free-for-all is not a permission. Being named is
+ * an invitation: it arrives, it can be declined, and whoever did the naming
+ * was shown first whether that person was even free.
+ */
+const memInvited = await sql`SELECT reply FROM task_people
+                          WHERE task_id = ${memTaskId} AND username = 'Totti_HeadOp'`;
+ok('being named is an invitation, not an order', memInvited[0].reply === 'invited', memInvited[0].reply);
+
+/**
+ * And the rules that did not move with it. A member creating a task owns
+ * that task and nothing else — somebody else's is still somebody else's.
+ */
+r = await call(tasksApi, '/api/tasks', { as: 'member' });
+const memNotMine = r.data.tasks.find((x) => x.createdBy === 'Jade_Pres' && !x.assignees.includes('Ploy_StaffCon'));
+if (memNotMine) ok('...but somebody else’s task is still not theirs to rewrite', memNotMine.mayEdit === false);
+else ok('...but somebody else’s task is still not theirs to rewrite', true, 'none to test');
+
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'member',
+  body: { username: 'Fah_StaffCon', access: 'editor' } });
+ok('...and nobody gained an account control on the way', r.status === 403, r.data.error);
+
+/**
+ * The one place a สมาชิกฝ่าย is still stopped, and the reason is different:
+ * a short link is a public address on the committee's own domain, which is
+ * not the same kind of act as writing down a job.
+ */
+r = await call(metaApi, '/api/meta?do=link', { method: 'POST', as: 'member',
+  body: { url: 'https://example.org/poster' } });
+ok('a short link is still not a member’s to publish',
+  r.status === 403 && r.data.error === 'MEMBERS_CANNOT_CREATE', JSON.stringify(r.data).slice(0, 60));
+
+await sql`DELETE FROM tasks WHERE created_by = 'Ploy_StaffCon'`;
+
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
