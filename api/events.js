@@ -276,7 +276,8 @@ async function handler(request) {
     }
 
     if (request.method === 'POST') {
-      // Same rule as tasks: a member attends events, they do not schedule them.
+      // Same rule as tasks, which is now simply "signed in". Kept as a call
+      // rather than deleted: this is where a future rule would go.
       if (!canEditTasks(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
 
       const body = await request.json().catch(() => ({}));

@@ -1,0 +1,7 @@
+# Who is allowed to sell advertising on this site.
+#
+# AdSense reads this file to confirm the account is ours, and refuses to
+# serve ads to a site whose ads.txt does not name its publisher — so this
+# one line is both the verification and the permission. It is a static text
+# file: nothing loads it, nobody sees it, and it costs a visitor nothing.
+google.com, pub-6829067770704612, DIRECT, f08c47fec0942fa0

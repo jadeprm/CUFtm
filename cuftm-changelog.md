@@ -11,6 +11,85 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-25 — everybody may write work down · version `2026-10-25e`
+No schema change. Still 12 functions. **Shipped as one FULL zip — see below.**
+
+### The rule that described nobody
+The access ladder was built around a distinction: *an editor runs a section and hands work out, a member does the work they are given.* It is a coherent rule and it fitted no one on this committee. A สมาชิกฝ่าย who notices the posters have not been ordered writes it down — the alternative was messaging somebody senior to type it in, which is how a tracker becomes a thing people work around rather than in.
+
+`canEditTasks` is now `Boolean(user)`, and `cannotAssign` no longer stops a member either. Both locks were on the same door and opening one without the other would have been a worse rule than either: being able to write down a job and not being able to say whose it is.
+
+This finishes a change that went in three steps over three days — meetings on the 24th (§95), tasks and events now — each one for the same reason and each one arriving as a separate report from somebody who had hit it.
+
+**What stops this being a free-for-all is not a permission.** Being named is an invitation: it arrives, it can be declined, and whoever did the naming was shown first whether that person was even free. Everything else holds — somebody else's task is still not yours to rewrite, and nobody gained an account control on the way.
+
+### The one thing still held back
+A **short link** is a public address on the committee's own domain that goes on a poster. Publishing under the committee's name is a different act from organising its work, so it kept the old answer rather than being opened by a change that was about something else — `canMakeShortLink` in `lib/auth.js`, which is just the rule `canEditTasks` used to be. Say the word and it goes too.
+
+### One zip, the whole app
+The recurring failure here is not a bug, it is a **partial deploy**: `tasks.js` on 10-08, the documents work never shipping on 10-10, and this week the page at `2026-10-24a` with `api/` and `lib/` still at `2026-10-22d` — new buttons on screen with nothing behind them. Every one of those was a package of changed files where some of them landed.
+
+From this release the package is the **entire project** — `api/`, `lib/`, `public/`, `test/`, `dev-tests/`, `package.json`, `vercel.json`, the lot — minus `node_modules` (installed, not shipped) and the test screenshots (output, not input). About 5 MB and 123 files. Extract it over the folder and nothing can be half-updated, because there is no half.
+
+### Tests
+- **run.mjs §102 is new (9 checks)** — a สมาชิกฝ่าย putting work on a ประธานฝ่าย and a co-admin, tagging a whole ฝ่าย, creating an event and a meeting, the invitation still being an invitation, somebody else's task still not theirs to rewrite, no account control gained, and the short link still refused.
+- Four checks that asserted the old rule now assert the new one: two in §64, one in §65, and `dev-tests/polish.mjs` on the "start here" card — which now offers the first task to exactly the person who had nothing on their plate.
+- **1566 checks**, 33 browser suites.
+
+## 2026-10-25 — the Drive archive, connected by a button · version `2026-10-25d`
+Schema **`2026-10-25d`** (migrates itself: `oauth_states.purpose`). Still 12 functions.
+
+Every PDF the committee has ever signed is still in Neon, because `lib/drive.js` has been finished and switched off since the day it was written. The code was never the problem: getting a refresh token meant an OAuth playground, a scope typed by hand, a long string pasted into Vercel and a redeploy — four chances to get it wrong and one person who could do it. So it never got done.
+
+It is now a button on the admin page.
+
+### Why a refresh token and not the service account
+Unchanged and worth repeating, because it looks like duplication: a service account has **no Drive storage of its own**. It can edit a spreadsheet shared with it, and an upload to a personal Drive fails with `storageQuotaExceeded` because there is no personal Drive to put it in. So the archive acts as a real Google account — the committee's, not whoever is president this year.
+
+### What the button does
+`?do=drive-start` → Google's consent screen → the existing `google-callback`. One redirect URI, not two: Google wants every one registered by hand, and a second is a second thing to get wrong the next time the domain moves. The new `oauth_states.purpose` column is what tells the two flows apart, read from the state row rather than guessed from the scope — so a **cancelled** consent still lands on the page the person started from.
+
+- **Scope `drive.file` and nothing wider.** The narrowest scope that can upload: it reaches files this app created and nothing else in that account. Even holding the token, the archive cannot read one other document in the committee's Drive.
+- **`access_type=offline` with `prompt=consent`.** Without the second, a reconnection comes back with no refresh token at all and the archive stops a week later for no visible reason.
+- **The token is sealed** with the same AES-256-GCM key as every other stored Google token and kept in `meta`, one row for the whole committee — the archive is a place, not a preference. A database dump holds no usable credential.
+- **Admin and co-admin only**, to start it and to disconnect it. Disconnecting revokes the grant at Google too, so the app stops appearing in that account's list; the files already moved stay where they are.
+
+### One OAuth client, two names
+`lib/drive.js` asked for `GOOGLE_OAUTH_CLIENT_*` and `lib/googlecal.js` for `GOOGLE_SIGNIN_CLIENT_*`. One client serves both, and a committee that has already set up the Calendar link should not paste the same two values again under a second pair of names — so each is now read under either name. For most setups **there is nothing left to configure**: the button is simply there.
+
+### driveConfigured() stays synchronous
+It gates three call sites in `api/cron.js` and `lib/meetingstore.js`, neither of which has `sql` to hand. Rather than thread a database handle through all of them for a value that changes about once a year, `lib/db.js` puts the sealed token on the module once per request, on the same cached read as the org chart and the circles. Same pattern, third time.
+
+### Tests
+- **run.mjs §101 is new (18 checks)** — the archive off with no token, the Calendar client counting as the archive's, an editor turned away, the consent URL being for `drive.file` and nothing wider and asking offline, the state marked as Drive, the token stored sealed and switching the archive on, a replayed state refused, somebody else's state refused, consent without the Drive box refused rather than half-stored, and disconnecting leaving the archive off.
+- The token endpoint stub can now be told what to answer, so the tests are about handling Google's reply rather than about the exchange.
+- **1557 checks**, 33 browser suites.
+
+## 2026-10-25 — AdSense verification, which is not advertising · version `2026-10-25c`
+No schema change. Still 12 functions.
+
+"Couldn't verify your site", on `chulafair.com`. Two separate reasons, and the second one was mine.
+
+### The site being verified is not this one
+`chulafair.com` is the public ChulaFAIR 2027 page — its own project, its own `/admin`, its own `robots.txt` and `sitemap.xml`, none of which exist in this repository. CUFTM is `task.chulafair.com`. The tag added in `2026-10-24c` went into CUFTM, so AdSense was looking at a site that had never heard of it. Nothing in this codebase can fix that; the tag has to go on that site.
+
+It is also the better site to monetise. It is public, bilingual and has actual content, where `task.chulafair.com` is a sign-in box — thin content, and the kind of page a review can fail.
+
+### Verification by JavaScript does not work
+Even on `task.chulafair.com` it would have failed. The script is injected by `renderAuth()` so that Auto ads cannot follow anybody into the app — which is right for ads and useless for verification, because **the crawler reads the HTML source, not the rendered page.** There was nothing to find.
+
+So verification is now done by the two things a crawler actually reads, and neither of them is an advertisement:
+
+- **`<meta name="google-adsense-account">`** in `index.html`. A meta tag. It loads nothing, draws nothing, and reaches no visitor.
+- **`public/ads.txt`**, served at `/ads.txt`. A static text file. AdSense refuses to serve to a site whose ads.txt does not name its publisher, so this is the permission as well as the proof.
+
+Neither causes a single ad to appear. The script that does is still loaded only on the sign-in screen, and `ADSENSE_CLIENT = ''` in `public/app.js` still switches that off on its own, leaving the invisible half in place.
+
+### Tests
+- **run.mjs §98 gained 3 checks** — the meta tag present in the source, the ads.txt line in the exact format AdSense parses, and the publisher id being the same string in all three places. The existing check that no ad *script* is in `index.html` is unchanged and still the one that matters: that file is every screen at once.
+- `dev-tests/srv2.mjs` now serves `.txt` as `text/plain`, so `/ads.txt` is readable in development.
+- **1539 checks**, 33 browser suites.
+
 ## 2026-10-25 — the sheet is written to, not only read · version `2026-10-25b`
 No schema change. Still 12 functions.
 

@@ -14,6 +14,7 @@ import {
   makeCircleKey, pinnedState,
 } from '../lib/circles.js';
 import { renameUser, USERNAME_SHAPE } from '../lib/rename.js';
+import { unlinkDrive } from '../lib/googlecal.js';
 import { driveStatus } from '../lib/drive.js';
 import {
   availabilityOf, setAvailability, addBlock, removeBlock, checkClashes,
@@ -260,6 +261,11 @@ async function handler(request) {
       driveConfigured: drive.configured,
       driveHasClient: drive.hasClient,
       driveHasRefreshToken: drive.hasRefreshToken,
+      // Connected by the button rather than pinned in the environment, and
+      // when — so the page can offer to connect, or to disconnect.
+      driveByButton: drive.byButton,
+      driveLinkedAt: (await sql`SELECT value FROM meta WHERE key = 'drive_linked_at'`)[0]?.value || null,
+      driveMayConnect: canManageAccounts(me),
       driveFolder: drive.folder,
       drivePinnedFolder: drive.pinnedFolder,
       archiveGraceDays: Number(process.env.DOC_ARCHIVE_DAYS || 3),
@@ -1052,6 +1058,19 @@ async function handler(request) {
     }
   }
 
+
+  // ---- disconnecting the Drive archive ----------------------------------
+  /**
+   * The files already in Drive stay there; this forgets the token and tells
+   * Google to drop the grant, so the app stops appearing in that account's
+   * list of connected apps.
+   */
+  if (request.method === 'POST' && action === 'drive-unlink') {
+    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
+    await unlinkDrive(sql);
+    forgetOrg();
+    return json({ ok: true });
+  }
 
   // ---- correcting a username --------------------------------------------
   /**

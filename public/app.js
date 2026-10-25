@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-25b';
+  var APP_VERSION = '2026-10-25e';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1069,7 +1069,7 @@
         ? { icon: 'meeting', label: t('mtgNew'), sub: t('phNewMeetingSub'), onclick: function () { openMeeting(null); } }
         : null,
       mayCreate() ? { icon: 'upload', label: t('importTasks'), sub: t('phImportSub'), onclick: function () { openImport(); } } : null,
-    ]);
+    ].filter(Boolean));
   }
 
   /**
@@ -7827,6 +7827,24 @@
 
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navLinks') })]));
     main.appendChild(h('p', { class: 'hint', text: t('linksIntro') }));
+    /**
+     * What Google said, for somebody who has just come back from its
+     * consent screen. Read once and taken out of the address, so a reload
+     * does not keep announcing a thing that happened ten minutes ago.
+     */
+    var saidDrive = (location.hash.match(/[?&]drive=([^&]+)/) || [])[1];
+    if (saidDrive) {
+      location.hash = '#/admin';
+      var ok = saidDrive === 'ok';
+      S.adminNotice = {
+        kind: ok ? 'ok' : 'err',
+        text: ok ? t('driveLinked') : t('driveLinkFailed') + ' (' + decodeURIComponent(saidDrive) + ')',
+      };
+      notice.hidden = false;
+      notice.className = 'notice ' + S.adminNotice.kind;
+      notice.textContent = S.adminNotice.text;
+    }
+
     main.appendChild(notice);
 
     /* ---- the form ---- */
@@ -8311,6 +8329,22 @@
             .replace('%w', String(d.docsWaitingToArchive))
             .replace('%g', String(d.archiveGraceDays)),
         }));
+        if (d.driveByButton) {
+          lines.push(h('div', { class: 'health-act' }, [
+            h('small', { class: 'hint', text: t('driveLinkedBy') +
+              (d.driveLinkedAt ? ' · ' + new Date(d.driveLinkedAt).toLocaleDateString(S.lang === 'th' ? 'th-TH' : 'en-GB') : '') }),
+            d.driveMayConnect ? h('button', {
+              class: 'btn ghost sm danger', text: t('driveDisconnect'),
+              onclick: function (e) {
+                e.stopPropagation();
+                if (!confirm(t('driveDisconnectAsk'))) return;
+                api('/api/users?do=drive-unlink', { method: 'POST' })
+                  .then(function () { renderPage(); })
+                  .catch(function (err) { alert(errText(err.code)); });
+              },
+            }) : null,
+          ].filter(Boolean)));
+        }
       } else {
         // Missing one half of the credentials is a different mistake from
         // having set none of them, and a much easier one to not notice.
@@ -8319,6 +8353,26 @@
           text: '⚠ ' + (d.driveHasClient || d.driveHasRefreshToken
             ? t('healthDrivePartial') : t('healthDriveOff')),
         }));
+        /**
+         * The button that used to be an OAuth playground.
+         *
+         * Only offered once the OAuth client is set, because without it
+         * Google has nothing to send the person to — and that is a Vercel
+         * variable, not something a page can fix. Signing in here is the
+         * committee's archive account, not the admin's own.
+         */
+        if (d.driveMayConnect && d.driveHasClient) {
+          lines.push(h('div', { class: 'health-act' }, [
+            h('a', {
+              class: 'btn sm', href: './api/auth?do=drive-start',
+              text: t('driveConnect'),
+              onclick: function (e) { e.stopPropagation(); },
+            }),
+            h('small', { class: 'hint', text: t('driveConnectWhy') }),
+          ]));
+        } else if (d.driveMayConnect) {
+          lines.push(h('small', { class: 'hint', text: t('driveNeedsClient') }));
+        }
       }
 
       lines.push(h('div', {
@@ -8774,15 +8828,20 @@
    * Mirrors lib/auth.js canEditTasks. The server is what enforces it; this is
    * only so the page does not offer what would be refused.
    */
-  function mayCreate() { return S.user && S.user.access !== 'inner'; }
+  /**
+   * Who may write work down: anybody signed in.
+   *
+   * It used to exclude a สมาชิกฝ่าย, which meant the person who noticed the
+   * posters had not been ordered had to message somebody senior to type it
+   * for them. That is how a tracker becomes a thing people work around.
+   */
+  function mayCreate() { return Boolean(S.user); }
 
   /**
-   * Who may call a meeting — the same rule the server applies: everybody.
-   *
-   * Kept as its own function rather than inlined, because it is NOT the same
-   * question as mayCreate(). A สมาชิกฝ่าย cannot put work on other people and
-   * can book a room with them, and the + sheet offers each of its four
-   * choices on its own answer rather than on one blanket one.
+   * Who may call a meeting: everybody, which is now also what mayCreate()
+   * answers. Kept as its own name because the two are different questions
+   * that happen to have the same answer, and the next rule that changes one
+   * of them should not have to untangle them first.
    */
   function mayCallMeeting() { return Boolean(S.user); }
 

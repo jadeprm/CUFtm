@@ -1,51 +1,50 @@
-CUFTM 2026-10-25b — แทนที่ไฟล์เดิมใน CUFtm-clean ทั้ง 20 ไฟล์
+CUFTM 2026-10-25e — ชุดเต็ม (FULL) ทั้งโปรเจกต์ในไฟล์เดียว
 
-**** อ่านตรงนี้ก่อน ****
-เว็บจริงตอนนี้ดีพลอยมาไม่ครบ — หน้าเว็บเป็น 2026-10-24a แต่ api/ กับ lib/
-ยังเป็น 2026-10-22d อยู่ ปุ่มใหม่ขึ้นแต่กดแล้วเออเรอร์
+=== วิธีลง ===
+แตกไฟล์นี้ทับโฟลเดอร์ CUFtm-clean ได้เลย ทับทุกไฟล์
+แล้วอัปขึ้น Vercel ทั้งโฟลเดอร์
 
-รอบนี้ต้องอัปขึ้นให้ครบ **ทั้ง 3 โฟลเดอร์** api/ lib/ public/
-ไม่ใช่แค่ public/ และต้องรวมไฟล์ของ 2026-10-23b (หน้าฟีด) ขึ้นไปด้วย
-เช็คหลังดีพลอย: โปรไฟล์ → เวอร์ชันที่ใช้งานอยู่ ต้องขึ้น 2026-10-25b
-ทั้งสองบรรทัด ถ้าไม่ตรงแปลว่าขึ้นไม่ครบ
+ในนี้มี api/ lib/ public/ test/ dev-tests/ package.json vercel.json ครบ
+ไม่มี node_modules (ตัวนั้นติดตั้งเอง ไม่ต้องอัป) และไม่มีภาพ screenshot
+ของเทสต์ — ที่เหลือคือทั้งโปรเจกต์
 
-ของใหม่รอบนี้ — ชีตเชื่อมสองทางจริง
-  · เพิ่มสมาชิกในแอป → เพิ่มแถวในชีตรายชื่อให้เลย
-  · แก้ username ในแอป → แก้ช่อง Username ในชีตให้เลย
-  · เขียนช่อง Access เป็น "Unit lead" / "Member" ได้แล้ว (เดิมรู้จักแค่
-    Admin / Co-Admin / Editor ปล่อยว่างไว้แล้วซิงก์จะอ่านเป็น Editor)
-  · ถ้ายังไม่ได้ตั้งค่า ทุกอย่างทำงานเหมือนเดิม แค่บอกบนหน้าจอว่าชีตไม่ได้รับ
+ตั้งแต่รอบนี้ไปจะส่งเป็นชุดเต็มแบบนี้เสมอ เพราะปัญหาที่เจอซ้ำ ๆ
+ไม่ใช่บั๊ก แต่คือ "อัปไม่ครบ" — เช่นรอบที่ผ่านมา หน้าเว็บเป็น 2026-10-24a
+แต่ api/ กับ lib/ ยังเป็น 2026-10-22d ปุ่มใหม่ขึ้นแต่หลังบ้านไม่มี
+ชุดเต็มทำให้อัปครึ่งเดียวไม่ได้ เพราะไม่มีครึ่ง
 
-วิธีเปิดการเขียนกลับ (ทำที่ฝั่งพี่ ผมไม่แตะคีย์)
-  1. console.cloud.google.com → สร้าง/เลือกโปรเจกต์
-  2. APIs & Services → Library → เปิด "Google Sheets API"
-  3. Credentials → Create credentials → Service account → ตั้งชื่อ → Done
-  4. เปิด service account นั้น → Keys → Add key → Create new key → JSON
-  5. ในไฟล์ JSON เอาค่า client_email กับ private_key
-  6. แชร์ชีตรายชื่อให้ client_email นั้น เป็น Editor
-     (ลิงก์สาธารณะยังเป็น Viewer เหมือนเดิม ไม่ได้เปิดให้ใครแก้ได้)
-  7. Vercel → Settings → Environment Variables
-       GOOGLE_SA_EMAIL        = client_email
-       GOOGLE_SA_PRIVATE_KEY  = private_key ทั้งก้อน รวม BEGIN/END
-  8. Redeploy → คำเตือนสีเหลืองบนหน้าแอดมินจะหายไป
+=== เช็คหลังดีพลอย ===
+โปรไฟล์ → เวอร์ชันที่ใช้งานอยู่ ต้องขึ้น 2026-10-25e ทั้งสองบรรทัด
+ถ้าไม่ตรง แปลว่ายังอัปไม่ครบ
 
-cron-job.org ไม่ทำงาน
-  เพราะ cu-ftm.vercel.app/api/cron ตอบ 302 redirect ไป task.chulafair.com
-  (ผลจากการตั้งโดเมนใหม่เป็น primary) cron-job.org นับ 3xx เป็น failure
-  แล้วปิด job ให้อัตโนมัติ
-  แก้: เปลี่ยน URL ของ job เป็น https://task.chulafair.com/api/cron
-       แล้วกดเปิด job ใหม่ (ถ้าตั้ง CRON_SECRET ไว้ ใส่ ?key=... ต่อท้ายด้วย)
-  Vercel Cron ใช้แทนไม่ได้ เพราะแผน Hobby จำกัดวันละครั้ง
+=== ของใหม่รอบนี้ ===
+ทุกคนที่มีบัญชี รวมถึงสมาชิกฝ่าย ตอนนี้
+  · เพิ่มงานได้
+  · เพิ่มกิจกรรมได้
+  · นัดประชุมได้
+  · แท็กใครก็ได้ รวมถึงประธานฝ่ายและแอดมิน และแท็กทั้งฝ่ายได้
 
-ไฟล์ทั้งหมด (20 ไฟล์ + changelog)
-  api/meta.js        api/tasks.js        api/users.js
-  lib/circles.js     lib/db.js           lib/departments.js  lib/meeting.js
-  lib/meetingstore.js lib/rename.js      lib/sheet.js        lib/sheets.js
-  lib/version.js
-  public/app.js      public/i18n.js      public/i18n-en.js
-  public/index.html  public/styles.css
-  test/run.mjs       dev-tests/org.mjs   dev-tests/ads.mjs
+  การถูกแท็กคือ "คำเชิญ" ไม่ใช่คำสั่ง — ปฏิเสธได้ และคนแท็กจะเห็นก่อนว่า
+  คนนั้นว่างหรือไม่ ส่วนงานของคนอื่นยังแก้ไม่ได้เหมือนเดิม
 
-lib/rename.js เป็นไฟล์ใหม่ อย่าลืมอัปขึ้นด้วย
+  ยังกันไว้อย่างเดียว: สมาชิกฝ่ายสร้าง "ลิงก์สั้น" ไม่ได้ เพราะเป็น
+  ที่อยู่สาธารณะบนโดเมนโครงการ คนละเรื่องกับการจดงาน
+  (ถ้าอยากเปิดอันนี้ด้วย บอกได้)
 
-ทดสอบแล้ว: run.mjs 1536 checks · browser suites 33 ชุด
+=== ของที่รวมมาจากรอบก่อน ๆ (ยังไม่เคยขึ้นเว็บจริง) ===
+  · หน้าฟีดโครงการ (2026-10-23b)
+  · ผังองค์กร เพิ่มสมาชิก กลุ่มและวง ป้ายของฉัน
+  · แก้ username โดยไม่ต้องลบบัญชี
+  · ชีตเขียนกลับ (เพิ่มสมาชิก/แก้ username ขึ้นในชีตให้)
+  · ปุ่มเชื่อม Google Drive
+  · AdSense meta + ads.txt
+
+=== ที่ต้องไปทำเองใน Vercel / Google ===
+  1. cron-job.org → เปลี่ยน URL เป็น https://task.chulafair.com/api/cron
+     แล้วเปิด job ใหม่ (ของเดิมโดนปิดเพราะ URL เก่า redirect)
+  2. ชีตเขียนกลับ → GOOGLE_SA_EMAIL / GOOGLE_SA_PRIVATE_KEY
+     + แชร์ชีตให้ service account เป็น Editor
+  3. Google Drive → มี OAuth client ใน Vercel แล้วกดปุ่มในหน้าแอดมิน
+  4. AdSense → ถ้าจะ verify chulafair.com ต้องใส่แท็กในเว็บนั้น (คนละโปรเจกต์)
+
+ทดสอบแล้ว: run.mjs 1566 checks · browser suites 33 ชุด

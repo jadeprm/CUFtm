@@ -3,7 +3,7 @@ import { json, hasDatabase, getSql, requestUrl, toBuffer } from '../lib/db.js';
 import { DEPARTMENTS } from '../lib/departments.js';
 import { STATUSES, PRIORITIES } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
-import { currentUser, canEditTasks, canManageAccounts } from '../lib/auth.js';
+import { currentUser, canEditTasks, canMakeShortLink, canManageAccounts } from '../lib/auth.js';
 import { makeCode, readCode, readTarget, shortUrl } from '../lib/shortlink.js';
 import { siteUrl, siteHosts, shortlinkUrl } from '../lib/line.js';
 import { CIRCLES } from '../lib/circles.js';
@@ -294,7 +294,7 @@ async function links(request, action) {
     return json({
       links: rows.map(shape),
       site: shortSite,
-      mayCreate: canEditTasks(me),
+      mayCreate: canMakeShortLink(me),
       mayManageAll: canManageAccounts(me),
       remaining: Math.max(0, MAX_PER_PERSON - mine),
     });
@@ -303,11 +303,12 @@ async function links(request, action) {
   // ---- making one --------------------------------------------------------
   if (request.method === 'POST') {
     /**
-     * A member cannot make one, for the same reason they cannot create a task:
-     * a short link on this domain is a published thing, and publishing under
-     * the committee's name is not a member's to do alone.
+     * The one place a สมาชิกฝ่าย is still stopped. Tasks, events and
+     * meetings were all opened to everybody; a short link stays held back
+     * because it is a public address on the committee's own domain, which
+     * is a different kind of act from writing down a job.
      */
-    if (!canEditTasks(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
+    if (!canMakeShortLink(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
 
     const body = await request.json().catch(() => ({}));
     const target = readTarget(body.url, { siteUrl: site, hosts: siteHosts() });

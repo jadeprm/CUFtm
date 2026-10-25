@@ -1,5 +1,7 @@
 import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js';
-import { googleConfigured, originOf, startLink, finishLink } from '../lib/googlecal.js';
+import {
+  googleConfigured, originOf, startLink, finishLink, startDriveLink, finishDriveLink,
+} from '../lib/googlecal.js';
 import {
   currentUser, departmentsOf, hashPassword, verifyPassword, passwordProblem,
   newToken, sessionCookie, sessionExpiry,
@@ -66,6 +68,23 @@ async function handler(request) {
    * is where Google returns them, and either way they end up on the
    * Schedule page with a word in the address saying how it went.
    */
+  /**
+   * The committee's Drive archive, connected once by an admin.
+   *
+   * Shares the one callback with the Calendar link because Google wants
+   * every redirect URI registered by hand, and a second one is a second
+   * thing to get wrong when the domain moves. `purpose` on the state row
+   * is what tells the two apart — see lib/googlecal.js.
+   */
+  if (request.method === 'GET' && action === 'drive-start') {
+    const go = (where) => new Response(null, { status: 302, headers: { location: where, 'cache-control': 'no-store' } });
+    const user = await currentUser(request, sql);
+    if (!user) return go('/#/admin?drive=signin');
+    if (user.access !== 'admin' && user.access !== 'coadmin') return go('/#/admin?drive=notallowed');
+    if (!googleConfigured()) return go('/#/admin?drive=off');
+    return go(await startDriveLink(sql, user.username, originOf(request)));
+  }
+
   if (request.method === 'GET' && (action === 'google-start' || action === 'google-callback')) {
     const go = (where) => new Response(null, { status: 302, headers: { location: where, 'cache-control': 'no-store' } });
     const user = await currentUser(request, sql);
@@ -73,11 +92,22 @@ async function handler(request) {
     if (!googleConfigured()) return go('/#/schedule?google=off');
     const origin = originOf(request);
     if (action === 'google-start') return go(await startLink(sql, user.username, origin));
-    if (url.searchParams.get('error')) return go('/#/schedule?google=cancelled');
-    const done = await finishLink(sql, user, {
-      code: url.searchParams.get('code'), state: url.searchParams.get('state'), origin,
-    });
-    return go('/#/schedule?google=' + (done.ok ? 'ok' : encodeURIComponent(done.error)));
+
+    /**
+     * Which flow came back. Read from the state row rather than guessed
+     * from the scope, so a cancelled consent still lands on the page the
+     * person started from instead of somewhere they have never been.
+     */
+    const state = url.searchParams.get('state') || '';
+    const [pending] = await sql`SELECT purpose FROM oauth_states WHERE state = ${state}`;
+    const forDrive = pending?.purpose === 'drive';
+    const page = forDrive ? '/#/admin?drive=' : '/#/schedule?google=';
+
+    if (url.searchParams.get('error')) return go(page + 'cancelled');
+    const done = forDrive
+      ? await finishDriveLink(sql, user, { code: url.searchParams.get('code'), state, origin })
+      : await finishLink(sql, user, { code: url.searchParams.get('code'), state, origin });
+    return go(page + (done.ok ? 'ok' : encodeURIComponent(done.error)));
   }
 
   if (request.method === 'GET') {

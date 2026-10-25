@@ -108,7 +108,14 @@ await go(fah, '#/home', 1600);
 ok('somebody with no tasks sees a "start here" card', await fah.locator('.hc-start').count() === 1);
 ok('...first, above today', await fah.evaluate(() => document.querySelector('.home-grid').firstElementChild.classList.contains('hc-start')));
 ok('...and no charts of zeros', await fah.locator('.hc-trend, .hc-status, .hc-ontime, .hc-days').count() === 0);
-ok('a member who cannot create tasks is not offered to', await fah.locator('.hc-start .btn.primary').count() === 0);
+/**
+ * This asserted the opposite until creation was opened to everybody. The
+ * "start here" card is the first thing an empty-handed person sees, and a
+ * สมาชิกฝ่าย with nothing on their plate is exactly who should be able to
+ * put the first thing there. See run.mjs §102.
+ */
+ok('a สมาชิกฝ่าย with nothing on their plate is offered the first task',
+  await fah.locator('.hc-start .btn.primary').count() === 1);
 const jHome = await as('Jade_Pres', 'fairAdmin1', DESK, { home: true });
 await go(jHome, '#/home', 1600);
 ok('somebody with work still gets the charts', await jHome.locator('.hc-trend').count() === 1 && await jHome.locator('.hc-start').count() === 0);

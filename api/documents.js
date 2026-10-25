@@ -155,7 +155,9 @@ async function handler(request) {
     if (action === 'secretaries') return listSecretaries(sql, me);
     if (action === 'delegates') return listDelegates(sql, me);
     if (id && url.searchParams.get('file')) {
-      return downloadFile(sql, me, id, url.searchParams.get('file'));
+      return downloadFile(sql, me, id, url.searchParams.get('file'), {
+        forceDownload: url.searchParams.get('download') === '1',
+      });
     }
     if (id) return oneDocument(sql, me, id);
     return listDocuments(sql, me);
@@ -376,7 +378,7 @@ async function oneDocument(sql, me, id) {
   });
 }
 
-async function downloadFile(sql, me, id, kind) {
+async function downloadFile(sql, me, id, kind, { forceDownload = false } = {}) {
   const want = kind === 'signed' ? 'signed' : (kind === 'source' ? 'source' : 'original');
   const [doc] = await sql`SELECT * FROM documents WHERE id = ${id}`;
   if (!doc) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
@@ -405,9 +407,23 @@ async function downloadFile(sql, me, id, kind) {
    * correct it will be looking for.
    */
   const isSource = want === 'source';
+  /**
+   * The name it lands under, which is the name somebody will search their
+   * downloads folder for. A letter that has a เลขรันเอกสาร leads with it:
+   * that number is how the committee refers to the letter everywhere else.
+   */
+  const number = String(doc.doc_number || '').replace(/[\\/:*?"<>|]/g, '-').trim();
   const name = isSource
     ? (row.file_name || 'document.docx')
-    : `${doc.title || 'document'}.pdf`;
+    : `${number ? `${number} ` : ''}${doc.title || 'document'}.pdf`;
+
+  /**
+   * `&download=1` says "put this in my downloads", whatever the browser would
+   * rather do with it. The viewer's ดาวน์โหลด button asks for it; a phone that
+   * would otherwise open a PDF in some reader it cannot get back out of is
+   * exactly who needs it.
+   */
+  const asAttachment = isSource || forceDownload;
 
   return new Response(buffer, {
     status: 200,
@@ -415,7 +431,7 @@ async function downloadFile(sql, me, id, kind) {
       'content-type': isSource ? (row.mime || 'application/octet-stream') : 'application/pdf',
       'content-length': String(buffer.length),
       'content-disposition':
-        `${isSource ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(name)}`,
+        `${asAttachment ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(name)}`,
       'cache-control': 'private, no-store',
     },
   });

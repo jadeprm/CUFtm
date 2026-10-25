@@ -1458,6 +1458,15 @@ window.STRINGS = {
     docDeleteSure: 'ลบเอกสารนี้ทั้งฉบับ รวมถึงไฟล์ ลบแล้วกู้คืนไม่ได้',
     errOnlyAdminSetsAccess: 'เฉพาะ Admin เท่านั้นที่เปลี่ยนระดับสิทธิ์ได้',
     errNotAllowed: 'คุณไม่มีสิทธิ์ทำสิ่งนี้',
+    driveConnect: 'เชื่อม Google Drive',
+    driveConnectWhy: 'กดแล้วเข้าสู่ระบบด้วยบัญชี Google ของโครงการ (ไม่ใช่บัญชีส่วนตัว) — ระบบขอสิทธิ์แค่ไฟล์ที่ตัวเองสร้าง เข้าถึงไฟล์อื่นในไดรฟ์นั้นไม่ได้',
+    driveNeedsClient: 'ต้องตั้งค่า OAuth client ใน Vercel ก่อน (GOOGLE_OAUTH_CLIENT_ID / _SECRET หรือใช้ตัวเดียวกับ Google Calendar)',
+    driveLinked: 'เชื่อม Google Drive แล้ว — เอกสารที่เซ็นครบจะถูกย้ายไปเก็บในไดรฟ์อัตโนมัติ',
+    driveLinkFailed: 'เชื่อม Google Drive ไม่สำเร็จ',
+    driveLinkedBy: 'เชื่อมจากในแอป',
+    driveDisconnect: 'ยกเลิกการเชื่อม',
+    driveDisconnectAsk: 'ยกเลิกการเชื่อม Google Drive ใช่ไหม ไฟล์ที่ย้ายไปแล้วยังอยู่ในไดรฟ์ตามเดิม แต่เอกสารใหม่จะค้างอยู่ในฐานข้อมูล',
+    errGoogleNoDrive: 'ไม่ได้ให้สิทธิ์ Google Drive มา ลองใหม่แล้วติ๊กอนุญาตให้ครบ',
     orgMemberInSheet: 'เพิ่มแถวในชีตรายชื่อให้แล้ว',
     orgMemberNotInSheet: 'ยังไม่ได้เขียนลงชีต — ต้องเพิ่มแถวในชีตเอง (หรือเชื่อม Google Sheet ให้เขียนกลับก่อน)',
     renameSheetDone: 'แก้ช่อง Username ในชีตให้แล้ว',
@@ -1741,6 +1750,8 @@ window.ERROR_KEYS = {
   SENDER_MUST_BE_YOU: 'errSenderMustBeYou',
   BAD_ROLE: 'errBadRole',
   EMAIL_REQUIRED: 'errEmailRequired',
+
+  GOOGLE_NO_DRIVE: 'errGoogleNoDrive',
 
   // Groups, and the labels people keep for themselves.
   NO_SUCH_CIRCLE: 'errNoSuchCircle',

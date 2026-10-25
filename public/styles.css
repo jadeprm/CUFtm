@@ -2014,3 +2014,6 @@ tr.urow[hidden] { display: none !important; }
 .tag-pick { display: flex; gap: 6px; flex-wrap: wrap; }
 .tag-pick .chip { cursor: pointer; }
 .grp-mine .chip, .tag-row .chip { cursor: pointer; }
+
+/* A button inside the health panel, which is otherwise all text. */
+.health-act { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }

@@ -639,12 +639,11 @@ async function handler(request) {
 
     if (request.method === 'POST') {
       /**
-       * A member does not hand work out.
-       *
-       * That is the whole distinction between the two new levels: a unit
-       * editor runs a section and gives work to the people in it, a member
-       * does the work they are given. Refusing here rather than only hiding
-       * the button is what makes it a rule instead of a suggestion.
+       * Anybody signed in. This used to refuse a สมาชิกฝ่าย on the grounds
+       * that a member does the work rather than hands it out — a
+       * distinction that described nobody here, and that mostly produced
+       * messages asking somebody senior to type a task in. See
+       * canEditTasks in lib/auth.js.
        */
       if (!canEditTasks(me)) return json({ error: 'MEMBERS_CANNOT_CREATE' }, 403);
 

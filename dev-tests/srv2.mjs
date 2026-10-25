@@ -18,7 +18,7 @@ const SHEET=readFileSync(at('test/sheet.csv'),'utf8'); const rf=globalThis.fetch
 globalThis.fetch=async(u,i)=>String(u).includes('docs.google.com')?new Response(SHEET,{status:200}):rf(u,i);
 const R={'/api/auth':'auth','/api/users':'users','/api/tasks':'tasks','/api/meta':'meta','/api/notifications':'notifications','/api/import':'import','/api/calendar':'calendar','/api/push':'push','/api/cron':'cron','/api/events':'events','/api/line':'line','/api/documents':'documents'};
 const routes={}; for(const [p,f] of Object.entries(R)) routes[p]=(await import(at(`api/${f}.js`).href)).default;
-const T={html:'text/html',js:'text/javascript',css:'text/css',json:'application/json',png:'image/png'};
+const T={html:'text/html',js:'text/javascript',css:'text/css',json:'application/json',png:'image/png',txt:'text/plain'};
 http.createServer(async(req,res)=>{let p=req.url.split('?')[0];
  // Mirrors the vercel.json rewrite, so short links work in development too.
  const short=p.match(/^\/s\/([A-Za-z0-9_-]+)$/);
