@@ -11,6 +11,38 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-26 — R0002: the tab that came back blank · version `2026-10-26a`
+No schema change. Still 12 functions. FULL zip.
+
+**The first bug report the reports page has produced**, which is itself worth noting: นิตา filed it with the page, the browser, the window size, the version and what she was doing, and that is most of why it was answerable at all.
+
+> ค้างเวลาเข้าแท็บอื่น · เจอว่าต้องทำอะไรบางอย่างในชีท เลยเพิ่มแท็ปชีท พอกลับมาดูซุฟต้ม มันจะเป็นหน้าดำ ๆ ว่าง ๆ ไม่มีอะไรเกิดขึ้น ต้องกดปิดแล้วเข้าใหม่ · macOS · Safari · 1262x620
+
+### What is not known
+**Why Safari empties the page.** Not reproducible in the suites' Chromium: simulated tab switches across six pages left every one of them intact, and WebKit is not available here to try properly. Guessing at a cause and shipping the guess would have been the wrong move.
+
+### What is known, and was fixable
+**`renderPage()` clears `main` first and draws second.** Anything thrown in between leaves a blank page with no way back but reloading the tab — so a bug in any one page reads as "the whole app died", and nobody can say which page or why. That shape is the reason R0002 was unreportable, whatever triggers it.
+
+And the one place it mattered most swallowed the evidence:
+
+```js
+api('/api/tasks').then(function (d) { S.tasks = d.tasks; renderPage(); }).catch(function () {});
+```
+
+A throw inside `renderPage()` landed in that empty catch, after `main` had already been cleared. Blank page, no error, no clue.
+
+Three changes:
+
+- **The dispatch is wrapped.** A page that cannot be drawn now says so, with the error message and a reload button, and the rest of the app still works. Every future bug of this class arrives as something somebody can send in rather than as an empty rectangle.
+- **Coming back to the tab heals it.** `backFromAway()` does not care what emptied the page, because nobody knows: it checks the one thing always true of the symptom — signed in, nothing on screen — and draws again. On `visibilitychange`, on `focus` (a window switch, which does not always fire the first), and on `pageshow` with `persisted` (restored from the browser's own cache, where the DOM may be anything).
+- **One redraw, not two.** The two refreshes each called `renderPage()`; now they settle together and draw once. Half the chances to throw, and nothing swallowed.
+
+### Tests
+- **run.mjs §103 is new (8 checks)** — the dispatch wrapped, the message carrying the error, the self-heal checking what is on screen, all three events wired, the empty catch gone, and the single redraw.
+- **`dev-tests/polish.mjs` §6 is new** — the page wiped by hand, which is the same end state whatever caused it, then brought back by a window focus and by a tab switch, shell included.
+- **1574 checks**, 33 browser suites.
+
 ## 2026-10-25 — everybody may write work down · version `2026-10-25e`
 No schema change. Still 12 functions. **Shipped as one FULL zip — see below.**
 

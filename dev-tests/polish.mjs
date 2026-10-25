@@ -126,6 +126,42 @@ const empty = fah.locator('.empty').first();
 ok('the empty page explains what documents are for', (await empty.locator('.empty-help').count()) === 1);
 ok('...and offers the upload', (await empty.locator('button.btn.primary').count()) === 1);
 
+console.log('\n6. Coming back to a tab that went blank');
+/**
+ * R0002: switch to a spreadsheet for two minutes, come back, and the app is
+ * an empty dark rectangle — every time, with closing the tab the only way
+ * out. Reported on Safari and not reproducible anywhere else, so rather
+ * than guess at what emptied it, the app checks the one thing that is
+ * always true of the symptom — signed in, nothing on screen — and draws
+ * itself again. This wipes the page by hand, which is the same end state
+ * whatever caused it.
+ */
+await go(jHome, '#/work', 1600);
+await jHome.evaluate(() => {
+  document.getElementById('main').innerHTML = '';
+  document.getElementById('app-view').hidden = true;
+});
+ok('the page really is empty to begin with',
+  await jHome.evaluate(() => document.getElementById('main').childElementCount) === 0);
+
+await jHome.evaluate(() => window.dispatchEvent(new Event('focus')));
+await jHome.waitForTimeout(2500);
+ok('coming back draws it again instead of leaving it blank',
+  await jHome.evaluate(() => document.getElementById('main').childElementCount) > 0,
+  String(await jHome.evaluate(() => document.getElementById('main').childElementCount)));
+ok('...including the shell around it',
+  await jHome.evaluate(() => document.getElementById('app-view').hidden) === false);
+
+/** And a tab switch, which is how it was actually reported. */
+await jHome.evaluate(() => { document.getElementById('main').innerHTML = ''; });
+await jHome.evaluate(() => {
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  document.dispatchEvent(new Event('visibilitychange'));
+});
+await jHome.waitForTimeout(2500);
+ok('...and so does a tab switch',
+  await jHome.evaluate(() => document.getElementById('main').childElementCount) > 0);
+
 // Tidy up.
 await jade.evaluate(async () => {
   const j = (u) => fetch(u).then((r) => r.json());

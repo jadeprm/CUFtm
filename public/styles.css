@@ -2017,3 +2017,10 @@ tr.urow[hidden] { display: none !important; }
 
 /* A button inside the health panel, which is otherwise all text. */
 .health-act { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+
+/* A page that could not be drawn, said instead of shown as nothing. */
+.notice.broke { display: grid; gap: 8px; justify-items: start; }
+.notice.broke code {
+  font-size: .82rem; opacity: .8; word-break: break-all;
+  background: rgba(0,0,0,.06); padding: 4px 8px; border-radius: 6px;
+}

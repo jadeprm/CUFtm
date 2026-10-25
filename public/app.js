@@ -123,7 +123,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-25e';
+  var APP_VERSION = '2026-10-26a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -3300,6 +3300,19 @@
   /* ======================================================================
      Pages
      ====================================================================== */
+  /**
+   * Draw the current page — and never leave the screen empty if it cannot.
+   *
+   * The order here is the trap: `main` is cleared FIRST and the page drawn
+   * second, so anything thrown in between leaves a blank page with no way
+   * back except reloading the tab. That is not a theoretical shape — it is
+   * what R0002 looked like from the outside, and it is the reason a bug in
+   * any one page reads as "the whole app died".
+   *
+   * So the dispatch is wrapped. A page that throws now says so, with the
+   * message, which turns an unreportable blank screen into something
+   * somebody can send in.
+   */
   function renderPage() {
     var main = clear($('main'));
     main.classList.remove('board-wide');
@@ -3309,6 +3322,23 @@
     if (isPhone() && S.lastPainted !== S.page) window.scrollTo(0, 0);
     S.lastPainted = S.page;
     main.classList.remove('wide');
+    try {
+      return drawPage(main);
+    } catch (err) {
+      console.error('[render]', S.page, err);
+      clear(main).appendChild(h('div', { class: 'notice err broke' }, [
+        h('b', { text: t('pageBroke') }),
+        h('p', { text: t('pageBrokeWhy') }),
+        h('code', { text: String((err && err.message) || err).slice(0, 200) }),
+        h('button', {
+          class: 'btn', text: t('pageBrokeReload'), onclick: function () { location.reload(); },
+        }),
+      ]));
+      return null;
+    }
+  }
+
+  function drawPage(main) {
     if (S.page === 'home') return pageHome(main);
     if (S.page === 'schedule') return pageSchedule(main);
     if (S.page === 'space') return pageSpace(main);
@@ -3322,6 +3352,7 @@
     if (S.page === 'feed') return pageFeed(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
+    return null;
   }
 
   /**
@@ -15856,14 +15887,59 @@
    */
   setTimeout(bootDone, 20000);
 
-  // Someone else may have changed things while this tab sat idle.
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && S.user) {
-      api('/api/tasks').then(function (d) { S.tasks = d.tasks; renderPage(); }).catch(function () {});
-      api('/api/events').then(function (d) { S.events = d.events; renderPage(); }).catch(function () {});
-      refreshNotifications().then(showPending);
+  /**
+   * Coming back to the tab after looking at something else.
+   *
+   * Two jobs, and they used to be one. Catching up on what other people
+   * changed is the obvious one. The other is R0002: somebody switched to a
+   * spreadsheet for two minutes, came back, and found the app blank every
+   * single time, with closing the tab the only way out.
+   *
+   * What emptied it is still not reproducible outside Safari — so rather
+   * than guess at a cause, this checks the one thing that is always true of
+   * the symptom: signed in, and nothing on screen. If that is where the tab
+   * is, it is drawn again. Whatever did it, the tab heals itself.
+   */
+  function backFromAway() {
+    if (!S.user) return;
+
+    var app = $('app-view');
+    var main = $('main');
+    var blank = (app && app.hidden) || !main || main.childElementCount === 0;
+    if (blank) {
+      console.warn('[recover] came back to an empty page — drawing it again');
+      renderShell();
+      renderPage();
     }
+
+    /**
+     * Then the catching up. One redraw at the end rather than one per
+     * answer: two calls each calling renderPage() meant the page was built
+     * twice, and a throw inside either left it cleared with the error
+     * swallowed by an empty catch — which is how a blank page stays blank
+     * and unexplained.
+     */
+    Promise.all([
+      api('/api/tasks').then(function (d) { S.tasks = d.tasks; }).catch(function () {}),
+      api('/api/events').then(function (d) { S.events = d.events; }).catch(function () {}),
+    ]).then(function () { if (S.user) renderPage(); });
+
+    refreshNotifications().then(showPending).catch(function () {});
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') backFromAway();
   });
+  /**
+   * `visibilitychange` covers a tab switch; `focus` covers switching to
+   * another window or app, which on some browsers does not fire it. And
+   * `pageshow` with `persisted` is a page brought back from the browser's
+   * own cache, where the DOM may be anything at all.
+   */
+  window.addEventListener('focus', function () {
+    if (document.visibilityState !== 'hidden') backFromAway();
+  });
+  window.addEventListener('pageshow', function (e) { if (e.persisted) backFromAway(); });
 
   /**
    * A notification tapped while the app is already open. The service worker
