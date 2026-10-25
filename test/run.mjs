@@ -9269,5 +9269,50 @@ ok('a short link is still not a member’s to publish',
 await sql`DELETE FROM tasks WHERE created_by = 'Ploy_StaffCon'`;
 
 
+// ===========================================================================
+head('103. A page that cannot be drawn says so, instead of being nothing');
+// ===========================================================================
+/**
+ * R0002, from the committee's own reports page: switch to a spreadsheet for
+ * two minutes, come back, and the app is an empty dark rectangle — every
+ * time, with closing the tab the only way out. Safari only, and not
+ * reproducible in the suites' Chromium.
+ *
+ * What made it unfixable from the outside is the shape of renderPage():
+ * `main` is cleared FIRST and the page drawn second, so anything thrown in
+ * between leaves a blank screen — and the one caller that mattered swallowed
+ * the error in an empty catch. A bug in one page read as "the whole app
+ * died", and nobody could say which page or why.
+ *
+ * The browser half is in dev-tests/polish.mjs §6. These are the structural
+ * checks: the shapes that made it unreportable are gone.
+ */
+const pageSource = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+
+ok('drawing a page is wrapped, so a throw cannot leave it cleared',
+  /function renderPage\(\)[\s\S]{0,1400}try \{[\s\S]{0,80}drawPage\(main\);[\s\S]{0,400}catch \(err\)/.test(pageSource));
+ok('...and what it says includes the error, so it can be reported',
+  /catch \(err\)[\s\S]{0,600}pageBroke[\s\S]{0,400}err && err\.message/.test(pageSource));
+
+/**
+ * The self-heal. It does not care what emptied the page, because nobody
+ * knows: it checks the symptom — signed in, nothing on screen — and draws.
+ */
+ok('coming back to the tab checks whether anything is on screen',
+  /function backFromAway\(\)[\s\S]{0,700}childElementCount === 0[\s\S]{0,300}renderShell\(\);[\s\S]{0,40}renderPage\(\);/.test(pageSource));
+for (const event of ['visibilitychange', 'focus', 'pageshow']) {
+  ok(`...on ${event}`, new RegExp(`'${event}'[\\s\\S]{0,160}backFromAway\\(\\)`).test(pageSource));
+}
+
+/**
+ * And the empty catch that hid it. Refreshing after a tab switch must not
+ * be able to make the page worse than it already was.
+ */
+ok('no refresh on return swallows an error into an empty catch',
+  !/api\('\/api\/(tasks|events)'\)\.then\(function \(d\) \{[^}]*renderPage\(\); \}\)\.catch\(function \(\) \{\}\)/.test(pageSource));
+ok('...and the page is drawn once when both answers are in, not once each',
+  /Promise\.all\(\[[\s\S]{0,400}\]\)\.then\(function \(\) \{ if \(S\.user\) renderPage\(\); \}\)/.test(pageSource));
+
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
