@@ -9219,13 +9219,16 @@ mailSent.length = 0;
 
 r = await call(authApi, '/api/auth?do=register-options');
 ok('the form is told whether mail can be sent', r.data.mailReady === false && r.data.departments.length > 5);
+ok('...and, per department, who will be asked (names only, found from the chart)',
+  r.data.departments.find((d) => d.key === 'content').approvers.some((a) => a.head)
+  && !JSON.stringify(r.data).includes('Kungking_HeadCon'));
 ok('with no mail provider nobody is locked out by the email rule',
   (await call(tasksApi, '/api/tasks', { as: 'content' })).status === 200);
 
 const emRegBody = (over = {}) => ({
   username: 'Newbie_StaffDecor', password: 'newbiePw11', nickname: 'นิว', fullName: 'นิว ทดสอบ',
   position: 'สมาชิกฝ่ายตกแต่ง', email: 'Newbie@Example.test', department: 'content', unit: '',
-  approvers: ['Kungking_HeadCon', '', ''], ...over });
+  ...over });
 
 r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody() });
 ok('without a mail provider the form says it cannot work yet', r.status === 503 && r.data.error === 'MAIL_NOT_CONFIGURED');
@@ -9260,7 +9263,7 @@ ok('a code works once', r.status === 400);
 ok('...and the member is let in', (await call(tasksApi, '/api/tasks', { as: 'content' })).status === 200);
 r = await call(usersApi, '/api/users', { as: 'content' });
 const emKungRow = r.data.users.find((u) => u.username === 'Kungking_HeadCon');
-ok('the shared directory says whether, never what', emKungRow.emailVerified === true && !JSON.stringify(r.data).includes('kung@example.test'));
+ok('the directory carries the verified flag', emKungRow.emailVerified === true);
 
 // Somebody else cannot claim an address that is already taken.
 r = await call(authApi, '/api/auth?do=email-send', { method: 'POST', as: 'merch', body: { email: 'KUNG@example.test' } });
@@ -9275,10 +9278,6 @@ for (const [who, addr] of [['admin', 'jade@example.test'], ['coadmin', 'kaew@exa
 // ---- joining -------------------------------------------------------------
 r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ department: 'nowhere' }) });
 ok('an unknown department is refused', r.status === 400 && r.data.error === 'BAD_DEPARTMENT');
-r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ approvers: ['', '', ''] }) });
-ok('the head must be named', r.status === 400 && r.data.error === 'APPROVER_NOT_FOUND' && r.data.slot === 0);
-r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ approvers: ['Kungking_HeadCon', 'Ploy_StaffCon', ''] }) });
-ok('a named approver must be an editor or above', r.status === 400 && r.data.error === 'APPROVER_NOT_FOUND' && r.data.slot === 1);
 r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ username: 'x' }) });
 ok('a bad username is refused', r.status === 400 && r.data.error === 'BAD_USERNAME');
 r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ username: 'jade_pres' }) });
@@ -9292,14 +9291,14 @@ ok('the password rules apply', r.status === 400);
 
 mailSent.length = 0;
 r = await call(authApi, '/api/auth?do=register', { method: 'POST',
-  body: emRegBody({ approvers: ['kungking_headcon', 'Kaew_VP', 'Kungking_HeadCon'] }) });
+  body: emRegBody() });
 const emRegId = r.data.id;
 ok('a valid request is taken and a code emailed', r.status === 201 && Boolean(emRegId) && mailSent.length === 1
   && mailSent[0].to[0] === 'newbie@example.test');
 const emRegRow = (await sql`SELECT * FROM registrations WHERE id = ${emRegId}`)[0];
-ok('...held as unverified, the password already hashed, approvers resolved and de-duplicated',
+ok('...held as unverified, the password already hashed, approvers found from the chart, not typed',
   emRegRow.status === 'unverified' && emRegRow.password_hash.length > 20 && !emRegRow.password_hash.includes('newbiePw11')
-  && emRegRow.approvers.join(',') === 'Kungking_HeadCon,Kaew_VP', emRegRow.approvers.join(','));
+  && emRegRow.approvers.includes('Kungking_HeadCon') && !emRegRow.approvers.includes('Ploy_StaffCon'), emRegRow.approvers.join(','));
 ok('...no account exists yet', (await sql`SELECT 1 FROM users WHERE username = 'Newbie_StaffDecor'`).length === 0);
 
 r = await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emRegId, code: '123456' === emCode() ? '654321' : '123456' } });
@@ -9313,7 +9312,7 @@ r = await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username
 ok('...and cannot sign in until somebody approves', r.status === 401);
 const emRegNotes = await sql`SELECT username, kind FROM notifications WHERE id LIKE ${'n\\_' + emRegId + '\\_%'}`;
 ok('the named approvers and the admins are told in the bell',
-  ['Kungking_HeadCon', 'Kaew_VP', 'Jade_Pres'].every((u) => emRegNotes.some((n) => n.username === u)),
+  ['Kungking_HeadCon', 'Jade_Pres'].every((u) => emRegNotes.some((n) => n.username === u)),
   emRegNotes.map((n) => n.username).join(','));
 ok('...and an approver nobody named is not',
   !emRegNotes.some((n) => n.username === 'Ikkew_HeadOper1' || n.username === 'Ploy_StaffCon'));
@@ -9328,7 +9327,7 @@ ok('...and cannot decide it', r.status === 403 && r.data.error === 'NOT_AN_APPRO
 r = await call(usersApi, '/api/users?do=registrations', { as: 'content' });
 ok('the named editor sees the request, with who else was named',
   r.data.requests.length === 1 && r.data.requests[0].email === 'newbie@example.test'
-  && r.data.requests[0].approvers.length === 2 && r.data.requests[0].position === 'สมาชิกฝ่ายตกแต่ง');
+  && r.data.requests[0].approvers.includes('Kungking_HeadCon') && r.data.requests[0].position === 'สมาชิกฝ่ายตกแต่ง');
 r = await call(usersApi, '/api/users?do=registrations', { as: 'admin' });
 ok('an admin sees every request', r.data.requests.length === 1);
 
@@ -9353,11 +9352,11 @@ ok('a request already decided cannot be decided again', r.status === 404);
 // A rejection.
 mailSent.length = 0;
 r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({
-  username: 'Nope_Applicant', email: 'nope@example.test', approvers: ['Kaew_VP', '', ''] }) });
+  username: 'Nope_Applicant', email: 'nope@example.test', department: 'merchant' }) });
 const emRejId = r.data.id;
 await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emRejId, code: emCode() } });
 r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'content', body: { id: emRejId, approve: true } });
-ok('an editor who was not named for this one cannot approve it', r.status === 403);
+ok('an editor of another department cannot approve it', r.status === 403);
 r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'coadmin', body: { id: emRejId, approve: false, reason: 'ไม่ใช่สมาชิกฝ่ายนี้' } });
 ok('a decline is recorded and creates nothing',
   r.status === 200 && (await sql`SELECT 1 FROM users WHERE username = 'Nope_Applicant'`).length === 0
@@ -9401,6 +9400,22 @@ await sql`DELETE FROM email_otps`;
 await sql`UPDATE users SET email = NULL, email_verified_at = NULL`;
 mailSent.length = 0;
 
+
+// ---- §105 who can read a member's email --------------------------------
+head('105. Emails show on the manage-users page, to the people responsible');
+await sql`UPDATE users SET email = 'ploy@example.test', email_verified_at = now() WHERE username = 'Ploy_StaffCon'`;
+const emPick = (d) => d.users.find((u) => u.username === 'Ploy_StaffCon');
+r = await call(usersApi, '/api/users', { as: 'admin' });
+ok('an admin sees the email', emPick(r.data).email === 'ploy@example.test');
+r = await call(usersApi, '/api/users', { as: 'coadmin' });
+ok('a co-admin sees it', emPick(r.data).email === 'ploy@example.test');
+r = await call(usersApi, '/api/users', { as: 'content' });
+ok('an editor of her department sees it', emPick(r.data).email === 'ploy@example.test');
+r = await call(usersApi, '/api/users', { as: 'merch' });
+ok('an editor of another department does not', emPick(r.data).email === undefined);
+r = await call(usersApi, '/api/users', { as: 'member' });
+ok('a member does not', emPick(r.data).email === undefined && emPick(r.data).emailVerified === true);
+await sql`UPDATE users SET email = NULL, email_verified_at = NULL WHERE username = 'Ploy_StaffCon'`;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
