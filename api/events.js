@@ -299,7 +299,7 @@ async function handler(request) {
       await sql`
         INSERT INTO events (id, code, title, description, starts_on, starts_at, ends_on, ends_at,
                             all_day, place, department, colour, notify, created_by)
-        VALUES (${id}, 'E' || lpad(nextval('event_code_seq')::text, 4, '0'),
+        VALUES (${id}, 'E' || code_pad(nextval('event_code_seq')),
                 ${title}, ${clean(body.description, 4000)},
                 ${startsOn}, ${allDay ? null : cleanTime(body.startsAt)},
                 ${endsOn}, ${allDay ? null : cleanTime(body.endsAt)},

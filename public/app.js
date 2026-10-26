@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-27a';
+  var APP_VERSION = '2026-10-27b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -860,6 +860,9 @@
     var n = gateNotice(), input = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code', placeholder: t('regCode') });
     var go = h('button', { type: 'submit', class: 'btn primary', text: t('regVerify') });
     var resend = h('button', { type: 'button', class: 'link', text: t('regResend'), onclick: function () {
+      if (resend.disabled) return;
+      resend.disabled = true;
+      setTimeout(function () { resend.disabled = false; }, 45000);
       api(o.resendUrl, { method: 'POST', body: o.resendBody() })
         .then(function () { gateSay(n, t('regResent'), 'ok'); })
         .catch(function (err) { gateSay(n, errText(err.code)); });
@@ -884,8 +887,11 @@
     var signOut = h('button', { type: 'button', class: 'link', text: t('emSignOut'), onclick: function () {
       api('/api/auth?do=logout', { method: 'POST' }).then(function () { location.reload(); });
     } });
+    var sendBtn = h('button', { type: 'submit', class: 'btn primary', text: t('emSend') });
     function askCode(e) {
       if (e) e.preventDefault();
+      if (sendBtn.disabled) return;
+      sendBtn.disabled = true;
       var addr = email.value.trim();
       api('/api/auth?do=email-send', { method: 'POST', body: { email: addr } }).then(function () {
         showGate([codeStep({
@@ -895,12 +901,12 @@
           done: function (d) { S.user = d.user; afterSignIn(); },
           extra: [signOut],
         })]);
-      }).catch(function (err) { gateSay(n, errText(err.code)); });
+      }).catch(function (err) { sendBtn.disabled = false; gateSay(n, errText(err.code)); });
     }
     showGate([h('form', { onsubmit: askCode }, [
       h('h1', { text: t('emTitle') }), h('p', { class: 'hint', text: t('emWhy') }), n,
       field(t('regEmail'), email),
-      h('button', { type: 'submit', class: 'btn primary', text: t('emSend') }), signOut,
+      sendBtn, signOut,
     ])]);
   }
 

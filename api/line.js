@@ -1053,7 +1053,7 @@ async function addTask(sql, me, body, today) {
   await sql`
     INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                        department, created_by, notify)
-    VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+    VALUES (${id}, 'T' || code_pad(nextval('task_code_seq')),
             ${parsed.title.slice(0, 200)}, ${''},
             ${parsed.dueDate}, ${parsed.dueTime}, 'todo',
             ${parsed.priority || 'medium'}, ${department}, ${me.username}, ${'7d,24h,due'})`;
@@ -1094,7 +1094,7 @@ async function addEvent(sql, me, body, today) {
   await sql`
     INSERT INTO events (id, code, title, description, starts_on, starts_at, ends_on, ends_at,
                         all_day, place, department, colour, notify, created_by)
-    VALUES (${id}, 'E' || lpad(nextval('event_code_seq')::text, 4, '0'),
+    VALUES (${id}, 'E' || code_pad(nextval('event_code_seq')),
             ${parsed.title.slice(0, 200)}, ${''},
             ${parsed.dueDate}, ${parsed.dueTime}, ${null}, ${null},
             ${!parsed.dueTime}, ${''}, ${me.department || null}, 'plum',
@@ -1291,7 +1291,7 @@ async function saveDraft(sql, me, lineUserId, draft, people) {
   await sql`
     INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                        department, unit, created_by, notify)
-    VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+    VALUES (${id}, 'T' || code_pad(nextval('task_code_seq')),
             ${draft.title.slice(0, 200)}, ${draft.description || ''},
             ${draft.dueDate || null}, ${draft.dueTime || null},
             ${draft.status || 'todo'}, ${draft.priority || 'medium'},

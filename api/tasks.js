@@ -684,7 +684,7 @@ async function handler(request) {
       await sql`
         INSERT INTO tasks (id, code, title, description, due_date, due_time, status, priority,
                            department, unit, created_by, notify, start_date, space_id, done_at)
-        VALUES (${id}, 'T' || lpad(nextval('task_code_seq')::text, 4, '0'),
+        VALUES (${id}, 'T' || code_pad(nextval('task_code_seq')),
                 ${title}, ${clean(body.description, 4000)},
                 ${cleanDate(body.dueDate)}, ${cleanTime(body.dueTime)},
                 ${startStatus},

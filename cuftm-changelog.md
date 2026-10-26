@@ -11,6 +11,12 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-27 (b) — one request, one email · version `2026-10-27b`
+Schema `2026-10-27b`. Still 12 functions. FULL zip.
+- **The OTP no longer goes out twice.** Two sends landing together (a double tap, Enter plus a click, two tabs) both passed the cooldown check and both emailed. The code row is now claimed first under a unique (purpose, subject, 45-second slot) index and only the winner sends; the "send code" button also locks once pressed and "send again" waits 45 s. If the mail provider refuses, the claimed row is removed so the person can retry at once.
+- **Found while testing, unrelated:** task, event, meeting and report codes were padded with `lpad(…, 4)`, which *truncates* past 9,999 (M10000 → M1000, a duplicate-key crash). Now a `code_pad()` SQL function pads without truncating. No live impact yet; it would have hit at 10,000 items.
+- Tests: §106 fires three simultaneous requests and expects one email.
+
 ## 2026-10-27 — Emails on the manage-users page, approvers found automatically · version `2026-10-27a`
 No schema change. Still 12 functions. FULL zip.
 - **Emails on หน้าจัดการผู้ใช้:** admins and co-admins see every member's email (✓ when verified, "ยังไม่ได้ผูกอีเมล" when not); an editor receives the emails of the people in the departments they look after. Everyone else still gets only the verified flag.
