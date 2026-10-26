@@ -2,7 +2,7 @@
 <html lang="th">
 <head>
 <meta charset="utf-8">
-<meta name="app-version" content="2026-10-26a">
+<meta name="app-version" content="2026-10-26b">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>งานจุฬาฯแฟร์ · Chula Fair Tasks</title>
 <meta name="description" content="Task tracker for the Chulalongkorn University Fair committee.">
@@ -24,20 +24,20 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="./styles.css?v=2026-10-26a">
+<link rel="stylesheet" href="./styles.css?v=2026-10-26b">
 <!--
   The phone interface. A stylesheet of its own rather than more media queries
   scattered through styles.css: on a phone this app is laid out differently,
   not just narrower, and keeping that in one place is what stops a desktop fix
   quietly breaking it. The media attribute means a computer never applies it.
 -->
-<link rel="stylesheet" href="./phone.css?v=2026-10-26a" media="(max-width: 720px)">
+<link rel="stylesheet" href="./phone.css?v=2026-10-26b" media="(max-width: 720px)">
 <!--
   The 2026-10 redesign: palette, sidebar, colour-coded status, the new pages.
   Last, so it wins over both sheets above; its phone rules sit in its own
   media queries.
 -->
-<link rel="stylesheet" href="./theme.css?v=2026-10-26a">
+<link rel="stylesheet" href="./theme.css?v=2026-10-26b">
 
 <!-- Installable app: the manifest is what lets iOS put this on a Home Screen,
      which Apple requires before it will deliver a single push notification. -->
@@ -201,6 +201,7 @@
     <button type="submit" class="btn primary" id="auth-submit">ถัดไป</button>
     <button type="button" class="link" id="auth-forgot" hidden></button>
     <button type="button" class="link" id="auth-back" hidden data-t="back">ย้อนกลับ</button>
+    <button type="button" class="link" id="auth-register" data-t="regLink">สมัครสมาชิก</button>
 
     <div style="display:flex;gap:8px;align-self:center;margin-top:4px">
       <div class="lang-toggle">
@@ -215,6 +216,9 @@
     </div>
   </form>
 </div>
+
+<!-- Registration, and proving an email (drawn by app.js) ------------------->
+<div id="gate-view" class="auth-wrap" hidden></div>
 
 <!-- Signed in -------------------------------------------------------------->
 <div id="app-view" hidden>
@@ -275,6 +279,10 @@
         <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6L7 10z"/><path d="M16.5 9.5a3.5 3.5 0 010 5"/></svg>
         <span class="tl" data-t="navAnnounce">ส่งประกาศ</span>
         <span class="ts" data-t="navAnnounceShort">ประกาศ</span></a>
+      <a href="#/requests" data-page="requests" id="tab-requests" class="ph-drawer" hidden>
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.2"/><path d="M4 19.5c.6-3.2 2.8-5 6-5"/><path d="M15 17l2 2 4-4"/></svg>
+        <span class="tl" data-t="navRequests">คำขอสมัคร</span>
+        <span class="ts" data-t="navRequestsShort">คำขอ</span></a>
       <a href="#/admin" data-page="admin" id="tab-admin" class="ph-drawer" hidden>
         <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="16.8" cy="9.5" r="2.4"/><path d="M15.5 14.6c2.5-.2 4.4 1.4 5 4.4"/></svg>
         <span class="tl" data-t="navAdmin">จัดการผู้ใช้</span>
@@ -364,7 +372,7 @@
      rather than a CDN, but app.js fetches the file only when a QR is opened.
      English strings (i18n-en.js) are likewise fetched only for people using
      English. MIT, © 2009 Kazuhiko Arase. -->
-<script src="./i18n.js?v=2026-10-26a"></script>
-<script src="./app.js?v=2026-10-26a"></script>
+<script src="./i18n.js?v=2026-10-26b"></script>
+<script src="./app.js?v=2026-10-26b"></script>
 </body>
 </html>

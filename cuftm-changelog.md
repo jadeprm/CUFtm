@@ -11,6 +11,39 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-26 — Members live in the app, every account has a verified email, and people can apply · version `2026-10-26b`
+Schema `2026-10-26a` (adds `users.email`, `users.email_verified_at`, `email_otps`, `registrations`). Still 12 functions — everything rides `api/auth.js` and `api/users.js`. FULL zip.
+
+### The Google Sheet is no longer the member database
+Asked for in so many words: *เอาออกจาก google sheet มาใช้ฐานข้อมูลของเว็บให้หมด*. Done at runtime, kept as a tool:
+- **Nothing reads the sheet while the app runs.** The hourly cron no longer syncs the roster (it used to close any account the sheet had no row for); sign-in no longer pulls the roster when the table is empty; the *Sync now* and *Open sheet* buttons and the two sheet notices are gone from the admin page; `?do=sync` returns `UNKNOWN_ACTION`.
+- **Nothing is written to it either.** Adding a member, renaming a username and changing access/department/unit no longer append or edit sheet cells. The directory no longer reports `sheetWritable`/`sheetId`/`lastSync`.
+- **What is still true:** a change made on the admin page is marked as set in the app (`access_pinned`/`depts_pinned`), so if `lib/sheet.js` is ever used again as a one-off import it cannot overwrite it. `lib/sheet.js` stays only as that import tool (and its CSV parser serves the bulk-import page); the test suite uses it to seed fourteen people. The *document register* sheet (`DOC_SHEET_ID`) is a different thing and is untouched.
+- **A fresh, empty database:** the first person to apply becomes the admin (see below). A live database that already has members is unaffected — all existing accounts stay exactly as they are.
+
+### Every account must prove an email
+- **Resend**, by HTTP (`lib/mail.js`). Set `RESEND_API_KEY` in Vercel yourself (this code never sees it) and verify `chulafair.com` in Resend; `MAIL_FROM` is optional (default `CUFTM <noreply@chulafair.com>`).
+- **The rule switches on only when mail can actually be sent.** With no key, nobody is locked out and the registration form says it cannot work yet. `EMAIL_REQUIRED=off` is the emergency switch if mail goes down while the rule is on.
+- **Enforced on the server, not the page.** `currentUser()` treats an unverified account as signed out everywhere except the sign-in endpoint, which reports `emailRequired` so the page can show the *ผูกอีเมลของคุณ* step. A member signs in, is stopped on that step, receives a 6-digit code, and only then reaches the app. Existing members with no email meet it at their next sign-in (you chose *บังคับหลังล็อกอิน*).
+- **Codes:** six digits, valid 10 minutes, five tries, stored only as a salted hash, one use, 45 seconds between requests, six per hour per address. One verified address belongs to one account (unique index).
+- **The shared directory says whether an email is verified, never what it is.**
+
+### People can apply without an admin creating the account
+- *สมัครสมาชิก* on the sign-in screen. The applicant gives username, nickname, full name, **ตำแหน่ง**, **ฝ่าย**, **ฝ่ายย่อย/หน่วย**, email and a password, and names their **ประธานฝ่าย** (required), **เลขาประธานฝ่าย** and **ผู้ช่วยประธานฝ่าย** (optional) by username, nickname or full name. The server resolves each to an account and refuses anyone who is not an Editor, Co-Admin or Admin — and says which box failed.
+- The applicant then proves their email with a code. Only then does the request reach the queue; the named approvers and every admin/co-admin get a bell notification.
+- **Approval: any one of the named people, or any admin/co-admin, is enough** (you chose *คนใดคนหนึ่ง*). New page **คำขอสมัคร** (visible to Editor and above) lists the requests that name you; admins see all. Approve creates the account as a **member** in the chosen department/unit with the verified email attached, and emails the applicant; decline emails them too.
+- The password is hashed at application time and the copy is wiped when the request is decided. Rejected/approved requests keep their record.
+- **Not collected, on purpose:** รหัสนิสิต, phone numbers, health data.
+- Abuse limits: at most 300 open requests, the per-address code limits above, usernames and verified emails unique.
+
+### Tests
+`node test/run.mjs` — **1605 checks** (§104 is the new section: the email rule, codes, registration, approvers, decline, lock-out after five tries, the emergency switch; §52/§56/§100 rewritten for "no sheet"). `dev-tests/join.mjs` drives the form, the email step and the queue in a browser; `srv2.mjs` now seeds a fresh development database itself and has `/__mail`, `/__mailon`, `/__mailoff`.
+
+### What needs doing on Jade's side
+1. Deploy the whole FULL zip.
+2. Create a Resend account, verify `chulafair.com`, put `RESEND_API_KEY` in Vercel. Until then nothing changes for current users.
+3. Once it is set, every current member will be asked for their email at their next sign-in — worth a line in the LINE group first.
+
 ## 2026-10-26 — R0002: the tab that came back blank · version `2026-10-26a`
 No schema change. Still 12 functions. FULL zip.
 

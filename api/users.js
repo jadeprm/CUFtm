@@ -3,8 +3,6 @@ import {
   currentUser, canManageAccounts, cannotActOn, ACCESS, newToken,
   departmentsByUser, departmentsOf, setDepartments, normaliseAccess, ACCESS_ORDER,
 } from '../lib/auth.js';
-import { fetchPeople, syncPeople, SHEET_ID } from '../lib/sheet.js';
-import { writeAccess, appendPerson, renameInSheet, sheetWriteConfigured } from '../lib/sheets.js';
 import {
   isDepartment, expandAccess, departmentByKey, matchUnit, DEPARTMENT_KEYS,
   DEPARTMENTS, unitsOf, makeDepartmentKey,
@@ -20,6 +18,7 @@ import {
   availabilityOf, setAvailability, addBlock, removeBlock, checkClashes,
 } from '../lib/availstore.js';
 import { withNode } from '../lib/http.js';
+import { APPROVER_ACCESS, approveRegistration, rejectRegistration } from '../lib/signup.js';
 import { prefsOf, setPref } from '../lib/notifyprefs.js';
 
 /**
@@ -77,6 +76,8 @@ const directoryRow = (u, grants = {}) => ({
   active: u.active,
   suspended: u.suspended,
   hasPassword: Boolean(u.password_hash),
+  // Whether they have proved an email — never the address itself.
+  emailVerified: Boolean(u.email_verified_at),
   resetAllowed: u.reset_allowed,
   resetAllowedBy: u.reset_allowed_by,
   // Deliberately no calendar_token here: this row is visible to every
@@ -297,19 +298,13 @@ async function handler(request) {
   // ---- directory ---------------------------------------------------------
   // `?do=org` is the one other GET on this endpoint, and it is answered
   // further down; without this it would be swallowed by the directory.
-  if (request.method === 'GET' && !['org', 'groups', 'tags'].includes(action)) {
+  if (request.method === 'GET' && !['org', 'groups', 'tags', 'registrations'].includes(action)) {
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
-    const [meta] = await sql`SELECT value FROM meta WHERE key = 'last_sync'`;
     return json({
       users: rows.map((u) => directoryRow(u, grants)),
       canManage: canManageAccounts(me),
       canSetAccess: me.access === ACCESS.ADMIN,
-      // Whether an access change made here can reach the sheet. The page says
-      // so up front rather than letting an admin find out afterwards.
-      sheetWritable: sheetWriteConfigured(),
-      lastSync: meta?.value || null,
-      sheetId: SHEET_ID,
     });
   }
 
@@ -552,40 +547,16 @@ async function handler(request) {
     if (!sets.length) return json({ error: 'NOTHING_TO_DO' }, 400);
 
     /**
-     * The write back to the Google Sheet.
-     *
-     * Deliberately last and deliberately not fatal: the change has already
-     * taken effect in the app, and an admin who has just moved somebody should
-     * see that happen even when Google is having a bad morning. What they get
-     * instead is an honest note that the sheet did not receive it.
-     *
-     * Whichever part did not get through is pinned so the hourly sync leaves
-     * it alone; whichever part did is unpinned, because the sheet now says the
-     * same thing and there is nothing left to protect the record from.
+     * The member database is this app's own; nothing is written anywhere
+     * else. What was set here is marked as set here, so the one-off sheet
+     * import (lib/sheet.js) can never overwrite it.
      */
-    let sheetResult = null;
-    if (sheetPlan) {
-      /**
-       * Only the cells this request actually changed. Rewriting the Department
-       * cell during an access change would quietly restandardise somebody's
-       * hand-written "Oper 1" into the app's own spelling — a change nobody
-       * asked for, in a column people maintain themselves.
-       */
-      sheetResult = await writeAccess(
-        target.username,
-        sheetPlan.access ?? null,
-        sheetPlan.departments ?? null,
-        sheetPlan.unit,
-      );
-
-      const stuck = !sheetResult.ok;
-      if (sheetPlan.access !== undefined) {
-        await sql`UPDATE users SET access_pinned = ${stuck} WHERE username = ${target.username}`;
-      }
-      if (sheetPlan.departments !== undefined) {
-        await sql`UPDATE users SET depts_pinned = ${stuck} WHERE username = ${target.username}`;
-      }
-      sets.push(sheetResult.ok ? 'sheet updated' : 'sheet not updated');
+    const sheetResult = null;
+    if (sheetPlan?.access !== undefined) {
+      await sql`UPDATE users SET access_pinned = true WHERE username = ${target.username}`;
+    }
+    if (sheetPlan?.departments !== undefined) {
+      await sql`UPDATE users SET depts_pinned = true WHERE username = ${target.username}`;
     }
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${target.username}`;
@@ -667,19 +638,6 @@ async function handler(request) {
     return json({ calendarToken: token });
   }
 
-  // ---- pull the sheet ----------------------------------------------------
-  if (request.method === 'POST' && action === 'sync') {
-    if (!canManageAccounts(me)) return json({ error: 'EDITORS_CANNOT_MANAGE_ACCOUNTS' }, 403);
-    try {
-      const result = await syncPeople(sql, await fetchPeople());
-      const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
-      const grants = await departmentsByUser(sql);
-      return json({ ...result, users: rows.map((u) => directoryRow(u, grants)) });
-    } catch (error) {
-      return json({ error: 'SHEET_UNREADABLE', message: error.message }, 502);
-    }
-  }
-
   // ---- add somebody the sheet does not have yet --------------------------
   /**
    * Creating an account without going through the roster sheet.
@@ -744,35 +702,51 @@ async function handler(request) {
               ${home}, ${all}, ${unit}, ${Boolean(body.isHead)}, true, true, true, true)`;
     if (!all) await setDepartments(sql, username, departments);
 
-    /**
-     * And into the roster sheet, which is still the register of record.
-     *
-     * Best effort on purpose: the account exists either way, and an admin
-     * adding somebody while Google is unreachable should get the account
-     * and an honest note, not a failure. `off_sheet` above is what keeps
-     * the next sync from closing them when this did not land.
-     */
-    const wrote = await appendPerson({
-      username, nickname, displayName, position, access,
-      department: home ? (departmentByKey(home)?.th || home) : '',
-      unit: unit || '',
-    });
-    /**
-     * `off_sheet` is deliberately NOT cleared here, even when the row lands.
-     *
-     * The sync reads the sheet's PUBLISHED CSV, which Google refreshes on its
-     * own schedule — minutes behind the write. Handing the row straight to
-     * the sheet's ownership would mean a sync in that window finds no such
-     * person and closes the account ten minutes after it was made. syncPeople
-     * clears the flag itself the first time it actually sees the name.
-     */
-
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
     return json({
-      ok: true, username, sheet: wrote,
+      ok: true, username,
       users: rows.map((u) => directoryRow(u, grants)),
     }, 201);
+  }
+
+  // ---- people asking to join ------------------------------------------------
+  /**
+   * The queue a newcomer lands in once their email is proved. Whoever the
+   * applicant named — and any admin or co-admin — can decide; the first
+   * decision settles it, so it never needs more than one person.
+   */
+  if (action === 'registrations' || action === 'registration-decide') {
+    if (!APPROVER_ACCESS.includes(me.access)) return json({ error: 'NOT_AN_APPROVER' }, 403);
+    const rank = me.access === ACCESS.ADMIN || me.access === ACCESS.COADMIN;
+
+    if (request.method === 'GET') {
+      const rows = await sql`
+        SELECT id, username, nickname, full_name, position, department, unit, email, approvers, created_at
+        FROM registrations WHERE status = 'pending' ORDER BY created_at`;
+      return json({
+        requests: rows
+          .filter((r) => rank || r.approvers.includes(me.username))
+          .map((r) => ({
+            id: r.id, username: r.username, nickname: r.nickname, fullName: r.full_name,
+            position: r.position, department: r.department, unit: r.unit, email: r.email,
+            approvers: r.approvers, createdAt: r.created_at,
+          })),
+      });
+    }
+
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const id = String(body.id ?? '');
+      const [reg] = await sql`SELECT approvers FROM registrations WHERE id = ${id} AND status = 'pending'`;
+      if (!reg) return json({ error: 'NO_SUCH_REGISTRATION' }, 404);
+      if (!rank && !reg.approvers.includes(me.username)) return json({ error: 'NOT_AN_APPROVER' }, 403);
+      const out = body.approve
+        ? await approveRegistration(sql, id, { by: me.username, access: 'inner' })
+        : await rejectRegistration(sql, id, { by: me.username, reason: body.reason });
+      if (out.error) return json({ error: out.error }, out.error === 'USERNAME_TAKEN' ? 409 : 404);
+      return json({ ok: true, username: out.username || null });
+    }
   }
 
   // ---- the org chart -----------------------------------------------------
@@ -1109,26 +1083,6 @@ async function handler(request) {
 
     const result = await renameUser(sql, from, to);
 
-    /**
-     * The sheet still says the old name, and the next sync would read that
-     * row as somebody who does not exist yet and make a second account for
-     * them. Marking the person off-sheet keeps THIS account from being
-     * closed; only changing the Username column in the sheet stops the
-     * duplicate, and that is a cell nobody here can write for Jade.
-     */
-    /**
-     * The sheet's Username cell moves too, when the write-back is set up.
-     * Without it the next sync reads the old name as somebody who does not
-     * exist and makes a second account under it — so when the cell cannot be
-     * written, the person is marked off-sheet and the page says to go and
-     * change it by hand.
-     */
-    const wasOnSheet = !target.off_sheet;
-    const sheet = wasOnSheet ? await renameInSheet(from, to) : { ok: false, reason: 'OFF_SHEET' };
-    if (wasOnSheet && !sheet.ok) {
-      await sql`UPDATE users SET off_sheet = true WHERE username = ${to}`;
-    }
-
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
     return json({
@@ -1139,9 +1093,6 @@ async function handler(request) {
       // touched nothing looks exactly like one that worked.
       moved: result.moved,
       columnsChecked: result.columnsChecked,
-      // Only when the server could not do it itself.
-      fixTheSheet: wasOnSheet && !sheet.ok,
-      sheet,
       // Renaming yourself leaves the page holding the old name.
       itWasMe: from === me.username,
       users: rows.map((u) => directoryRow(u, grants)),

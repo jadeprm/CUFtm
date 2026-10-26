@@ -132,7 +132,7 @@ ok('the new ฝ่าย is on the page', await newDeptCard.count() === 1);
 ok('...and is marked as one added here rather than transcribed',
   await newDeptCard.locator('.chip.sm').count() === 1);
 
-head('Adding somebody the sheet has not caught up with');
+head('Adding a member from the admin page');
 await admin.locator('.org-admin .page-head.sub .btn', { hasText: 'เพิ่มสมาชิก' }).click();
 await admin.waitForTimeout(600);
 const form = admin.locator('.veil .modal').last();
@@ -226,8 +226,9 @@ ok('the directory shows the corrected name',
   await admin.locator('.users-table tbody tr', { hasText: RENAMED_USER }).count() >= 1);
 ok('...and the old one is gone rather than sitting beside it',
   await admin.locator('.users-table tbody tr', { hasText: TEST_USER }).count() === 0);
-ok('...with a line saying what moved and to fix the sheet',
-  /ชีต/.test(await admin.locator('.notice.warn').last().textContent() || ''));
+ok('...with a line saying what moved, and no talk of a sheet',
+  /ย้าย/.test(await admin.locator('.notice.ok').first().textContent() || '')
+  && !/ชีต|sheet/i.test(await admin.locator('.notice.ok').first().textContent() || ''));
 
 head('An editor is offered none of it');
 const editor = await as('Kungking_HeadCon', 'brandNew22');

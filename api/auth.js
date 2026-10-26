@@ -6,7 +6,12 @@ import {
   currentUser, departmentsOf, hashPassword, verifyPassword, passwordProblem,
   newToken, sessionCookie, sessionExpiry,
 } from '../lib/auth.js';
-import { fetchPeople, syncPeople } from '../lib/sheet.js';
+import { emailEnforced, mailConfigured } from '../lib/mail.js';
+import {
+  issueCode, checkCode, bindEmail, cleanEmail, EMAIL_SHAPE, startRegistration,
+  resendRegistrationCode, verifyRegistration,
+} from '../lib/signup.js';
+import { DEPARTMENTS, unitsOf } from '../lib/departments.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -39,6 +44,11 @@ const publicUser = (u) => ({
   calendarToken: u.calendar_token || null,
   // When a calendar last fetched their feed — the guide's "linked" signal.
   calendarSeenAt: u.calendar_seen_at || null,
+  // Their own address only; never part of the shared directory.
+  email: u.email || null,
+  emailVerified: Boolean(u.email_verified_at),
+  // True while the rule applies and they have not yet proved an address.
+  emailRequired: emailEnforced() && !u.email_verified_at,
 });
 
 async function handler(request) {
@@ -49,16 +59,6 @@ async function handler(request) {
 
   const url = requestUrl(request);
   const action = url.searchParams.get('do');
-
-  // On a completely empty database, pull the roster so the first person can sign in.
-  const [{ count }] = await sql`SELECT count(*)::int AS count FROM users`;
-  if (count === 0) {
-    try {
-      await syncPeople(sql, await fetchPeople());
-    } catch (error) {
-      return json({ error: 'SHEET_UNREADABLE', message: error.message }, 503);
-    }
-  }
 
   /**
    * Connecting a person's own Google Calendar — see lib/googlecal.js.
@@ -110,8 +110,22 @@ async function handler(request) {
     return go(page + (done.ok ? 'ok' : encodeURIComponent(done.error)));
   }
 
+  /**
+   * What the registration form offers: the chart, and whether the system can
+   * email a code at all. Public on purpose — it is the same chart every
+   * signed-in person sees, and a stranger needs it to apply.
+   */
+  if (request.method === 'GET' && action === 'register-options') {
+    const [{ n }] = await sql`SELECT count(*)::int AS n FROM users`;
+    return json({
+      mailReady: mailConfigured(),
+      firstRun: n === 0,
+      departments: DEPARTMENTS.map((d) => ({ key: d.key, th: d.th, en: d.en, units: unitsOf(d.key) })),
+    });
+  }
+
   if (request.method === 'GET') {
-    const user = await currentUser(request, sql);
+    const user = await currentUser(request, sql, { allowUnverified: true });
     return json({ user: user ? publicUser(user) : null });
   }
 
@@ -119,6 +133,48 @@ async function handler(request) {
 
   const body = await request.json().catch(() => ({}));
   const username = String(body.username ?? '').trim();
+
+  // ---- joining, without an admin creating the account --------------------
+  if (action === 'register') {
+    const r = await startRegistration(sql, body);
+    const { status, ...rest } = r;
+    return json(rest, status);
+  }
+  if (action === 'register-resend') {
+    const { status, ...rest } = await resendRegistrationCode(sql, String(body.id ?? ''));
+    return json(rest, status);
+  }
+  if (action === 'register-verify') {
+    const { status, ...rest } = await verifyRegistration(sql, String(body.id ?? ''), body.code);
+    return json(rest, status);
+  }
+
+  // ---- an existing person proving their own email --------------------------
+  if (action === 'email-send' || action === 'email-verify') {
+    const me = await currentUser(request, sql, { allowUnverified: true });
+    if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+    const email = cleanEmail(body.email);
+    if (!EMAIL_SHAPE.test(email)) return json({ error: 'BAD_EMAIL' }, 400);
+    const [taken] = await sql`
+      SELECT 1 AS x FROM users WHERE lower(email) = ${email}
+        AND email_verified_at IS NOT NULL AND username <> ${me.username}`;
+    if (taken) return json({ error: 'EMAIL_TAKEN' }, 409);
+
+    if (action === 'email-send') {
+      const sent = await issueCode(sql, { purpose: 'bind', subject: me.username, email });
+      if (!sent.ok) {
+        return json({ error: sent.error, wait: sent.wait }, sent.error === 'MAIL_NOT_CONFIGURED' ? 503 : 429);
+      }
+      return json({ ok: true });
+    }
+    const res = await checkCode(sql, { purpose: 'bind', subject: me.username, email, code: body.code });
+    if (!res.ok) return json({ error: res.error }, 400);
+    const bound = await bindEmail(sql, me.username, email);
+    if (!bound.ok) return json({ error: bound.error }, 409);
+    const [fresh] = await sql`SELECT * FROM users WHERE username = ${me.username}`;
+    fresh.departments = await departmentsOf(sql, me.username);
+    return json({ user: publicUser(fresh) });
+  }
 
   if (action === 'check') {
     const [u] = await sql`
@@ -129,7 +185,12 @@ async function handler(request) {
     // Deliberately explicit: this is an internal roster from a shared sheet,
     // so "no such user" is not secret, and saying so prevents a lot of
     // confused messages to the admin about typos.
-    if (!u) return json({ known: false });
+    if (!u) {
+      const [wait] = await sql`
+        SELECT 1 AS x FROM registrations
+        WHERE lower(username) = ${username.toLowerCase()} AND status = 'pending'`;
+      return json({ known: false, pending: Boolean(wait) });
+    }
 
     return json({
       known: true,
@@ -196,7 +257,7 @@ async function handler(request) {
   }
 
   if (action === 'logout') {
-    const user = await currentUser(request, sql);
+    const user = await currentUser(request, sql, { allowUnverified: true });
     if (user) {
       const cookie = request.headers.get('cookie') || '';
       const token = (cookie.match(/fair_session=([^;]+)/) || [])[1];

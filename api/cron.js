@@ -1,6 +1,5 @@
 import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, json, noDatabase, hasDatabase, requestUrl, toBuffer } from '../lib/db.js';
-import { fetchPeople, syncPeople } from '../lib/sheet.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
 import { assembledEvents, audienceOf } from './events.js';
 import { withNode } from '../lib/http.js';
@@ -407,12 +406,7 @@ async function handler(request) {
   const archive = await archiveDocuments(sql);
 
   // Keep the roster current, and tidy up expired sessions while we're here.
-  let roster = null;
-  try {
-    roster = await syncPeople(sql, await fetchPeople());
-  } catch (error) {
-    roster = { error: error.message };
-  }
+  const roster = null; // members live in this app's database only
   await sql`DELETE FROM sessions WHERE expires_at < now()`;
 
   /**

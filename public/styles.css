@@ -2024,3 +2024,9 @@ tr.urow[hidden] { display: none !important; }
   font-size: .82rem; opacity: .8; word-break: break-all;
   background: rgba(0,0,0,.06); padding: 4px 8px; border-radius: 6px;
 }
+
+/* Joining and proving an email */
+#gate-view .auth form { display: flex; flex-direction: column; gap: 10px; }
+.req-list { display: grid; gap: 12px; margin-top: 12px; }
+.req-card { padding: 14px; display: grid; gap: 4px; }
+.req-act { display: flex; gap: 8px; margin-top: 8px; }

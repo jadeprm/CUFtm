@@ -16,6 +16,7 @@
     notifs: [],
     unread: 0,
     canManage: false,
+    canApprove: false,
     canSetAccess: false,
     sheetWritable: false,
     adminNotice: null,   // survives the redraw a change on the admin page causes
@@ -123,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-26a';
+  var APP_VERSION = '2026-10-26b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -706,6 +707,7 @@
    * draws the sign-in screen and so never loads the script at all.
    */
   function afterSignIn() {
+    if (S.user && S.user.emailRequired) { renderEmailGate(); return; }
     if (adsLoaded) { location.reload(); return; }
     boot();
   }
@@ -724,6 +726,7 @@
       return;
     }
     $('soon-view').hidden = true;
+    $('gate-view').hidden = true;
     $('auth-view').hidden = false;
     $('app-view').hidden = true;
     document.documentElement.lang = S.lang;
@@ -737,6 +740,7 @@
     $('step-known').hidden = authState.mode === 'ask';
     $('auth-back').hidden = authState.mode === 'ask';
     $('auth-forgot').hidden = authState.mode === 'ask' || setup;
+    $('auth-register').hidden = authState.mode !== 'ask';
     $('auth-forgot').textContent = t('forgotTitle');
     $('field-confirm').hidden = !setup;
     $('pw-rules').textContent = setup ? t('pwRules') : '';
@@ -773,7 +777,7 @@
       if (!name) return;
       api('/api/auth?do=check', { method: 'POST', body: { username: name } })
         .then(function (data) {
-          if (!data.known) { showAuthNotice(t('errNoSuchUser')); return; }
+          if (!data.known) { showAuthNotice(data.pending ? t('regPendingNote') : t('errNoSuchUser'), data.pending ? 'warn' : undefined); return; }
           authState.username = name;
           authState.known = data;
           authState.mode = 'password';
@@ -822,6 +826,201 @@
     showAuthNotice(''); renderAuth();
   });
   $('auth-forgot').addEventListener('click', function () { showAuthNotice(t('forgotHelp'), 'warn'); });
+
+
+  /* ======================================================================
+     Joining, and proving an email
+     ====================================================================== */
+  /**
+   * One container for the two screens that are neither the sign-in box nor
+   * the app: the registration form and the "link your email" step that
+   * stands in front of everything until it is done. Drawn by hand into
+   * #gate-view; the server enforces the email rule, this is only its face.
+   */
+  function showGate(kids) {
+    bootDone();
+    $('soon-view').hidden = true;
+    $('auth-view').hidden = true;
+    $('app-view').hidden = true;
+    var box = $('gate-view');
+    clear(box);
+    box.hidden = false;
+    document.documentElement.lang = S.lang;
+    box.appendChild(h('div', { class: 'auth' }, kids));
+  }
+
+  function gateNotice() { return h('div', { class: 'notice err', hidden: true }); }
+  function gateSay(n, text, kind) {
+    n.hidden = !text; n.textContent = text || ''; n.className = 'notice ' + (kind || 'err');
+  }
+  function field(label, input) { return h('div', { class: 'field' }, [h('label', { text: label }), input]); }
+
+  /** The six-digit step, shared by registration and by linking an email. */
+  function codeStep(o) {
+    var n = gateNotice(), input = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code', placeholder: t('regCode') });
+    var go = h('button', { type: 'submit', class: 'btn primary', text: t('regVerify') });
+    var resend = h('button', { type: 'button', class: 'link', text: t('regResend'), onclick: function () {
+      api(o.resendUrl, { method: 'POST', body: o.resendBody() })
+        .then(function () { gateSay(n, t('regResent'), 'ok'); })
+        .catch(function (err) { gateSay(n, errText(err.code)); });
+    } });
+    var form = h('form', { onsubmit: function (e) {
+      e.preventDefault();
+      go.disabled = true;
+      api(o.verifyUrl, { method: 'POST', body: o.verifyBody(input.value.trim()) })
+        .then(o.done)
+        .catch(function (err) { go.disabled = false; gateSay(n, errText(err.code)); });
+    } }, [
+      h('h1', { text: o.title }),
+      h('p', { class: 'hint', text: o.sent }), n, field(t('regCode'), input), go, resend,
+    ].concat(o.extra || []));
+    return form;
+  }
+
+  function renderEmailGate() {
+    if (S.lang === 'en' && !window.STRINGS.en) { ensureLang('en', renderEmailGate); return; }
+    var n = gateNotice();
+    var email = h('input', { type: 'email', autocomplete: 'email', value: S.user.email || '' });
+    var signOut = h('button', { type: 'button', class: 'link', text: t('emSignOut'), onclick: function () {
+      api('/api/auth?do=logout', { method: 'POST' }).then(function () { location.reload(); });
+    } });
+    function askCode(e) {
+      if (e) e.preventDefault();
+      var addr = email.value.trim();
+      api('/api/auth?do=email-send', { method: 'POST', body: { email: addr } }).then(function () {
+        showGate([codeStep({
+          title: t('emTitle'), sent: t('regCodeSent').replace('%s', addr),
+          resendUrl: '/api/auth?do=email-send', resendBody: function () { return { email: addr }; },
+          verifyUrl: '/api/auth?do=email-verify', verifyBody: function (c) { return { email: addr, code: c }; },
+          done: function (d) { S.user = d.user; afterSignIn(); },
+          extra: [signOut],
+        })]);
+      }).catch(function (err) { gateSay(n, errText(err.code)); });
+    }
+    showGate([h('form', { onsubmit: askCode }, [
+      h('h1', { text: t('emTitle') }), h('p', { class: 'hint', text: t('emWhy') }), n,
+      field(t('regEmail'), email),
+      h('button', { type: 'submit', class: 'btn primary', text: t('emSend') }), signOut,
+    ])]);
+  }
+
+  function renderRegister(opts) {
+    if (S.lang === 'en' && !window.STRINGS.en) { ensureLang('en', function () { renderRegister(opts); }); return; }
+    var n = gateNotice();
+    if (!opts) {
+      api('/api/auth?do=register-options').then(renderRegister)
+        .catch(function () { renderAuth(); showAuthNotice(t('errOffline')); });
+      return;
+    }
+    var lang = S.lang;
+    var f = {
+      username: h('input', { type: 'text', autocapitalize: 'none', autocomplete: 'username', spellcheck: 'false', maxlength: '64' }),
+      nickname: h('input', { type: 'text', maxlength: '60' }),
+      fullName: h('input', { type: 'text', maxlength: '120' }),
+      position: h('input', { type: 'text', maxlength: '120' }),
+      email: h('input', { type: 'email', autocomplete: 'email', maxlength: '200' }),
+      password: h('input', { type: 'password', autocomplete: 'new-password' }),
+      confirm: h('input', { type: 'password', autocomplete: 'new-password' }),
+      dept: h('select', {}, [h('option', { value: '', text: t('regPick') })].concat(opts.departments.map(function (d) {
+        return h('option', { value: d.key, text: lang === 'en' ? d.en : d.th });
+      }))),
+      unit: h('select', {}, [h('option', { value: '', text: t('regUnitNone') })]),
+      a0: h('input', { type: 'text', maxlength: '120' }),
+      a1: h('input', { type: 'text', maxlength: '120', placeholder: t('regOptional') }),
+      a2: h('input', { type: 'text', maxlength: '120', placeholder: t('regOptional') }),
+    };
+    f.dept.addEventListener('change', function () {
+      var d = opts.departments.filter(function (x) { return x.key === f.dept.value; })[0];
+      clear(f.unit);
+      f.unit.appendChild(h('option', { value: '', text: t('regUnitNone') }));
+      ((d && d.units) || []).forEach(function (u) { f.unit.appendChild(h('option', { value: u, text: u })); });
+    });
+    var submit = h('button', { type: 'submit', class: 'btn primary', text: t('regSubmit') });
+    var back = h('button', { type: 'button', class: 'link', text: t('regBackToSignIn'), onclick: function () { renderAuth(); } });
+
+    function finish(msg) {
+      showGate([h('h1', { text: t('regWait') }), h('p', { class: 'hint', text: msg }), back]);
+    }
+
+    var form = h('form', { onsubmit: function (e) {
+      e.preventDefault();
+      gateSay(n, '');
+      if (f.password.value !== f.confirm.value) { gateSay(n, t('errMismatch')); return; }
+      submit.disabled = true;
+      api('/api/auth?do=register', { method: 'POST', body: {
+        username: f.username.value.trim(), password: f.password.value, nickname: f.nickname.value,
+        fullName: f.fullName.value, position: f.position.value, email: f.email.value,
+        department: f.dept.value, unit: f.unit.value,
+        approvers: [f.a0.value, f.a1.value, f.a2.value],
+      } }).then(function (d) {
+        if (d.firstRun && !d.id) { showGate([h('h1', { text: t('regTitle') }), h('p', { class: 'hint', text: t('regFirst') }), back]); return; }
+        var addr = f.email.value.trim().toLowerCase();
+        showGate([codeStep({
+          title: t('regCodeTitle'), sent: t('regCodeSent').replace('%s', addr),
+          resendUrl: '/api/auth?do=register-resend', resendBody: function () { return { id: d.id }; },
+          verifyUrl: '/api/auth?do=register-verify', verifyBody: function (c) { return { id: d.id, code: c }; },
+          done: function (r) { finish(r.firstRun ? t('regFirst') : t('regWaitBody')); },
+          extra: [back],
+        })]);
+      }).catch(function (err) {
+        submit.disabled = false;
+        gateSay(n, errText(err.code));
+      });
+    } }, [
+      h('h1', { text: t('regTitle') }),
+      h('p', { class: 'hint', text: opts.firstRun ? t('regFirst') : t('regIntro') }),
+      opts.mailReady || opts.firstRun ? null : h('div', { class: 'notice warn', text: t('regNoMail') }),
+      n,
+      field(t('regUsername'), f.username), field(t('regNickname'), f.nickname), field(t('regFullName'), f.fullName),
+      field(t('regPosition'), f.position), field(t('regDepartment'), f.dept), field(t('regUnit'), f.unit),
+      field(t('regEmail'), f.email), field(t('password'), f.password), field(t('confirmPassword'), f.confirm),
+      h('p', { class: 'hint', text: t('pwRules') }),
+      opts.firstRun ? null : h('div', {}, [
+        h('p', { class: 'hint', text: t('regApprovers') }),
+        field(t('regHead'), f.a0), field(t('regSec'), f.a1), field(t('regAsst'), f.a2),
+      ]),
+      submit, back,
+    ]);
+    showGate([form]);
+  }
+  $('auth-register').addEventListener('click', function () { renderRegister(); });
+
+  /** The approvers' queue: people who have proved an email and are waiting for a yes. */
+  function pageRequests(main) {
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('reqTitle') })]));
+    var notice = h('div', { class: 'notice', hidden: true });
+    var list = h('div', { class: 'req-list' });
+    main.appendChild(notice);
+    main.appendChild(list);
+    function load() {
+      api('/api/users?do=registrations').then(function (d) {
+        clear(list);
+        if (!d.requests.length) { list.appendChild(h('p', { class: 'hint', text: t('reqEmpty') })); return; }
+        d.requests.forEach(function (r) {
+          function decide(approve) {
+            api('/api/users?do=registration-decide', { method: 'POST', body: { id: r.id, approve: approve } })
+              .then(function () {
+                notice.hidden = false; notice.className = 'notice ok';
+                notice.textContent = t(approve ? 'reqApproved' : 'reqRejected').replace('%s', r.username);
+                load();
+              })
+              .catch(function (err) { notice.hidden = false; notice.className = 'notice err'; notice.textContent = errText(err.code); load(); });
+          }
+          list.appendChild(h('div', { class: 'card req-card' }, [
+            h('strong', { text: r.nickname + ' · ' + r.fullName }),
+            h('div', { class: 'hint', text: r.username + ' · ' + r.email }),
+            h('div', { text: r.position + ' · ' + deptLabel(r.department) + (r.unit ? ' / ' + r.unit : '') }),
+            h('div', { class: 'hint', text: t('reqNamed') + ': ' + r.approvers.join(', ') }),
+            h('div', { class: 'req-act' }, [
+              h('button', { class: 'btn primary', text: t('reqApprove'), onclick: function () { decide(true); } }),
+              h('button', { class: 'btn danger', text: t('reqReject'), onclick: function () { decide(false); } }),
+            ]),
+          ]));
+        });
+      }).catch(function (err) { notice.hidden = false; notice.className = 'notice err'; notice.textContent = errText(err.code); });
+    }
+    load();
+  }
 
   /* ======================================================================
      Shell
@@ -1099,7 +1298,7 @@
       return sp ? sp.name : t('spaces');
     }
     return t({
-      home: 'navHome', schedule: 'navSchedule',
+      home: 'navHome', schedule: 'navSchedule', requests: 'navRequests',
       work: 'navWork', calendar: 'navCalendar', docs: 'navDocs', announce: 'navAnnounce',
       admin: 'navAdmin', profile: 'profile', links: 'navLinks',
       reports: 'navReports', shelf: 'navShelf', feed: 'navFeed',
@@ -1234,6 +1433,7 @@
     if (isPhone()) {
       var pages = [['feed', 'navFeed', 'megaphone'], ['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
         ['announce', 'navAnnounce', 'megaphone', S.canManage],
+        ['requests', 'navRequests', 'user', S.canApprove],
         ['admin', 'navAdmin', 'people', S.canManage], ['profile', 'profile', 'user'],
         ['links', 'navLinks', 'link'], ['reports', 'navReports', 'bug']];
       box.appendChild(h('div', { class: 'sb-drawer-nav' }, pages.filter(function (p) {
@@ -1349,6 +1549,8 @@
     });
     $('tab-admin').hidden = !S.canManage;
     $('tab-announce').hidden = !S.canManage;
+    $('tab-requests').hidden = !S.canApprove;
+    if ($('gate-view')) $('gate-view').hidden = true;
     // The page's own name and a line under it, on the left of the top bar.
     if ($('bar-sub')) $('bar-sub').textContent = pageSub();
     placeNav();
@@ -1537,7 +1739,8 @@
     }
     if (page === 'more') page = S.page || 'home';
     if (['home', 'schedule', 'space', 'work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce',
-      'reports', 'shelf', 'feed'].indexOf(page) === -1) page = 'home';
+      'reports', 'shelf', 'feed', 'requests'].indexOf(page) === -1) page = 'home';
+    if (page === 'requests' && !S.canApprove) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
     // to it tomorrow does not reopen with yesterday's message.
@@ -3352,6 +3555,7 @@
     if (S.page === 'feed') return pageFeed(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
+    if (S.page === 'requests') return pageRequests(main);
     return null;
   }
 
@@ -8234,42 +8438,8 @@
 
     main.appendChild(h('div', { class: 'page-head' }, [
       h('h1', { text: t('adminTitle') }),
-      h('button', {
-        class: 'btn', text: t('syncNow'),
-        onclick: function (e) {
-          e.target.disabled = true;
-          api('/api/users?do=sync', { method: 'POST' }).then(function (data) {
-            S.users = data.users;
-            var parts = ['+' + data.added + ' / ~' + data.updated +
-              (data.deactivated.length ? ' / -' + data.deactivated.length : '')];
-            if (data.pinned) parts.push(data.pinned + ' ' + t('syncPinned'));
-            (data.unreadable || []).forEach(function (u) {
-              parts.push(u.username + ': ' + t('syncUnreadable') + ' \u2014 ' + u.cells.join(', '));
-            });
-            say((data.unreadable || []).length ? 'warn' : 'ok', parts.join('  \u00b7  '));
-            renderPage();
-          }).catch(function (err) {
-            say('err', (err.data && err.data.message) || errText(err.code));
-            e.target.disabled = false;
-          });
-        },
-      }),
-      S.sheetId ? h('a', {
-        class: 'btn', target: '_blank', rel: 'noopener',
-        href: 'https://docs.google.com/spreadsheets/d/' + S.sheetId + '/edit',
-        text: t('openSheet'),
-      }) : null,
     ]));
 
-    main.appendChild(h('div', { class: 'notice warn' }, [
-      t('adminSheetNote') + '  ·  ' + t('lastSync') + ': ' +
-      (S.lastSync ? new Date(S.lastSync).toLocaleString(S.lang === 'th' ? 'th-TH' : 'en-GB') : t('never')),
-    ]));
-    // Said once, up front: without the write-back set up, an access change
-    // here never reaches the spreadsheet everyone else reads.
-    if (S.canSetAccess && !S.sheetWritable) {
-      main.appendChild(h('div', { class: 'notice warn', text: t('sheetNotLinked') }));
-    }
     main.appendChild(notice);
 
     /**
@@ -8696,12 +8866,6 @@
       }));
       box.appendChild(pick);
 
-      if (u.accessPinned) {
-        box.appendChild(h('small', {
-          class: 'from-sheet', style: 'color:var(--warn,#b26a00)',
-          text: t('pinnedHere'), title: t('accessPinnedHint'),
-        }));
-      }
       return box;
     }
 
@@ -8769,14 +8933,6 @@
        * sheet stops overriding it — which has to be visible, or an admin would
        * edit the sheet, see nothing change, and have no way to find out why.
        */
-      box.appendChild(u.deptsPinned
-        ? h('button', {
-            class: 'btn sm ghost pin', text: t('pinnedHere') + ' \u21ba',
-            title: t('pinnedHint'),
-            onclick: function () { send({ followSheet: true }); },
-          })
-        : h('small', { class: 'from-sheet', text: t('fromSheet') }));
-
       /**
        * The section, after the departments and only once there are some.
        *
@@ -13128,6 +13284,7 @@
       S.accessOrder = res[0].accessOrder || [];
       S.users = res[1].users;
       S.canManage = res[1].canManage;
+      S.canApprove = ['editor', 'coadmin', 'admin'].indexOf(S.user.access) !== -1;
       S.canSetAccess = Boolean(res[1].canSetAccess);
       S.sheetWritable = Boolean(res[1].sheetWritable);
       S.lastSync = res[1].lastSync;
@@ -13192,7 +13349,7 @@
       S.user = data.user;
       S.lang = data.user.lang || S.lang;
       if (data.user.theme) applyTheme(data.user.theme);
-      boot();
+      if (data.user.emailRequired) renderEmailGate(); else boot();
     }
     else renderAuth();
   }).catch(function (err) {
@@ -13587,13 +13744,10 @@
             S.users = d.users;
             veil.remove();
             var carried = (d.moved || []).reduce(function (n, x) { return n + x.rows; }, 0);
-            var sheetSaid = d.fixTheSheet
-              ? t('renameFixSheet').replace('%a', d.from)
-              : (d.sheet && d.sheet.ok ? t('renameSheetDone') : '');
             S.adminNotice = {
-              kind: d.fixTheSheet ? 'warn' : 'ok',
+              kind: 'ok',
               text: t('renameDone').replace('%a', d.from).replace('%b', d.to)
-                .replace('%n', String(carried)) + (sheetSaid ? '  ·  ' + sheetSaid : ''),
+                .replace('%n', String(carried)),
             };
             renderPage();
           })
@@ -13617,7 +13771,6 @@
         h('p', { class: 'hint', text: user.displayName }),
         h('div', { class: 'field' }, [h('label', { text: t('username') }), input]),
         h('small', { class: 'hint', text: t('renameWhy') }),
-        h('small', { class: 'hint', text: t('renameSheetWarn') }),
       ]),
       h('footer', {}, [
         h('span', { class: 'grow' }),
@@ -14078,10 +14231,7 @@
              * assumed: an account the sheet has never heard of is one that
              * falls out of every printed list and every ฝ่าย count.
              */
-            var wrote = d.sheet && d.sheet.ok;
-            say(wrote ? 'ok' : 'warn',
-              t('orgMemberAdded').replace('%s', d.username) + '  ·  ' +
-              (wrote ? t('orgMemberInSheet') : t('orgMemberNotInSheet')));
+            say('ok', t('orgMemberAdded').replace('%s', d.username));
             renderPage();
           })
           .catch(function (err) {
