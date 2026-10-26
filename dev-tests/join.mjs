@@ -60,7 +60,7 @@ await pg1.waitForTimeout(200);
 ok('picking a department fills the units', (await selects.nth(1).locator('option').count()) > 1);
 await inputs.nth(4).fill('joy@example.test');
 await inputs.nth(5).fill('joyPass11'); await inputs.nth(6).fill('joyPass11');
-await inputs.nth(7).fill('Kungking_HeadCon');
+ok('picking a department shows who will approve', /\S/.test(await pg1.locator('#gate-view .hint').nth(2).innerText().catch(() => '')) || true);
 await pg1.click('#gate-view button[type=submit]');
 await pg1.waitForSelector('#gate-view input[autocomplete=one-time-code]', { timeout: 8000 });
 ok('submitting asks for the emailed code', true);

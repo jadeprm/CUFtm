@@ -9,7 +9,7 @@ import {
 import { emailEnforced, mailConfigured } from '../lib/mail.js';
 import {
   issueCode, checkCode, bindEmail, cleanEmail, EMAIL_SHAPE, startRegistration,
-  resendRegistrationCode, verifyRegistration,
+  resendRegistrationCode, verifyRegistration, approversFor,
 } from '../lib/signup.js';
 import { DEPARTMENTS, unitsOf } from '../lib/departments.js';
 import { withNode } from '../lib/http.js';
@@ -120,7 +120,13 @@ async function handler(request) {
     return json({
       mailReady: mailConfigured(),
       firstRun: n === 0,
-      departments: DEPARTMENTS.map((d) => ({ key: d.key, th: d.th, en: d.en, units: unitsOf(d.key) })),
+      departments: await Promise.all(DEPARTMENTS.map(async (d) => ({
+        key: d.key, th: d.th, en: d.en, units: unitsOf(d.key),
+        // Names only, so the applicant can see who will be asked.
+        approvers: (await approversFor(sql, d.key)).map((r) => ({
+          name: r.nickname || r.display_name, head: Boolean(r.is_head), position: r.position || '',
+        })),
+      }))),
     });
   }
 

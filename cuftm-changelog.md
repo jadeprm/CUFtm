@@ -11,6 +11,12 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-27 — Emails on the manage-users page, approvers found automatically · version `2026-10-27a`
+No schema change. Still 12 functions. FULL zip.
+- **Emails on หน้าจัดการผู้ใช้:** admins and co-admins see every member's email (✓ when verified, "ยังไม่ได้ผูกอีเมล" when not); an editor receives the emails of the people in the departments they look after. Everyone else still gets only the verified flag.
+- **Registration no longer asks who the approver is.** The applicant picks a ฝ่าย and the page shows who will be asked: the editors-and-above whose home is that ฝ่าย and who are its head, or secretary/assistant by ตำแหน่ง (เลขา / ผู้ช่วย). Admins and co-admins can always decide, so a ฝ่าย with nobody listed is never stuck. Only display names are shown publicly, never usernames.
+- Tests: 1,6xx server checks pass (§104 reworked, §105 new); `join.mjs` updated.
+
 ## 2026-10-26 — Members live in the app, every account has a verified email, and people can apply · version `2026-10-26b`
 Schema `2026-10-26a` (adds `users.email`, `users.email_verified_at`, `email_otps`, `registrations`). Still 12 functions — everything rides `api/auth.js` and `api/users.js`. FULL zip.
 

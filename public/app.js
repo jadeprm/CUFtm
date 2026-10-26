@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-26b';
+  var APP_VERSION = '2026-10-27a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -925,15 +925,15 @@
         return h('option', { value: d.key, text: lang === 'en' ? d.en : d.th });
       }))),
       unit: h('select', {}, [h('option', { value: '', text: t('regUnitNone') })]),
-      a0: h('input', { type: 'text', maxlength: '120' }),
-      a1: h('input', { type: 'text', maxlength: '120', placeholder: t('regOptional') }),
-      a2: h('input', { type: 'text', maxlength: '120', placeholder: t('regOptional') }),
+      who: h('div', { class: 'hint' }),
     };
     f.dept.addEventListener('change', function () {
       var d = opts.departments.filter(function (x) { return x.key === f.dept.value; })[0];
       clear(f.unit);
       f.unit.appendChild(h('option', { value: '', text: t('regUnitNone') }));
       ((d && d.units) || []).forEach(function (u) { f.unit.appendChild(h('option', { value: u, text: u })); });
+      var names = ((d && d.approvers) || []).map(function (a) { return a.name + (a.position ? ' (' + a.position + ')' : ''); });
+      f.who.textContent = d ? t('regWillAsk') + ': ' + (names.length ? names.join(', ') : t('regAdminsOnly')) : '';
     });
     var submit = h('button', { type: 'submit', class: 'btn primary', text: t('regSubmit') });
     var back = h('button', { type: 'button', class: 'link', text: t('regBackToSignIn'), onclick: function () { renderAuth(); } });
@@ -951,7 +951,6 @@
         username: f.username.value.trim(), password: f.password.value, nickname: f.nickname.value,
         fullName: f.fullName.value, position: f.position.value, email: f.email.value,
         department: f.dept.value, unit: f.unit.value,
-        approvers: [f.a0.value, f.a1.value, f.a2.value],
       } }).then(function (d) {
         if (d.firstRun && !d.id) { showGate([h('h1', { text: t('regTitle') }), h('p', { class: 'hint', text: t('regFirst') }), back]); return; }
         var addr = f.email.value.trim().toLowerCase();
@@ -975,10 +974,7 @@
       field(t('regPosition'), f.position), field(t('regDepartment'), f.dept), field(t('regUnit'), f.unit),
       field(t('regEmail'), f.email), field(t('password'), f.password), field(t('confirmPassword'), f.confirm),
       h('p', { class: 'hint', text: t('pwRules') }),
-      opts.firstRun ? null : h('div', {}, [
-        h('p', { class: 'hint', text: t('regApprovers') }),
-        field(t('regHead'), f.a0), field(t('regSec'), f.a1), field(t('regAsst'), f.a2),
-      ]),
+      opts.firstRun ? null : f.who,
       submit, back,
     ]);
     showGate([form]);
@@ -8729,6 +8725,10 @@
           avatarNode(u.username), h('div', { class: 'u-who' }, [
             h('div', { class: 'u-name', text: u.displayName }),
             h('small', { style: 'color:var(--ink-faint)', text: u.username }),
+            u.email !== undefined ? h('small', {
+              class: 'u-email', style: 'display:block;color:var(--ink-faint)',
+              text: u.email ? u.email + (u.emailVerified ? ' \u2713' : '') : t('noEmailYet'),
+            }) : null,
             sum,
           ]),
           h('span', { class: 'u-caret', 'aria-hidden': 'true', text: '\u203a' }),

@@ -17,6 +17,7 @@ import { driveStatus } from '../lib/drive.js';
 import {
   availabilityOf, setAvailability, addBlock, removeBlock, checkClashes,
 } from '../lib/availstore.js';
+import { accessSet } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
 import { APPROVER_ACCESS, approveRegistration, rejectRegistration } from '../lib/signup.js';
 import { prefsOf, setPref } from '../lib/notifyprefs.js';
@@ -56,7 +57,22 @@ const circlesOf = (u) => CIRCLE_KEYS.filter((key) => inCircle({
   username: u.username, access: u.access, active: u.active, suspended: u.suspended,
 }, key));
 
-const directoryRow = (u, grants = {}) => ({
+/**
+ * Who may read a member's email: admins and co-admins for everybody, and an
+ * editor for the people in the departments they look after. Everyone else
+ * gets the verified flag only.
+ */
+const mayReadEmail = (viewer, u, grants) => {
+  if (!viewer) return false;
+  if (viewer.access === 'admin' || viewer.access === 'coadmin') return true;
+  if (viewer.access !== 'editor') return false;
+  const mine = accessSet(viewer);
+  const theirs = (grants[u.username] || u.departments || []).concat(u.department ? [u.department] : []);
+  return theirs.some((d) => mine.has(d));
+};
+
+const directoryRow = (u, grants = {}, viewer = null) => ({
+  email: mayReadEmail(viewer, u, grants) ? (u.email || null) : undefined,
   username: u.username,
   nickname: u.nickname,
   displayName: u.display_name || u.sheet_name || u.username,
@@ -302,7 +318,7 @@ async function handler(request) {
     const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
     const grants = await departmentsByUser(sql);
     return json({
-      users: rows.map((u) => directoryRow(u, grants)),
+      users: rows.map((u) => directoryRow(u, grants, me)),
       canManage: canManageAccounts(me),
       canSetAccess: me.access === ACCESS.ADMIN,
     });
@@ -561,7 +577,7 @@ async function handler(request) {
 
     const [fresh] = await sql`SELECT * FROM users WHERE username = ${target.username}`;
     fresh.departments = await departmentsOf(sql, target.username);
-    return json({ user: directoryRow(fresh), did: sets, sheet: sheetResult });
+    return json({ user: directoryRow(fresh, {}, me), did: sets, sheet: sheetResult });
   }
 
   /**
@@ -621,7 +637,7 @@ async function handler(request) {
       ok: true,
       removed: target.username,
       kept,
-      users: rows.map((u) => directoryRow(u, grants)),
+      users: rows.map((u) => directoryRow(u, grants, me)),
     });
   }
 
@@ -706,7 +722,7 @@ async function handler(request) {
     const grants = await departmentsByUser(sql);
     return json({
       ok: true, username,
-      users: rows.map((u) => directoryRow(u, grants)),
+      users: rows.map((u) => directoryRow(u, grants, me)),
     }, 201);
   }
 
@@ -1095,7 +1111,7 @@ async function handler(request) {
       columnsChecked: result.columnsChecked,
       // Renaming yourself leaves the page holding the old name.
       itWasMe: from === me.username,
-      users: rows.map((u) => directoryRow(u, grants)),
+      users: rows.map((u) => directoryRow(u, grants, me)),
     });
   }
 
