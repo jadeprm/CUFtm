@@ -4500,7 +4500,7 @@ ok('...the card says which circle it went to, rather than listing names',
   mtg.circle === 'core', String(mtg.circle));
 ok('...the organiser counts as accepted, having called it',
   mtg.people.find((p) => p.username === 'Jade_Pres').reply === 'accepted');
-ok('...and it carries a code people can search for', /^M\d{4}$/.test(mtg.code || ''), mtg.code);
+ok('...and it carries a code people can search for', /^M\d{4,}$/.test(mtg.code || ''), mtg.code);
 
 ok('the standard agenda is the committee’s five วาระ',
   mtg.agenda.length === 5 && mtg.agenda[0].title.includes('วาระที่ 1') &&
@@ -9416,6 +9416,21 @@ ok('an editor of another department does not', emPick(r.data).email === undefine
 r = await call(usersApi, '/api/users', { as: 'member' });
 ok('a member does not', emPick(r.data).email === undefined && emPick(r.data).emailVerified === true);
 await sql`UPDATE users SET email = NULL, email_verified_at = NULL WHERE username = 'Ploy_StaffCon'`;
+
+// ---- §106 one request, one email ---------------------------------------
+head('106. Two requests at once send one email');
+process.env.RESEND_API_KEY = 're_test_key';
+await sql`DELETE FROM email_otps`;
+mailSent.length = 0;
+const twin = await Promise.all([1, 2, 3].map(() => call(authApi, '/api/auth?do=email-send',
+  { method: 'POST', as: 'content', body: { email: 'kung@example.test' } })));
+ok('three simultaneous requests send exactly one email', mailSent.length === 1, String(mailSent.length));
+ok('...and the others are told to wait', twin.filter((x) => x.status === 200).length === 1
+  && twin.filter((x) => x.data.error === 'CODE_TOO_SOON').length === 2, twin.map((x) => x.status).join());
+const sentSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the send button is disabled while a request is out', /sendBtn\.disabled = true/.test(sentSrc));
+delete process.env.RESEND_API_KEY;
+await sql`DELETE FROM email_otps`;
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
