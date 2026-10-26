@@ -160,7 +160,12 @@ const registerLog = (tab) => (registerTabs.get(tab) || []).slice(3)
                    status: row[3] || '', who: row[4] || '' }))
   .filter((r) => r.number || r.title);
 
+const mailSent = [];
 globalThis.fetch = async (url, init) => {
+  if (String(url).includes('api.resend.com/emails')) {
+    mailSent.push({ ...JSON.parse(init.body), key: String(init.headers.authorization) });
+    return new Response('{"id":"m1"}', { status: 200 });
+  }
   if (String(url).includes('docs.google.com')) {
     if (sheetCsv === null) return new Response('<html>sign in</html>', { status: 200 });
     return new Response(sheetCsv, { status: 200 });
@@ -426,6 +431,8 @@ await sql`DELETE FROM user_departments`;
 await sql`DELETE FROM circle_people`;
 await sql`DELETE FROM circle_groups`;
 await sql`DELETE FROM user_tags`;
+await sql`DELETE FROM registrations`;
+await sql`DELETE FROM email_otps`;
 await sql`DELETE FROM org_units`;
 await sql`DELETE FROM org_departments`;
 forgetOrg();
@@ -445,9 +452,21 @@ await sql`DELETE FROM spaces`;
 await sql`DELETE FROM users`;
 
 // ===========================================================================
-head('1. Sheet sync');
+head('1. Seeding members (the sheet is only a test fixture now)');
+/**
+ * Members live in this app's database; nothing reads the sheet at runtime.
+ * lib/sheet.js survives as a one-off import tool, and the suite uses it to
+ * seed fourteen people the way it always has — directly, not through an API.
+ */
+const { fetchPeople: seedFetch, syncPeople: seedSync } = await import('../lib/sheet.js');
+const syncCall = async () => {
+  const result = await seedSync(sql, await seedFetch());
+  const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+  return { status: 200, data: { ...result, users: rows } };
+};
+await seedSync(sql, await seedFetch());
 let r = await call(authApi, '/api/auth?do=check', { method: 'POST', body: { username: 'Jade_Pres' } });
-ok('empty database pulls the roster automatically', r.data.known === true, JSON.stringify(r.data).slice(0, 90));
+ok('a seeded member is known', r.data.known === true, JSON.stringify(r.data).slice(0, 90));
 ok('markdown-escaped username (Jade\\_Pres) parsed correctly', r.data.displayName === 'Jade - Project Director');
 ok('first login needs a password set', r.data.needsSetup === true);
 
@@ -536,8 +555,8 @@ r = await call(usersApi, '/api/users', { as: 'editor' });
 ok('editor can still read the directory', r.status === 200 && r.data.users.length === 14);
 ok('directory tells the editor they cannot manage', r.data.canManage === false);
 
-r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'editor' });
-ok('editor cannot trigger a sheet sync', r.status === 403);
+r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+ok('there is no sheet sync any more, even for an admin', r.status === 400 && r.data.error === 'UNKNOWN_ACTION');
 
 r = await call(usersApi, '/api/users', {});
 ok('a signed-out request is refused', r.status === 401);
@@ -654,7 +673,7 @@ head('8. A re-sync must not destroy what people have set');
 await sql`UPDATE users SET avatar = 'data:image/jpeg;base64,AAA', display_name = 'My Own Name' WHERE username = 'Kaew_VP'`;
 const beforeHash = (await sql`SELECT password_hash FROM users WHERE username = 'Jade_Pres'`)[0].password_hash;
 
-r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+r = await syncCall();
 ok('sync runs', r.status === 200, JSON.stringify(r.data).slice(0, 60));
 
 const after = Object.fromEntries((await sql`SELECT * FROM users`).map((u) => [u.username, u]));
@@ -665,15 +684,16 @@ ok('an admin-set department survives', after.Kungking_HeadCon.department === 'co
 
 // someone removed from the sheet loses access but keeps their history
 sheetCsv = SHEET_CSV.split('\n').filter((l) => !l.startsWith('5,')).join('\n');
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+await syncCall();
 const gone = (await sql`SELECT active FROM users WHERE username = 'Kungking_HeadCon'`)[0];
 ok('removing a row from the sheet deactivates that account', gone.active === false);
 r = await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Kungking_HeadCon', password: 'brandNew22' } });
 ok('a removed person can no longer sign in', r.status === 401);
 
 sheetCsv = null; // simulate the sheet becoming private
-r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
-ok('an unreadable sheet fails loudly instead of wiping the roster', r.status === 502);
+let importFailed = false;
+try { await syncCall(); } catch { importFailed = true; }
+ok('an unreadable sheet fails loudly instead of wiping the roster', importFailed);
 const survived = await sql`SELECT count(*)::int AS n FROM users`;
 ok('...and every account is still there', survived[0].n === 14, `${survived[0].n} users`);
 sheetCsv = SHEET_CSV;
@@ -760,7 +780,7 @@ ok('a blank cell grants nothing', parseDepartmentList('').keys.length === 0);
 head('11. Department access decides who sees which tasks');
 // Put the roster back the way the sheet has it after section 8's experiments.
 sheetCsv = SHEET_CSV;
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+await syncCall();
 
 await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Kungking_HeadCon', password: 'brandNew22' }, remember: 'content' });
 await call(authApi, '/api/auth?do=setup', { method: 'POST', body: { username: 'Kluayhom_HeadMerchant', password: 'merchPw123' }, remember: 'merch' });
@@ -906,7 +926,7 @@ await call(usersApi, '/api/users?do=manage', {
   method: 'PATCH', as: 'admin',
   body: { username: 'Kluayhom_HeadMerchant', allDepartments: false, departments: ['content'] },
 });
-r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+r = await syncCall();
 ok('the sync reports how many people it skipped', r.data.pinned >= 1, String(r.data.pinned));
 
 const pinnedNow = await sql`SELECT department FROM user_departments
@@ -920,7 +940,7 @@ r = await call(usersApi, '/api/users?do=manage', {
 });
 ok('"follow the sheet again" clears the override', r.data.user.deptsPinned === false);
 
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+await syncCall();
 const backFromSheet = await sql`SELECT department FROM user_departments
                                 WHERE username = 'Kluayhom_HeadMerchant'`;
 ok('...and the next sync puts the sheet back in charge',
@@ -929,7 +949,7 @@ ok('...and the next sync puts the sheet back in charge',
 
 // An unreadable cell must be named, not swallowed.
 sheetCsv = SHEET_CSV.replace('Editor,Sponsorship', 'Editor,Oper 9');
-r = await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+r = await syncCall();
 ok('a Department cell nobody can read is reported by username',
   (r.data.unreadable || []).some((x) => x.username === 'Yam_HeadSpon' && x.cells.includes('Oper 9')),
   JSON.stringify(r.data.unreadable));
@@ -937,7 +957,7 @@ sheetCsv = SHEET_CSV;
 
 // ===========================================================================
 head('14. Tagging a department reaches everyone granted it');
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+await syncCall();
 r = await call(tasksApi, '/api/tasks', {
   method: 'POST', as: 'admin',
   body: { title: 'ประชุม PR', department: 'pr', departments: [{ key: 'pr', scope: 'all' }], notify: [] },
@@ -3020,76 +3040,37 @@ r = await call(docsApi, `/api/documents?id=${docId}`, { method: 'DELETE', as: 'a
 ok('an admin can always clear one away', r.status === 200 && r.data.deleted === true);
 
 // ===========================================================================
-head('52. An access change on the admin page reaches the Google Sheet');
+head('52. An access change on the admin page stays in the app (no sheet write-back)');
 
 const { generateKeyPairSync } = await import('node:crypto');
 const { parseCsv: parseSheetCsv } = await import('../lib/sheet.js');
 sheetValues = parseSheetCsv(SHEET_CSV);
 
-r = await call(usersApi, '/api/users', { as: 'admin' });
-ok('with no service account, the page is told the sheet cannot be written',
-  r.data.sheetWritable === false && r.data.canSetAccess === true);
-
-r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
-  body: { username: 'Kluayhom_HeadMerchant', access: 'coadmin' } });
-ok('the change still takes effect in the app',
-  r.status === 200 && r.data.user.access === 'coadmin', JSON.stringify(r.data.did));
-ok('...and is honest that the sheet did not get it', r.data.sheet.ok === false && r.data.sheet.reason === 'NOT_CONFIGURED');
-ok('...so it is pinned against the next sync', r.data.user.accessPinned === true);
-
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
-ok('a sync does NOT undo a change the sheet never received',
-  (await sql`SELECT access FROM users WHERE username = 'Kluayhom_HeadMerchant'`)[0].access === 'coadmin');
-
-// Now with a service account configured.
+// A service account is configured here on purpose: even with one, members
+// are not written to any sheet any more (the document register still uses it).
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 process.env.GOOGLE_SA_EMAIL = 'fair-bot@example.iam.gserviceaccount.com';
-// Written with escaped newlines, which is how a key survives an env var.
 process.env.GOOGLE_SA_PRIVATE_KEY =
   privateKey.export({ type: 'pkcs8', format: 'pem' }).replace(/\n/g, '\\n');
 
 r = await call(usersApi, '/api/users', { as: 'admin' });
-ok('the page now says the sheet can be written', r.data.sheetWritable === true);
+ok('the directory no longer talks about a sheet',
+  r.data.sheetWritable === undefined && r.data.sheetId === undefined && r.data.canSetAccess === true);
 
 sheetWrites.length = 0;
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Kluayhom_HeadMerchant', access: 'editor' } });
-ok('the sheet write is reported as done', r.data.sheet?.ok === true, JSON.stringify(r.data.sheet));
-ok('...and the pin is released, because the sheet now agrees',
-  r.data.user.accessPinned === false);
+ok('the access change takes effect', r.status === 200 && r.data.user.access === 'editor', JSON.stringify(r.data.did));
+ok('...marked as set in the app, so a re-import cannot undo it', r.data.user.accessPinned === true);
+ok('...and nothing was written to any sheet', sheetWrites.length === 0, JSON.stringify(sheetWrites.length));
 
-const wrote = sheetWrites.at(-1);
-ok('exactly one cell was written — not the whole row', wrote.data.length === 1, JSON.stringify(wrote.data));
-ok('...the Access cell on Kluayhom’s row (row 7)', wrote.data[0].range === 'F7', wrote.data[0].range);
-ok('...with the label the sheet uses, not the internal key',
-  wrote.data[0].values[0][0] === 'Editor', JSON.stringify(wrote.data[0].values));
-
-// A department change is an access change too, and goes back the same way.
-sheetWrites.length = 0;
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Kluayhom_HeadMerchant', departments: ['merchant', 'marketing'] } });
-const deptWrite = sheetWrites.at(-1);
-ok('changing departments writes the Department cell, and only that',
-  deptWrite.data.length === 1 && deptWrite.data[0].range === 'G7',
-  JSON.stringify(deptWrite.data.map((d) => d.range)));
-const cell = deptWrite.data.find((d) => d.range === 'G7').values[0][0];
-ok('...in Thai, the way the column already reads', cell === 'ฝ่ายร้านค้า, Marketing', cell);
-
-// And what it writes must survive a round trip through the reader.
-const roundTrip = parseDepartmentList(cell);
-ok('...and the sync reads back exactly what was written',
-  roundTrip.keys.sort().join(',') === 'marketing,merchant' && !roundTrip.unknown.length,
-  JSON.stringify(roundTrip));
-
-sheetApiFails = true;
-r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
-  body: { username: 'Kluayhom_HeadMerchant', access: 'coadmin' } });
-ok('when Google refuses, the app change still stands',
-  r.status === 200 && r.data.user.access === 'coadmin');
-ok('...the admin is told plainly', r.data.sheet.ok === false && r.data.sheet.reason === 'GOOGLE_REFUSED',
-  JSON.stringify(r.data.sheet).slice(0, 80));
-ok('...and it is pinned again', r.data.user.accessPinned === true);
-sheetApiFails = false;
+ok('a department change works the same way', r.status === 200 && r.data.user.deptsPinned === true
+  && sheetWrites.length === 0);
+const roundTrip = parseDepartmentList('ฝ่ายร้านค้า, Marketing');
+ok('the import tool still reads the Thai department labels',
+  roundTrip.keys.sort().join(',') === 'marketing,merchant' && !roundTrip.unknown.length, JSON.stringify(roundTrip));
 
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Kluayhom_HeadMerchant', followSheet: true } });
@@ -3542,7 +3523,7 @@ await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Fah_StaffCon', access: 'inner' } });
 
 // ===========================================================================
-head('56. Units: set on the admin page, written back to the sheet');
+head('56. Units: set on the admin page');
 
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Ploy_StaffCon', unit: 'สถานที่' } });
@@ -3557,31 +3538,8 @@ ok('one from a department she has is accepted',
 sheetWrites.length = 0;
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Ploy_StaffCon', unit: 'Stage' } });
-const unitWrite = sheetWrites.at(-1);
-ok('...and it reaches the sheet', Boolean(unitWrite), JSON.stringify(r.data.sheet));
-
-/**
- * The roster has no Unit column yet, so the app has to make one. It goes after
- * the last column in use, with its header, and never on top of anything.
- */
-const wroteHeader = unitWrite.data.find((d) => /^[A-Z]+1$/.test(d.range));
-ok('a missing Unit column is created, with its header',
-  wroteHeader && wroteHeader.values[0][0] === 'Unit', JSON.stringify(unitWrite.data));
-ok('...in the first free column, not over the Department column',
-  wroteHeader.range.startsWith('H'), wroteHeader.range);
-const wroteValue = unitWrite.data.find((d) => !/^[A-Z]+1$/.test(d.range));
-ok('...and the section lands on that person’s row',
-  wroteValue.range === 'H14' && wroteValue.values[0][0] === 'Stage', JSON.stringify(wroteValue));
-
-// Second time round the column exists, so it is used rather than made again.
-sheetValues = sheetValues.map((row, i) => (i === 0 ? row.concat(['Unit']) : row.concat([''])));
-sheetWrites.length = 0;
-await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
-  body: { username: 'Ploy_StaffCon', unit: 'Exhibition' } });
-const second = sheetWrites.at(-1);
-ok('an existing Unit column is reused, not duplicated',
-  second.data.length === 1 && second.data[0].range === 'H14',
-  JSON.stringify(second.data.map((d) => d.range)));
+ok('...and changing it again works, with no sheet involved',
+  r.status === 200 && r.data.user.unit === 'Stage' && sheetWrites.length === 0, JSON.stringify(r.data.did));
 
 r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin',
   body: { username: 'Ploy_StaffCon', unit: null } });
@@ -3634,7 +3592,7 @@ ok('...and they cannot sign back in', r.status === 401 || r.status === 403, Stri
 
 // The sheet still lists them, so the next sync brings the account back — which
 // is correct: the sheet is what decides who is in the committee.
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+await syncCall();
 const backAgain2 = await sql`SELECT count(*)::int AS n FROM users WHERE username = 'Fah_StaffCon'`;
 ok('a sync restores anyone still on the sheet — the sheet decides membership',
   backAgain2[0].n === 1, String(backAgain2[0].n));
@@ -8633,7 +8591,7 @@ ok('a co-admin cannot create an admin and become one that way',
  * the mtgRoster the sheet owns and would be badly wrong for somebody added here
  * ten minutes earlier.
  */
-await call(usersApi, '/api/users?do=sync', { method: 'POST', as: 'admin' });
+await syncCall();
 const [orgSurvived] = await sql`SELECT active, off_sheet FROM users WHERE username = 'Erng_MemDecor'`;
 ok('a sync does not close the account of somebody added in the app', orgSurvived.active === true);
 
@@ -8895,8 +8853,8 @@ ok('...and only on the real site, so dev and the suites load nothing',
  */
 ok('signing in starts the app over when an ad script loaded',
   /function afterSignIn\(\)[\s\S]{0,200}adsLoaded[\s\S]{0,80}location\.reload\(\)/.test(adAppSource));
-ok('...and both ways in go through it',
-  (adAppSource.match(/afterSignIn\(\);/g) || []).length === 2,
+ok('...and every way in (password, first password, email step) goes through it',
+  (adAppSource.match(/afterSignIn\(\);/g) || []).length === 3,
   String((adAppSource.match(/afterSignIn\(\);/g) || []).length));
 
 
@@ -8962,9 +8920,7 @@ ok('...with nothing left pointing at the old name', rnOrphans[0].n === 0);
  * name, and the next sync would read that row as a person who does not exist
  * and make a SECOND account. Marking them off-sheet at least keeps this one.
  */
-ok('the sheet\u2019s Username cell moved with it', r.data.sheet && r.data.sheet.ok === true,
-  JSON.stringify(r.data.sheet));
-ok('...so nobody is asked to go and change it by hand', r.data.fixTheSheet === false);
+ok('no sheet is involved in a rename any more', r.data.sheet === undefined && r.data.fixTheSheet === undefined);
 
 /** Fixing only the capitals is a rename like any other. */
 r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
@@ -8997,92 +8953,28 @@ await sql`UPDATE users SET off_sheet = false WHERE username = 'Ploy_StaffCon'`;
 
 
 // ===========================================================================
-head('100. The roster sheet, written back to as well as read from');
+head('100. Members live in the app; nothing is written to a roster sheet');
 // ===========================================================================
-/**
- * The sheet is the register of record and the app could only read it, with
- * one exception — an access change. So somebody added here existed nowhere
- * the committee looks, and a username corrected here left the sheet saying
- * the old one, which the next sync reads as a person who does not exist and
- * makes a SECOND account for.
- *
- * Google is stubbed the same way §52 stubs it: `sheetValues` is what the
- * API hands back and `sheetWrites` collects what was sent to it.
- */
 sheetValues = parseSheetCsv(SHEET_CSV);
-const shRowsBefore = sheetValues.length;
 sheetWrites.length = 0;
 
 r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
   username: 'Wawa_MemDecor', nickname: 'หว่าหวา', displayName: 'Wawa - Venue Decoration',
   position: 'สมาชิกฝ่ายตกแต่งสถานที่', access: 'Member', department: 'content' } });
-ok('adding somebody also writes them into the roster', r.status === 201 && r.data.sheet.ok === true,
-  JSON.stringify(r.data.sheet));
-ok('...on the first row below the last one in use', r.data.sheet.row === shRowsBefore + 1,
-  `${r.data.sheet.row} after ${shRowsBefore}`);
+ok('adding somebody works', r.status === 201 && r.data.ok === true, r.data.error || '');
+ok('...and writes nothing to any sheet', sheetWrites.length === 0 && r.data.sheet === undefined);
 
-const shAppended = Object.fromEntries(
-  (sheetWrites.at(-1)?.data || []).map((d) => [d.range.replace(/\d+$/, ''), d.values[0][0]]));
-ok('...with the username in the Username column', shAppended.C === 'Wawa_MemDecor', JSON.stringify(shAppended));
-ok('...the nickname and the ตำแหน่ง where people read them',
-  shAppended.B === 'หว่าหวา' && shAppended.E === 'สมาชิกฝ่ายตกแต่งสถานที่');
-/**
- * The old write-back only knew Admin, Co-Admin and Editor, and a blank
- * Access cell comes back from the next sync as an Editor — the opposite of
- * what was asked for.
- */
-ok('...and Member written out, not left blank for the sync to read as Editor',
-  shAppended.F === 'Member', shAppended.F);
-/**
- * Still off-sheet, on purpose. The sync reads the PUBLISHED CSV, which
- * Google refreshes minutes behind the write — handing the row straight to
- * the sheet's ownership would let a sync in that window find no such person
- * and close an account ten minutes old. syncPeople clears the flag itself
- * the first time it really sees the name.
- */
-ok('...and stays off-sheet until a sync has actually seen them there',
-  (await sql`SELECT off_sheet FROM users WHERE username = 'Wawa_MemDecor'`)[0].off_sheet === true);
-
-/**
- * The sheet gains the row and a sync later sees it, which is the state a
- * rename has to work in — a person the sheet owns, whose Username cell the
- * app has to move with them.
- */
-sheetValues.push(['', 'หว่าหวา', 'Wawa_MemDecor', 'Wawa - Venue Decoration',
-  'สมาชิกฝ่ายตกแต่งสถานที่', 'Member', '']);
-await sql`UPDATE users SET off_sheet = false WHERE username = 'Wawa_MemDecor'`;
-
-sheetWrites.length = 0;
 r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
   body: { username: 'Wawa_MemDecor', newUsername: 'Waawaa_MemDecor' } });
-ok('renaming moves the sheet’s Username cell too', r.data.sheet && r.data.sheet.ok === true,
-  JSON.stringify(r.data.sheet));
-ok('...one cell, in the Username column', (sheetWrites.at(-1)?.data || []).length === 1
-  && sheetWrites.at(-1).data[0].values[0][0] === 'Waawaa_MemDecor',
-  JSON.stringify(sheetWrites.at(-1)?.data));
-ok('...and nobody is told to go and fix it by hand', r.data.fixTheSheet === false);
+ok('renaming works and moves the account', r.status === 200 && r.data.ok === true, r.data.error || '');
+ok('...with no instruction to go and fix a sheet by hand',
+  r.data.fixTheSheet === undefined && sheetWrites.length === 0);
 
-/**
- * And when Google is unreachable, which is the state the committee has been
- * running in: the account still happens, and the page is told the truth.
- */
-sheetApiFails = true;
-await sql`UPDATE users SET off_sheet = false WHERE username = 'Waawaa_MemDecor'`;
 r = await call(usersApi, '/api/users?do=rename', { method: 'POST', as: 'admin',
   body: { username: 'Waawaa_MemDecor', newUsername: 'Wawa_Decor' } });
-ok('a rename still happens when Google refuses', r.status === 200, r.data.error || '');
-ok('...and says so rather than claiming a cell it never wrote',
-  r.data.fixTheSheet === true && r.data.sheet.ok === false, JSON.stringify(r.data.sheet));
-ok('...marking them off-sheet so the next sync cannot close the account',
-  (await sql`SELECT off_sheet FROM users WHERE username = 'Wawa_Decor'`)[0].off_sheet === true);
+ok('and a second rename is just as quiet', r.status === 200 && sheetWrites.length === 0);
 
-r = await call(usersApi, '/api/users?do=add', { method: 'POST', as: 'admin', body: {
-  username: 'Nofetch_Mem', nickname: 'ไร้ชีต', access: 'Member', department: 'content' } });
-ok('adding somebody still happens too', r.status === 201, r.data.error || '');
-ok('...and says the sheet did not get it', r.data.sheet.ok === false, JSON.stringify(r.data.sheet));
-sheetApiFails = false;
-
-await sql`DELETE FROM users WHERE username IN ('Wawa_Decor', 'Nofetch_Mem')`;
+await sql`DELETE FROM users WHERE username = 'Wawa_Decor'`;
 sheetValues = parseSheetCsv(SHEET_CSV);
 
 // ===========================================================================
@@ -9312,6 +9204,202 @@ ok('no refresh on return swallows an error into an empty catch',
   !/api\('\/api\/(tasks|events)'\)\.then\(function \(d\) \{[^}]*renderPage\(\); \}\)\.catch\(function \(\) \{\}\)/.test(pageSource));
 ok('...and the page is drawn once when both answers are in, not once each',
   /Promise\.all\(\[[\s\S]{0,400}\]\)\.then\(function \(\) \{ if \(S\.user\) renderPage\(\); \}\)/.test(pageSource));
+
+
+// ===========================================================================
+head('104. Every member proves an email, and newcomers join through approvers');
+// ===========================================================================
+/**
+ * Mail goes through Resend, stubbed above: `mailSent` is every message the
+ * app tried to send. The key is only ever read from the environment.
+ */
+const emCode = () => /\b(\d{6})\b/.exec(mailSent.at(-1)?.text || '')?.[1];
+delete process.env.RESEND_API_KEY;
+mailSent.length = 0;
+
+r = await call(authApi, '/api/auth?do=register-options');
+ok('the form is told whether mail can be sent', r.data.mailReady === false && r.data.departments.length > 5);
+ok('with no mail provider nobody is locked out by the email rule',
+  (await call(tasksApi, '/api/tasks', { as: 'content' })).status === 200);
+
+const emRegBody = (over = {}) => ({
+  username: 'Newbie_StaffDecor', password: 'newbiePw11', nickname: 'นิว', fullName: 'นิว ทดสอบ',
+  position: 'สมาชิกฝ่ายตกแต่ง', email: 'Newbie@Example.test', department: 'content', unit: '',
+  approvers: ['Kungking_HeadCon', '', ''], ...over });
+
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody() });
+ok('without a mail provider the form says it cannot work yet', r.status === 503 && r.data.error === 'MAIL_NOT_CONFIGURED');
+ok('...and keeps nothing', (await sql`SELECT count(*)::int AS n FROM registrations`)[0].n === 0);
+
+process.env.RESEND_API_KEY = 're_test_key';
+
+// ---- the rule: no verified email, no access ------------------------------
+r = await call(tasksApi, '/api/tasks', { as: 'content' });
+ok('once mail works, a member with no verified email is turned away', r.status === 401, String(r.status));
+r = await call(authApi, '/api/auth', { as: 'content' });
+ok('...but the sign-in endpoint still sees them, and says why',
+  r.data.user && r.data.user.emailRequired === true && r.data.user.emailVerified === false);
+r = await call(authApi, '/api/auth?do=email-send', { method: 'POST', as: 'content', body: { email: 'nope' } });
+ok('a malformed address is refused', r.status === 400 && r.data.error === 'BAD_EMAIL');
+mailSent.length = 0;
+r = await call(authApi, '/api/auth?do=email-send', { method: 'POST', as: 'content', body: { email: 'Kung@Example.test' } });
+ok('a code is emailed', r.status === 200 && mailSent.length === 1 && mailSent[0].to[0] === 'kung@example.test'
+  && /^\d{6}$/.test(emCode() || ''), JSON.stringify(mailSent.at(-1)?.to));
+ok('...with the key taken from the environment, never the repository', mailSent[0].key === 'Bearer re_test_key');
+const emEmRow = (await sql`SELECT code_hash FROM email_otps ORDER BY created_at DESC LIMIT 1`)[0];
+ok('...and only a hash of it is stored', emEmRow.code_hash.length === 64 && !emEmRow.code_hash.includes(emCode()));
+r = await call(authApi, '/api/auth?do=email-send', { method: 'POST', as: 'content', body: { email: 'kung@example.test' } });
+ok('asking again at once is held back', r.status === 429 && r.data.error === 'CODE_TOO_SOON');
+const emKungCode = emCode();
+r = await call(authApi, '/api/auth?do=email-verify', { method: 'POST', as: 'content', body: { email: 'kung@example.test', code: '000000' === emKungCode ? '111111' : '000000' } });
+ok('a wrong code is refused', r.status === 400 && r.data.error === 'CODE_WRONG');
+r = await call(authApi, '/api/auth?do=email-verify', { method: 'POST', as: 'content', body: { email: 'kung@example.test', code: emKungCode } });
+ok('the right code binds the email', r.status === 200 && r.data.user.emailVerified === true && r.data.user.emailRequired === false);
+r = await call(authApi, '/api/auth?do=email-verify', { method: 'POST', as: 'content', body: { email: 'kung@example.test', code: emKungCode } });
+ok('a code works once', r.status === 400);
+ok('...and the member is let in', (await call(tasksApi, '/api/tasks', { as: 'content' })).status === 200);
+r = await call(usersApi, '/api/users', { as: 'content' });
+const emKungRow = r.data.users.find((u) => u.username === 'Kungking_HeadCon');
+ok('the shared directory says whether, never what', emKungRow.emailVerified === true && !JSON.stringify(r.data).includes('kung@example.test'));
+
+// Somebody else cannot claim an address that is already taken.
+r = await call(authApi, '/api/auth?do=email-send', { method: 'POST', as: 'merch', body: { email: 'KUNG@example.test' } });
+ok('an address belongs to one account', r.status === 409 && r.data.error === 'EMAIL_TAKEN');
+
+// The admin and the other approvers bind theirs the same way.
+for (const [who, addr] of [['admin', 'jade@example.test'], ['coadmin', 'kaew@example.test'], ['oper', 'ikkew@example.test'], ['member', 'ploy@example.test']]) {
+  await sql`UPDATE users SET email = ${addr}, email_verified_at = now()
+            WHERE username = ${{ admin: 'Jade_Pres', coadmin: 'Kaew_VP', oper: 'Ikkew_HeadOper1', member: 'Ploy_StaffCon' }[who]}`;
+}
+
+// ---- joining -------------------------------------------------------------
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ department: 'nowhere' }) });
+ok('an unknown department is refused', r.status === 400 && r.data.error === 'BAD_DEPARTMENT');
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ approvers: ['', '', ''] }) });
+ok('the head must be named', r.status === 400 && r.data.error === 'APPROVER_NOT_FOUND' && r.data.slot === 0);
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ approvers: ['Kungking_HeadCon', 'Ploy_StaffCon', ''] }) });
+ok('a named approver must be an editor or above', r.status === 400 && r.data.error === 'APPROVER_NOT_FOUND' && r.data.slot === 1);
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ username: 'x' }) });
+ok('a bad username is refused', r.status === 400 && r.data.error === 'BAD_USERNAME');
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ username: 'jade_pres' }) });
+ok('a username already in use is refused, in any case', r.status === 409 && r.data.error === 'USERNAME_TAKEN');
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ email: 'kung@example.test' }) });
+ok('an address already verified elsewhere is refused', r.status === 409 && r.data.error === 'EMAIL_TAKEN');
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ fullName: '' }) });
+ok('name and position are required', r.status === 400 && r.data.error === 'MISSING_FIELDS');
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({ password: 'short' }) });
+ok('the password rules apply', r.status === 400);
+
+mailSent.length = 0;
+r = await call(authApi, '/api/auth?do=register', { method: 'POST',
+  body: emRegBody({ approvers: ['kungking_headcon', 'Kaew_VP', 'Kungking_HeadCon'] }) });
+const emRegId = r.data.id;
+ok('a valid request is taken and a code emailed', r.status === 201 && Boolean(emRegId) && mailSent.length === 1
+  && mailSent[0].to[0] === 'newbie@example.test');
+const emRegRow = (await sql`SELECT * FROM registrations WHERE id = ${emRegId}`)[0];
+ok('...held as unverified, the password already hashed, approvers resolved and de-duplicated',
+  emRegRow.status === 'unverified' && emRegRow.password_hash.length > 20 && !emRegRow.password_hash.includes('newbiePw11')
+  && emRegRow.approvers.join(',') === 'Kungking_HeadCon,Kaew_VP', emRegRow.approvers.join(','));
+ok('...no account exists yet', (await sql`SELECT 1 FROM users WHERE username = 'Newbie_StaffDecor'`).length === 0);
+
+r = await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emRegId, code: '123456' === emCode() ? '654321' : '123456' } });
+ok('a wrong code does not advance it', r.status === 400 && r.data.error === 'CODE_WRONG');
+const emNewbieCode = emCode();
+r = await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emRegId, code: emNewbieCode } });
+ok('the right code puts it in the approvers’ queue', r.status === 200 && r.data.ok === true);
+r = await call(authApi, '/api/auth?do=check', { method: 'POST', body: { username: 'Newbie_StaffDecor' } });
+ok('the applicant is told it is waiting rather than unknown', r.data.known === false && r.data.pending === true);
+r = await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Newbie_StaffDecor', password: 'newbiePw11' } });
+ok('...and cannot sign in until somebody approves', r.status === 401);
+const emRegNotes = await sql`SELECT username, kind FROM notifications WHERE id LIKE ${'n\\_' + emRegId + '\\_%'}`;
+ok('the named approvers and the admins are told in the bell',
+  ['Kungking_HeadCon', 'Kaew_VP', 'Jade_Pres'].every((u) => emRegNotes.some((n) => n.username === u)),
+  emRegNotes.map((n) => n.username).join(','));
+ok('...and an approver nobody named is not',
+  !emRegNotes.some((n) => n.username === 'Ikkew_HeadOper1' || n.username === 'Ploy_StaffCon'));
+
+// ---- deciding ------------------------------------------------------------
+r = await call(usersApi, '/api/users?do=registrations', { as: 'member' });
+ok('a member cannot see the queue', r.status === 403);
+r = await call(usersApi, '/api/users?do=registrations', { as: 'oper' });
+ok('an editor nobody named sees nothing', r.status === 200 && r.data.requests.length === 0);
+r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'oper', body: { id: emRegId, approve: true } });
+ok('...and cannot decide it', r.status === 403 && r.data.error === 'NOT_AN_APPROVER');
+r = await call(usersApi, '/api/users?do=registrations', { as: 'content' });
+ok('the named editor sees the request, with who else was named',
+  r.data.requests.length === 1 && r.data.requests[0].email === 'newbie@example.test'
+  && r.data.requests[0].approvers.length === 2 && r.data.requests[0].position === 'สมาชิกฝ่ายตกแต่ง');
+r = await call(usersApi, '/api/users?do=registrations', { as: 'admin' });
+ok('an admin sees every request', r.data.requests.length === 1);
+
+mailSent.length = 0;
+r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'content', body: { id: emRegId, approve: true } });
+ok('any one named approver can approve', r.status === 200 && r.data.username === 'Newbie_StaffDecor');
+const emMade = (await sql`SELECT * FROM users WHERE username = 'Newbie_StaffDecor'`)[0];
+ok('the account exists as a member in the department chosen',
+  emMade && emMade.access === 'inner' && emMade.department === 'content' && emMade.active === true && emMade.position === 'สมาชิกฝ่ายตกแต่ง');
+ok('...with the verified email attached', emMade.email === 'newbie@example.test' && Boolean(emMade.email_verified_at));
+ok('...and their department granted',
+  (await sql`SELECT department FROM user_departments WHERE username = 'Newbie_StaffDecor'`).map((g) => g.department).join() === 'content');
+ok('...and the applicant told by email', mailSent.some((m) => m.to[0] === 'newbie@example.test'));
+ok('...the stored password copy wiped from the request',
+  (await sql`SELECT password_hash FROM registrations WHERE id = ${emRegId}`)[0].password_hash === '');
+r = await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Newbie_StaffDecor', password: 'newbiePw11' }, remember: 'newbie' });
+ok('they sign in with the password they chose, and need no further email step',
+  r.status === 200 && r.data.user.emailRequired === false && r.data.user.access === 'inner');
+r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'admin', body: { id: emRegId, approve: false } });
+ok('a request already decided cannot be decided again', r.status === 404);
+
+// A rejection.
+mailSent.length = 0;
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({
+  username: 'Nope_Applicant', email: 'nope@example.test', approvers: ['Kaew_VP', '', ''] }) });
+const emRejId = r.data.id;
+await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emRejId, code: emCode() } });
+r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'content', body: { id: emRejId, approve: true } });
+ok('an editor who was not named for this one cannot approve it', r.status === 403);
+r = await call(usersApi, '/api/users?do=registration-decide', { method: 'POST', as: 'coadmin', body: { id: emRejId, approve: false, reason: 'ไม่ใช่สมาชิกฝ่ายนี้' } });
+ok('a decline is recorded and creates nothing',
+  r.status === 200 && (await sql`SELECT 1 FROM users WHERE username = 'Nope_Applicant'`).length === 0
+  && (await sql`SELECT status FROM registrations WHERE id = ${emRejId}`)[0].status === 'rejected');
+ok('...and the applicant is told', mailSent.some((m) => m.to[0] === 'nope@example.test' && /ไม่ได้รับการอนุมัติ/.test(m.text)));
+
+// Codes lock after too many wrong tries.
+r = await call(authApi, '/api/auth?do=register', { method: 'POST', body: emRegBody({
+  username: 'Lock_Applicant', email: 'lock@example.test' }) });
+const emLockId = r.data.id;
+const emLockReal = emCode();
+let emLastLock = null;
+for (let i = 0; i < 5; i += 1) {
+  emLastLock = await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emLockId, code: emLockReal === '999999' ? '888888' : '999999' } });
+}
+r = await call(authApi, '/api/auth?do=register-verify', { method: 'POST', body: { id: emLockId, code: emLockReal } });
+ok('five wrong tries lock the code, even against the right one', r.status === 400 && r.data.error === 'CODE_LOCKED');
+
+// The switch for emergencies.
+process.env.EMAIL_REQUIRED = 'off';
+await sql`UPDATE users SET email = NULL, email_verified_at = NULL WHERE username = 'Ploy_StaffCon'`;
+ok('EMAIL_REQUIRED=off lifts the rule if mail is down',
+  (await call(tasksApi, '/api/tasks', { as: 'member' })).status === 200);
+delete process.env.EMAIL_REQUIRED;
+
+// Source checks: the screens exist and the rule is not left to the page.
+const emSource = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the page has a registration form reachable from sign-in',
+  /\$\('auth-register'\)\.addEventListener\('click'/.test(emSource) && /do=register'/.test(emSource));
+ok('...a step that stands in front of the app until the email is proved',
+  /if \(data\.user\.emailRequired\) renderEmailGate\(\)/.test(emSource));
+ok('...and a queue for approvers', /function pageRequests\(main\)/.test(emSource));
+ok('the sign-in page offers the form to strangers only',
+  (await import('node:fs')).readFileSync('public/index.html', 'utf8').includes('id="auth-register"'));
+
+// Tidy, so a re-run starts clean.
+delete process.env.RESEND_API_KEY;
+await sql`DELETE FROM users WHERE username = 'Newbie_StaffDecor'`;
+await sql`DELETE FROM registrations`;
+await sql`DELETE FROM email_otps`;
+await sql`UPDATE users SET email = NULL, email_verified_at = NULL`;
+mailSent.length = 0;
 
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
