@@ -2030,3 +2030,5 @@ tr.urow[hidden] { display: none !important; }
 .req-list { display: grid; gap: 12px; margin-top: 12px; }
 .req-card { padding: 14px; display: grid; gap: 4px; }
 .req-act { display: flex; gap: 8px; margin-top: 8px; }
+
+button.pressed { opacity: .6; cursor: progress; }

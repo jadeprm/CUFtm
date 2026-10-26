@@ -11,6 +11,15 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-27 (c) — pressed twice, made once; meeting creation faster · version `2026-10-27c`
+Schema `2026-10-27c` (adds `request_keys`). Still 12 functions. FULL zip.
+**Reported:** buttons feel very slow, and pressing again on one meeting gave three meetings.
+- **Cause of the triplicates:** a slow response invites another press, and every press was a separate valid request. Nothing anywhere recognised a repeat.
+- **Three layers now.** (1) The page joins an identical write that is still in flight instead of sending another, app-wide (`api()`); (2) a button just pressed ignores a second press for 1.2 s and dims; (3) the server refuses a create identical to one the same person made in the last 20 s (`lib/once.js`, one atomic INSERT … ON CONFLICT, so simultaneous requests are safe) — for meetings, tasks and events — answering `DUPLICATE_REQUEST` ("กำลังบันทึกอยู่ ไม่ต้องกดซ้ำ").
+- **Speed, the part that was fixable here:** creating a meeting wrote its agenda one row at a time (about a dozen round trips); headings and items are now two statements. A series was already set-wise.
+- **Not changed, and worth saying:** most of the slowness people feel is the free-tier database and functions waking up after idle plus the distance to the database region. Code cannot remove that. Check that the Vercel function region and the Neon database are in the same region (Singapore is closest to Bangkok); that alone is usually the biggest single improvement.
+- Tests: §107 (three simultaneous presses → one meeting/task/event); mtgui, agenda, guests, features, kanban, join, org re-run green.
+
 ## 2026-10-27 (b) — one request, one email · version `2026-10-27b`
 Schema `2026-10-27b`. Still 12 functions. FULL zip.
 - **The OTP no longer goes out twice.** Two sends landing together (a double tap, Enter plus a click, two tabs) both passed the cooldown check and both emailed. The code row is now claimed first under a unique (purpose, subject, 45-second slot) index and only the winner sends; the "send code" button also locks once pressed and "send again" waits 45 s. If the mail provider refuses, the claimed row is removed so the person can retry at once.

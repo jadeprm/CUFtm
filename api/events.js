@@ -2,6 +2,7 @@ import { getSql, json, noDatabase, hasDatabase, requestUrl } from '../lib/db.js'
 import { currentUser, canEditTasks } from '../lib/auth.js';
 import { isDepartment } from '../lib/departments.js';
 import { accessSet, seesEverything, EVENT_COLOURS, isColour } from '../lib/scope.js';
+import { claimOnce } from '../lib/once.js';
 import { withNode } from '../lib/http.js';
 import { isSecretary } from '../lib/approval.js';
 import {
@@ -292,6 +293,7 @@ async function handler(request) {
       // A run of days that ends before it starts is a typo, not a date range.
       if (endsOn && endsOn < startsOn) return json({ error: 'ENDS_BEFORE_START' }, 400);
 
+      if (!await claimOnce(sql, me.username, 'event', body)) return json({ error: 'DUPLICATE_REQUEST' }, 409);
       const id = `e_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const notify = (Array.isArray(body.notify) ? body.notify : NOTIFY_KINDS)
         .filter((k) => NOTIFY_KINDS.includes(k)).join(',');

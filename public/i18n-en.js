@@ -1444,6 +1444,7 @@ Object.assign(window.STRINGS, {
     docDeleteSure: 'Delete this document and its file for good? This cannot be undone.',
     errOnlyAdminSetsAccess: 'Only an Admin can change access levels.',
     errNotAllowed: 'You are not allowed to do that.',
+    errDuplicate: "Already saving — no need to press again",
     regWillAsk: "Approvers for this department (found automatically)",
     regAdminsOnly: "No head listed yet — the admins will approve",
     noEmailYet: "No email linked yet",

@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-27b';
+  var APP_VERSION = '2026-10-27c';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -180,10 +180,20 @@
   var clear = function (node) { while (node.firstChild) node.removeChild(node.firstChild); return node; };
 
   /* ---------- api ------------------------------------------------------- */
+  /**
+   * The same write, sent twice while the first is still out, is one write.
+   * People press again when the server is slow, and every press used to be a
+   * separate request — three presses, three meetings. A repeat now joins the
+   * request already under way and gets its answer.
+   */
+  var inFlight = {};
   function api(path, options) {
     options = options || {};
-    return fetch(path, {
-      method: options.method || 'GET',
+    var method = options.method || 'GET';
+    var key = method === 'GET' ? null : method + ' ' + path + ' ' + JSON.stringify(options.body || null);
+    if (key && inFlight[key]) return inFlight[key];
+    var p = fetch(path, {
+      method: method,
       headers: options.body ? { 'content-type': 'application/json' } : undefined,
       body: options.body ? JSON.stringify(options.body) : undefined,
       credentials: 'same-origin',
@@ -193,7 +203,29 @@
         return data;
       });
     });
+    if (key) {
+      inFlight[key] = p;
+      var done = function () { delete inFlight[key]; };
+      p.then(done, done);
+    }
+    return p;
   }
+
+  /**
+   * And a button that has just been pressed ignores a second press for a
+   * moment, so the handler itself does not run twice and the page shows
+   * something is happening instead of nothing.
+   */
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest && e.target.closest('button.btn.primary, button.btn.danger, .modal footer button');
+    if (!b || b.disabled) return;
+    if (b.dataset.pressedAt && Date.now() - Number(b.dataset.pressedAt) < 1200) {
+      e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
+    b.dataset.pressedAt = String(Date.now());
+    b.classList.add('pressed');
+    setTimeout(function () { b.classList.remove('pressed'); }, 1200);
+  }, true);
 
   /* ---------- dates ----------------------------------------------------- */
   var TZ = 'Asia/Bangkok';

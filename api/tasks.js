@@ -10,6 +10,7 @@ import {
 } from '../lib/scope.js';
 import { sendToMany } from '../lib/push.js';
 import { sortRecipients } from '../lib/notifyprefs.js';
+import { claimOnce } from '../lib/once.js';
 import { withNode } from '../lib/http.js';
 import { handleSpaces, spaceIdsFor } from '../lib/spaces.js';
 
@@ -651,6 +652,7 @@ async function handler(request) {
       const title = clean(body.title, 200);
       if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
 
+      if (!await claimOnce(sql, me.username, 'task', body)) return json({ error: 'DUPLICATE_REQUEST' }, 409);
       const id = `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const notify = (Array.isArray(body.notify) ? body.notify : NOTIFY_KINDS)
         .filter((k) => NOTIFY_KINDS.includes(k))
