@@ -9432,5 +9432,30 @@ ok('the send button is disabled while a request is out', /sendBtn\.disabled = tr
 delete process.env.RESEND_API_KEY;
 await sql`DELETE FROM email_otps`;
 
+// ---- §107 pressed twice, made once -------------------------------------
+head('107. A repeated press makes one thing');
+const dupBody = { title: 'ประชุมที่กดซ้ำ', meetsOn: '2027-01-12', meetsAt: '10:00',
+  agenda: [{ title: 'หัวข้อ', heading: true }, { title: 'ย่อย', minutes: 5, under: 0 }] };
+const dups = await Promise.all([1, 2, 3].map(() => call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin', body: dupBody })));
+ok('three simultaneous presses create one meeting',
+  dups.filter((x) => x.status === 201).length === 1 && dups.filter((x) => x.data.error === 'DUPLICATE_REQUEST').length === 2,
+  dups.map((x) => x.status).join());
+ok('...in the database too', (await sql`SELECT count(*)::int AS n FROM meetings WHERE title = 'ประชุมที่กดซ้ำ'`)[0].n === 1);
+const dupAg = await sql`SELECT a.title, a.parent_id FROM meeting_agenda a JOIN meetings m ON m.id = a.meeting_id WHERE m.title = 'ประชุมที่กดซ้ำ' ORDER BY a.slot`;
+ok('the agenda still lands with its sub-item under its heading', dupAg.length === 2 && dupAg.some((x) => x.parent_id));
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin', body: { ...dupBody, title: 'ประชุมที่กดซ้ำ 2' } });
+ok('a different meeting is not mistaken for a repeat', r.status === 201);
+const dupT = await Promise.all([1, 2].map(() => call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: { title: 'งานกดซ้ำ', assignees: [], notify: [] } })));
+ok('same for tasks', dupT.filter((x) => x.status === 201).length === 1, dupT.map((x) => x.status).join());
+const dupE = await Promise.all([1, 2].map(() => call(eventsApi, '/api/events', { method: 'POST', as: 'admin', body: { title: 'กิจกรรมกดซ้ำ', startsOn: '2027-01-15' } })));
+ok('...and events', dupE.filter((x) => x.status === 201).length === 1, dupE.map((x) => x.status).join());
+await sql`DELETE FROM meetings WHERE title LIKE 'ประชุมที่กดซ้ำ%'`;
+await sql`DELETE FROM tasks WHERE title = 'งานกดซ้ำ'`;
+await sql`DELETE FROM events WHERE title = 'กิจกรรมกดซ้ำ'`;
+await sql`DELETE FROM request_keys`;
+const dupSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the page joins an identical write that is still in flight', /inFlight\[key\]\) return inFlight\[key\]/.test(dupSrc));
+ok('...and a pressed button ignores a second press', /pressedAt/.test(dupSrc));
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
