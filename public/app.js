@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-27c';
+  var APP_VERSION = '2026-10-27d';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1565,6 +1565,8 @@
   }
 
   function renderShell() {
+    // Nothing of the app is drawn while the email step is standing in front of it.
+    if (S.user && S.user.emailRequired) return;
     bootDone();
     $('soon-view').hidden = true;
     $('auth-view').hidden = true;
@@ -16090,6 +16092,10 @@
    */
   function backFromAway() {
     if (!S.user) return;
+    // Standing in front of the email step: the app is hidden on purpose, and
+    // "drawing it again" is what threw people out of the code screen the
+    // moment they came back from reading their mail.
+    if (S.user.emailRequired) return;
 
     var app = $('app-view');
     var main = $('main');

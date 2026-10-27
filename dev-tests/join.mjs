@@ -86,6 +86,18 @@ ok('signing in lands on the email step, not the app',
 await pg2.fill('#gate-view input[type=email]', 'kung@example.test');
 await pg2.click('#gate-view button[type=submit]');
 await pg2.waitForSelector('#gate-view input[autocomplete=one-time-code]', { timeout: 8000 });
+// Going to read the email and coming back used to throw the person out of this screen.
+await pg2.evaluate(() => {
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+  document.dispatchEvent(new Event('visibilitychange'));
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  document.dispatchEvent(new Event('visibilitychange'));
+  window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('pageshow'));
+});
+await pg2.waitForTimeout(1500);
+ok('coming back from the mail app leaves the code box where it was',
+  (await pg2.locator('#gate-view input[autocomplete=one-time-code]').isVisible())
+  && (await pg2.locator('#app-view:not([hidden])').count()) === 0);
 await pg2.fill('#gate-view input[autocomplete=one-time-code]', await lastCode());
 await pg2.click('#gate-view button[type=submit]');
 await pg2.waitForTimeout(3500);

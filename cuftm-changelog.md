@@ -11,6 +11,12 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-27 (d) — the code screen no longer closes while you read your email · version `2026-10-27d`
+No schema change. Still 12 functions. FULL zip.
+**Reported:** the OTP screen "bounces" while typing the digits, on computer and phone, so nobody could finish.
+- **Cause (reproduced):** the 10-26a blank-tab recovery (`backFromAway`) redraws the app whenever it comes back to a tab and finds the app hidden. The email step hides the app on purpose, and the natural thing to do on it is switch to the mail app to read the code — so coming back threw the person off the code screen. My own test of the gate never left the tab, which is why it passed.
+- **Fix:** the recovery and `renderShell()` both stand down while the email step is showing. `join.mjs` now does what a person does — hides the tab, returns, fires focus/pageshow — and was confirmed to fail without the fix and pass with it. Server §108 pins both guards.
+
 ## 2026-10-27 (c) — pressed twice, made once; meeting creation faster · version `2026-10-27c`
 Schema `2026-10-27c` (adds `request_keys`). Still 12 functions. FULL zip.
 **Reported:** buttons feel very slow, and pressing again on one meeting gave three meetings.
