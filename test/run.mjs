@@ -9457,5 +9457,13 @@ const dupSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
 ok('the page joins an identical write that is still in flight', /inFlight\[key\]\) return inFlight\[key\]/.test(dupSrc));
 ok('...and a pressed button ignores a second press', /pressedAt/.test(dupSrc));
 
+// ---- §108 the code screen stays put -------------------------------------
+head('108. Coming back from the mail app must not close the code screen');
+const gateSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the return-to-tab recovery leaves the email step alone',
+  /function backFromAway\(\) \{\s*if \(!S\.user\) return;[\s\S]{0,400}if \(S\.user\.emailRequired\) return;/.test(gateSrc));
+ok('...and drawing the app does nothing while that step is up',
+  /function renderShell\(\) \{[\s\S]{0,200}S\.user\.emailRequired\) return;/.test(gateSrc));
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
