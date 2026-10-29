@@ -121,6 +121,34 @@ await pg3.fill('#in-password', 'joyPass11'); await pg3.click('#auth-submit'); aw
 ok('straight into the app', (await pg3.locator('#app-view:not([hidden])').count()) === 1);
 ok('and the queue is not offered to a member', await pg3.locator('#tab-requests').isHidden());
 
+head('5. A forgotten password is reset by the person, with a code');
+let pg4 = await open();
+await pg4.fill('#in-username', 'Kungking_HeadCon'); await pg4.click('#auth-submit'); await pg4.waitForTimeout(1500);
+await pg4.click('#auth-forgot'); await pg4.waitForSelector('#gate-view input', { timeout: 6000 });
+ok('"forgot" opens the reset form with the username already in it',
+  (await pg4.locator('#gate-view input').first().inputValue()) === 'Kungking_HeadCon');
+await pg4.click('#gate-view button[type=submit]');
+await pg4.waitForSelector('#gate-view input[autocomplete=one-time-code]', { timeout: 8000 });
+const resetCode = await lastCode();
+ok('a code was emailed to the verified address', /^\d{6}$/.test(resetCode || '') && (await mail()).at(-1).to[0] === 'kung@example.test');
+await pg4.fill('#gate-view input[autocomplete=one-time-code]', resetCode);
+const pws = pg4.locator('#gate-view input[type=password]');
+await pws.nth(0).fill('resetByMe55'); await pws.nth(1).fill('resetByMe55');
+await pg4.click('#gate-view button[type=submit]');
+await pg4.waitForTimeout(3500);
+ok('the new password signs them straight in', (await pg4.locator('#app-view:not([hidden])').count()) === 1);
+
+head('6. The profile page lets them manage email, username and password');
+await pg4.goto(`${base}/#/profile`, { waitUntil: 'networkidle' }); await pg4.waitForTimeout(2000);
+ok('three rows, each with a change button', (await pg4.locator('.account-box .acct-row').count()) === 3);
+await pg4.locator('.account-box .acct-row').nth(2).locator('button').click();
+ok('changing the password asks for the current one and the new one twice',
+  (await pg4.locator('.acct-panel input[type=password]').count()) === 3);
+// back to the password the other suites expect
+const { hashPassword } = await import('../lib/auth.js');
+const back = await hashPassword('brandNew22');
+await db.query(`UPDATE users SET password_hash = $1, password_salt = $2 WHERE username = 'Kungking_HeadCon'`, [back.hash, back.salt]);
+
 await fetch(`${base}/__mailoff`);
 await tidy();
 await db.end();

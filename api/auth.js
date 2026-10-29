@@ -12,6 +12,7 @@ import {
   resendRegistrationCode, verifyRegistration, approversFor,
 } from '../lib/signup.js';
 import { DEPARTMENTS, unitsOf } from '../lib/departments.js';
+import { renameUser, USERNAME_SHAPE } from '../lib/rename.js';
 import { withNode } from '../lib/http.js';
 
 /**
@@ -139,6 +140,88 @@ async function handler(request) {
 
   const body = await request.json().catch(() => ({}));
   const username = String(body.username ?? '').trim();
+
+  // ---- forgotten password: a code to the verified email, then a new password ----
+  /**
+   * Nobody sets anybody's password. A person who has forgotten theirs asks for
+   * a code to the address they proved, and chooses the new password
+   * themselves. The answer to "send" is the same whether or not the account
+   * exists, so this cannot be used to find out who has one.
+   */
+  const findForReset = async (who) => {
+    const q = String(who ?? '').trim().toLowerCase();
+    if (!q) return null;
+    const [u] = await sql`
+      SELECT * FROM users
+      WHERE active = true AND suspended = false AND email_verified_at IS NOT NULL
+        AND (lower(username) = ${q} OR lower(email) = ${q})
+      LIMIT 1`;
+    return u || null;
+  };
+  if (action === 'forgot-send') {
+    if (!mailConfigured()) return json({ error: 'MAIL_NOT_CONFIGURED' }, 503);
+    const u = await findForReset(body.identifier);
+    if (u) await issueCode(sql, { purpose: 'reset', subject: u.username, email: u.email });
+    return json({ ok: true });
+  }
+  if (action === 'forgot-verify') {
+    const problem = passwordProblem(String(body.password ?? ''));
+    if (problem) return json({ error: problem }, 400);
+    const u = await findForReset(body.identifier);
+    if (!u) return json({ error: 'CODE_EXPIRED' }, 400);
+    const res = await checkCode(sql, { purpose: 'reset', subject: u.username, email: u.email, code: body.code });
+    if (!res.ok) return json({ error: res.error }, 400);
+    const { hash, salt } = await hashPassword(String(body.password));
+    await sql`UPDATE users SET password_hash = ${hash}, password_salt = ${salt},
+                reset_allowed = false, reset_allowed_by = NULL, updated_at = now()
+              WHERE username = ${u.username}`;
+    await sql`DELETE FROM sessions WHERE username = ${u.username}`;
+    const token = newToken();
+    await sql`INSERT INTO sessions (token, username, expires_at) VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
+    const [fresh] = await sql`SELECT * FROM users WHERE username = ${u.username}`;
+    fresh.departments = await departmentsOf(sql, fresh.username);
+    return json({ user: publicUser(fresh) }, 200, { 'set-cookie': sessionCookie(token) });
+  }
+
+  // ---- things a signed-in person manages themselves --------------------------
+  if (action === 'password-change' || action === 'rename-send' || action === 'rename-verify') {
+    const me = await currentUser(request, sql);
+    if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+
+    if (action === 'password-change') {
+      const problem = passwordProblem(String(body.password ?? ''));
+      if (problem) return json({ error: problem }, 400);
+      if (!await verifyPassword(String(body.current ?? ''), me.password_hash, me.password_salt)) {
+        return json({ error: 'BAD_CREDENTIALS' }, 401);
+      }
+      const { hash, salt } = await hashPassword(String(body.password));
+      await sql`UPDATE users SET password_hash = ${hash}, password_salt = ${salt}, updated_at = now()
+                WHERE username = ${me.username}`;
+      // Every other device is signed out; this one stays.
+      const token = (request.headers.get('cookie') || '').match(/fair_session=([^;]+)/)?.[1] || '';
+      await sql`DELETE FROM sessions WHERE username = ${me.username} AND token <> ${token}`;
+      return json({ ok: true });
+    }
+
+    // A new username: proved with a code to the address already on the account.
+    if (!me.email || !me.email_verified_at) return json({ error: 'EMAIL_REQUIRED_FIRST' }, 400);
+    if (action === 'rename-send') {
+      const sent = await issueCode(sql, { purpose: 'rename', subject: me.username, email: me.email });
+      if (!sent.ok) return json({ error: sent.error, wait: sent.wait }, sent.error === 'MAIL_NOT_CONFIGURED' ? 503 : 429);
+      return json({ ok: true });
+    }
+    const to = String(body.newUsername ?? '').trim();
+    if (!USERNAME_SHAPE.test(to)) return json({ error: 'BAD_USERNAME' }, 400);
+    if (to === me.username) return json({ error: 'NOTHING_TO_DO' }, 400);
+    const [clash] = await sql`SELECT 1 AS x FROM users WHERE lower(username) = ${to.toLowerCase()} AND username <> ${me.username}`;
+    if (clash) return json({ error: 'USERNAME_TAKEN' }, 409);
+    const res = await checkCode(sql, { purpose: 'rename', subject: me.username, email: me.email, code: body.code });
+    if (!res.ok) return json({ error: res.error }, 400);
+    await renameUser(sql, me.username, to);
+    const [fresh] = await sql`SELECT * FROM users WHERE username = ${to}`;
+    fresh.departments = await departmentsOf(sql, to);
+    return json({ user: publicUser(fresh) });
+  }
 
   // ---- joining, without an admin creating the account --------------------
   if (action === 'register') {

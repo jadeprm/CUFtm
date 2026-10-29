@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-27d';
+  var APP_VERSION = '2026-10-29a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -857,7 +857,7 @@
     $('in-password').value = ''; $('in-confirm').value = '';
     showAuthNotice(''); renderAuth();
   });
-  $('auth-forgot').addEventListener('click', function () { showAuthNotice(t('forgotHelp'), 'warn'); });
+  $('auth-forgot').addEventListener('click', function () { renderForgot(); });
 
 
   /* ======================================================================
@@ -1018,6 +1018,148 @@
     showGate([form]);
   }
   $('auth-register').addEventListener('click', function () { renderRegister(); });
+
+  /* ======================================================================
+     What a person manages for themselves: email, password, username
+     ====================================================================== */
+  /**
+   * Each of these used to need an admin. Now the person proves it is them
+   * with a code sent to their own email and does it themselves; an admin
+   * never sees or types a password.
+   */
+  function accountBox() {
+    var box = h('div', { class: 'account-box' });
+    var msg = h('div', { class: 'notice', hidden: true });
+    function say(kind, text) { msg.hidden = !text; msg.className = 'notice ' + kind; msg.textContent = text || ''; }
+    function row(label, value, btnText, onclick) {
+      return h('div', { class: 'field' }, [
+        h('label', { text: label }),
+        h('div', { class: 'acct-row' }, [
+          h('input', { type: 'text', value: value, disabled: true }),
+          h('button', { type: 'button', class: 'btn sm', text: btnText, onclick: onclick }),
+        ]),
+      ]);
+    }
+    var panel = h('div', { class: 'acct-panel' });
+    function show(kids) { clear(panel); kids.forEach(function (k) { panel.appendChild(k); }); }
+    function inp(type, ph, extra) { return h('input', Object.assign({ type: type, placeholder: ph || '', autocomplete: 'off' }, extra || {})); }
+    function fail(err) { say('err', errText(err.code)); }
+    function done(text) { say('ok', text); show([]); renderShell(); }
+
+    function changeEmail() {
+      var email = inp('email', t('regEmail'), { autocomplete: 'email' });
+      var send = h('button', { type: 'button', class: 'btn primary', text: t('emSend') });
+      send.addEventListener('click', function () {
+        var addr = email.value.trim(); if (!addr) return;
+        send.disabled = true;
+        api('/api/auth?do=email-send', { method: 'POST', body: { email: addr } }).then(function () {
+          var code = inp('text', t('regCode'), { inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code' });
+          var ok = h('button', { type: 'button', class: 'btn primary', text: t('regVerify') });
+          ok.addEventListener('click', function () {
+            ok.disabled = true;
+            api('/api/auth?do=email-verify', { method: 'POST', body: { email: addr, code: code.value.trim() } })
+              .then(function (d) { S.user = d.user; done(t('acctEmailDone')); renderPage(); })
+              .catch(function (err) { ok.disabled = false; fail(err); });
+          });
+          say('ok', t('regCodeSent').replace('%s', addr));
+          show([code, ok]);
+        }).catch(function (err) { send.disabled = false; fail(err); });
+      });
+      show([email, send]);
+    }
+
+    function changePassword() {
+      var cur = inp('password', t('acctCurrent'), { autocomplete: 'current-password' });
+      var pw = inp('password', t('acctNewPassword'), { autocomplete: 'new-password' });
+      var pw2 = inp('password', t('confirmPassword'), { autocomplete: 'new-password' });
+      var ok = h('button', { type: 'button', class: 'btn primary', text: t('savePassword') });
+      ok.addEventListener('click', function () {
+        if (pw.value !== pw2.value) { say('err', t('errMismatch')); return; }
+        ok.disabled = true;
+        api('/api/auth?do=password-change', { method: 'POST', body: { current: cur.value, password: pw.value } })
+          .then(function () { done(t('acctPasswordDone')); })
+          .catch(function (err) { ok.disabled = false; fail(err); });
+      });
+      show([cur, pw, pw2, h('small', { class: 'hint', text: t('pwRules') }), ok]);
+    }
+
+    function changeUsername() {
+      if (!S.user.emailVerified) { say('warn', t('acctNeedEmail')); return; }
+      var send = h('button', { type: 'button', class: 'btn primary', text: t('emSend') });
+      send.addEventListener('click', function () {
+        send.disabled = true;
+        api('/api/auth?do=rename-send', { method: 'POST', body: {} }).then(function () {
+          var name = inp('text', t('acctNewUsername'), { autocapitalize: 'none', spellcheck: 'false', maxlength: '64' });
+          var code = inp('text', t('regCode'), { inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code' });
+          var ok = h('button', { type: 'button', class: 'btn primary', text: t('regVerify') });
+          ok.addEventListener('click', function () {
+            ok.disabled = true;
+            api('/api/auth?do=rename-verify', { method: 'POST', body: { newUsername: name.value.trim(), code: code.value.trim() } })
+              .then(function (d) { S.user = d.user; done(t('acctUsernameDone')); renderPage(); })
+              .catch(function (err) { ok.disabled = false; fail(err); });
+          });
+          say('ok', t('regCodeSent').replace('%s', S.user.email || ''));
+          show([name, code, ok]);
+        }).catch(function (err) { send.disabled = false; fail(err); });
+      });
+      say('', '');
+      show([h('small', { class: 'hint', text: t('acctUsernameWhy') }), send]);
+    }
+
+    box.appendChild(row(t('regEmail'), S.user.email ? S.user.email + (S.user.emailVerified ? ' ✓' : '') : t('noEmailYet'),
+      t('acctChange'), changeEmail));
+    box.appendChild(row(t('username'), S.user.username, t('acctChange'), changeUsername));
+    box.appendChild(row(t('password'), '••••••••', t('acctChange'), changePassword));
+    box.appendChild(msg);
+    box.appendChild(panel);
+    return box;
+  }
+
+  /** Forgotten password: a code to the verified email, then a new password chosen by the person. */
+  function renderForgot() {
+    if (S.lang === 'en' && !window.STRINGS.en) { ensureLang('en', renderForgot); return; }
+    var n = gateNotice();
+    var who = h('input', { type: 'text', autocapitalize: 'none', spellcheck: 'false', autocomplete: 'username', value: authState.username || '' });
+    var back = h('button', { type: 'button', class: 'link', text: t('regBackToSignIn'), onclick: function () { renderAuth(); } });
+    var go = h('button', { type: 'submit', class: 'btn primary', text: t('emSend') });
+    function stepTwo(idv) {
+      var code = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code' });
+      var pw = h('input', { type: 'password', autocomplete: 'new-password' });
+      var pw2 = h('input', { type: 'password', autocomplete: 'new-password' });
+      var ok = h('button', { type: 'submit', class: 'btn primary', text: t('savePassword') });
+      var resend = h('button', { type: 'button', class: 'link', text: t('regResend'), onclick: function () {
+        if (resend.disabled) return;
+        resend.disabled = true; setTimeout(function () { resend.disabled = false; }, 45000);
+        api('/api/auth?do=forgot-send', { method: 'POST', body: { identifier: idv } })
+          .then(function () { gateSay(n2, t('regResent'), 'ok'); }).catch(function (err) { gateSay(n2, errText(err.code)); });
+      } });
+      var n2 = gateNotice();
+      showGate([h('form', { onsubmit: function (e) {
+        e.preventDefault();
+        if (pw.value !== pw2.value) { gateSay(n2, t('errMismatch')); return; }
+        ok.disabled = true;
+        api('/api/auth?do=forgot-verify', { method: 'POST', body: { identifier: idv, code: code.value.trim(), password: pw.value } })
+          .then(function (d) { S.user = d.user; S.lang = d.user.lang || S.lang; afterSignIn(); })
+          .catch(function (err) { ok.disabled = false; gateSay(n2, errText(err.code)); });
+      } }, [
+        h('h1', { text: t('forgotTitle') }), h('p', { class: 'hint', text: t('forgotSent') }), n2,
+        field(t('regCode'), code), field(t('acctNewPassword'), pw), field(t('confirmPassword'), pw2),
+        h('p', { class: 'hint', text: t('pwRules') }), ok, resend, back,
+      ])]);
+    }
+    showGate([h('form', { onsubmit: function (e) {
+      e.preventDefault();
+      var idv = who.value.trim(); if (!idv || go.disabled) return;
+      go.disabled = true;
+      api('/api/auth?do=forgot-send', { method: 'POST', body: { identifier: idv } })
+        .then(function () { stepTwo(idv); })
+        .catch(function (err) { go.disabled = false; gateSay(n, errText(err.code)); });
+    } }, [
+      h('h1', { text: t('forgotTitle') }), h('p', { class: 'hint', text: t('forgotIntro') }), n,
+      field(t('forgotWho'), who), go, back,
+    ])]);
+  }
+
 
   /** The approvers' queue: people who have proved an email and are waiting for a yes. */
   function pageRequests(main) {
@@ -7202,11 +7344,7 @@
           fullNameInput,
           h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('fullNameWhy') }),
         ]),
-        h('div', { class: 'field' }, [
-          h('label', { text: t('username') }),
-          h('input', { type: 'text', value: S.user.username, disabled: true }),
-          h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('usernameFixed') }),
-        ]),
+        accountBox(),
         h('div', { class: 'two' }, [
           h('div', { class: 'field' }, [
             h('label', { text: t('position') }),
@@ -8789,8 +8927,14 @@
               class: 'btn sm', text: t('renameUser'),
               onclick: function () { openRename(u); },
             }),
-            h('button', {
+            /**
+             * People with a verified email reset their own password by code.
+             * The admin switch stays only for those who have none, who
+             * otherwise could never get back in.
+             */
+            (u.emailVerified && !u.resetAllowed) ? null : h('button', {
               class: 'btn sm', text: u.resetAllowed ? t('cancelReset') : t('allowReset'),
+              title: t('resetNeedsNoEmail'),
               onclick: function () { manage(u, { allowReset: !u.resetAllowed }); },
             }),
             h('button', {

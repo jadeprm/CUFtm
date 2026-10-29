@@ -2032,3 +2032,8 @@ tr.urow[hidden] { display: none !important; }
 .req-act { display: flex; gap: 8px; margin-top: 8px; }
 
 button.pressed { opacity: .6; cursor: progress; }
+
+.account-box { display: grid; gap: 4px; }
+.acct-row { display: flex; gap: 8px; align-items: center; }
+.acct-row input { flex: 1; min-width: 0; }
+.acct-panel { display: grid; gap: 8px; margin-top: 6px; }

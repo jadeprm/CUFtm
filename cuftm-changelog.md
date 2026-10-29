@@ -11,6 +11,19 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-10-29 — people manage their own password, email and username · version `2026-10-29a`
+No schema change. Still 12 functions. FULL zip.
+Asked for: use automatic email for password changes so an admin no longer sets them, and make anything a person can safely manage through email self-service.
+- **ลืมรหัสผ่าน** on the sign-in screen now works by itself: enter a username or the email on the account, a 6-digit code goes to the *verified* address, and the person chooses the new password. Every older session is ended and they are signed straight in. The reply to "send" is identical whether or not the account exists, and accounts without a verified email get nothing — so it cannot be used to discover who has one. Uses the same code rules (10 min, 5 tries, 45 s apart).
+- **Admin "allow reset" is kept only for people with no verified email**, who otherwise could never get back in. Everyone else's button is gone.
+- **Profile → Account box** (email · username · password):
+  - *Email:* enter the new address, receive a code there, confirm; replaces the old one.
+  - *Password:* needs the current one; other devices are signed out, this one stays.
+  - *Username:* a code goes to the address already on the account, then the new name is applied everywhere through the same rename that admins use (tasks, meetings, documents and sessions move with it; the person stays signed in). Needs a verified email first.
+- Admins can still rename a username from the user-management page (e.g. for someone without an email).
+- Tests: server §109 (reset, enumeration, one-use codes, session invalidation, password change, email change, username change, put-back); `join.mjs` §5–6 drive the reset and the profile box in a browser.
+- **Not self-service, deliberately:** access level, department, position — those are decisions about the committee, not about identity, and stay with admins/approvers.
+
 ## 2026-10-27 (d) — the code screen no longer closes while you read your email · version `2026-10-27d`
 No schema change. Still 12 functions. FULL zip.
 **Reported:** the OTP screen "bounces" while typing the digits, on computer and phone, so nobody could finish.
