@@ -8853,8 +8853,8 @@ ok('...and only on the real site, so dev and the suites load nothing',
  */
 ok('signing in starts the app over when an ad script loaded',
   /function afterSignIn\(\)[\s\S]{0,200}adsLoaded[\s\S]{0,80}location\.reload\(\)/.test(adAppSource));
-ok('...and every way in (password, first password, email step) goes through it',
-  (adAppSource.match(/afterSignIn\(\);/g) || []).length === 3,
+ok('...and every way in (password, first password, email step, forgotten password) goes through it',
+  (adAppSource.match(/afterSignIn\(\);/g) || []).length === 4,
   String((adAppSource.match(/afterSignIn\(\);/g) || []).length));
 
 
@@ -9464,6 +9464,98 @@ ok('the return-to-tab recovery leaves the email step alone',
   /function backFromAway\(\) \{\s*if \(!S\.user\) return;[\s\S]{0,400}if \(S\.user\.emailRequired\) return;/.test(gateSrc));
 ok('...and drawing the app does nothing while that step is up',
   /function renderShell\(\) \{[\s\S]{0,200}S\.user\.emailRequired\) return;/.test(gateSrc));
+
+// ---- §109 people manage their own account ------------------------------
+head('109. Forgotten password, new email, new username — all by code, none by an admin');
+delete process.env.RESEND_API_KEY;
+r = await call(authApi, '/api/auth?do=forgot-send', { method: 'POST', body: { identifier: 'Kaew_VP' } });
+ok('with no mail provider, "forgot" says so instead of pretending', r.status === 503 && r.data.error === 'MAIL_NOT_CONFIGURED');
+process.env.RESEND_API_KEY = 're_test_key';
+await sql`DELETE FROM email_otps`;
+await sql`UPDATE users SET email = 'kaew@example.test', email_verified_at = now() WHERE username = 'Kaew_VP'`;
+await sql`UPDATE users SET email = 'jade@example.test', email_verified_at = now() WHERE username = 'Jade_Pres'`;
+mailSent.length = 0;
+
+r = await call(authApi, '/api/auth?do=forgot-send', { method: 'POST', body: { identifier: 'nobody_here' } });
+ok('asking for somebody who does not exist looks the same as asking for somebody who does',
+  r.status === 200 && r.data.ok === true && mailSent.length === 0);
+r = await call(authApi, '/api/auth?do=forgot-send', { method: 'POST', body: { identifier: 'Ikkew_HeadOper1' } });
+ok('...and an account with no verified email gets nothing sent', r.status === 200 && mailSent.length === 0);
+r = await call(authApi, '/api/auth?do=forgot-send', { method: 'POST', body: { identifier: 'kaew_vp' } });
+ok('a code goes to the verified address', r.status === 200 && mailSent.length === 1 && mailSent[0].to[0] === 'kaew@example.test');
+const rsCode = emCode();
+r = await call(authApi, '/api/auth?do=forgot-send', { method: 'POST', body: { identifier: 'KAEW@example.test' } });
+ok('the address works as the identifier too, and a second request at once sends nothing more',
+  r.status === 200 && mailSent.length === 1);
+
+r = await call(authApi, '/api/auth?do=forgot-verify', { method: 'POST', body: { identifier: 'Kaew_VP', code: rsCode, password: 'short' } });
+ok('a weak new password is refused before the code is spent', r.status === 400 && r.data.error === 'TOO_SHORT');
+r = await call(authApi, '/api/auth?do=forgot-verify', { method: 'POST', body: { identifier: 'Kaew_VP', code: rsCode === '000000' ? '111111' : '000000', password: 'freshPass77' } });
+ok('a wrong code is refused', r.status === 400 && r.data.error === 'CODE_WRONG');
+r = await call(authApi, '/api/auth?do=forgot-verify', { method: 'POST', remember: 'kaewnew', body: { identifier: 'Kaew_VP', code: rsCode, password: 'freshPass77' } });
+ok('the right code sets the password the person chose, and signs them in',
+  r.status === 200 && r.data.user.username === 'Kaew_VP' && Boolean(jar.kaewnew));
+r = await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Kaew_VP', password: 'coadminPw1' } });
+ok('the old password stops working', r.status === 401);
+r = await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Kaew_VP', password: 'freshPass77' } });
+ok('the new one works', r.status === 200);
+r = await call(tasksApi, '/api/tasks', { as: 'coadmin' });
+ok('every older session was ended by the reset', r.status === 401);
+r = await call(authApi, '/api/auth?do=forgot-verify', { method: 'POST', body: { identifier: 'Kaew_VP', code: rsCode, password: 'freshPass88' } });
+ok('a code works once', r.status === 400);
+
+// While signed in.
+jar.kaew = jar.kaewnew;
+r = await call(authApi, '/api/auth?do=password-change', { method: 'POST', as: 'kaew', body: { current: 'wrong', password: 'thirdPass99' } });
+ok('changing it needs the current one', r.status === 401);
+r = await call(authApi, '/api/auth?do=password-change', { method: 'POST', as: 'kaew', body: { current: 'freshPass77', password: 'nogood' } });
+ok('...and obeys the password rules', r.status === 400);
+r = await call(authApi, '/api/auth?do=password-change', { method: 'POST', as: 'kaew', body: { current: 'freshPass77', password: 'thirdPass99' } });
+ok('...then changes it, keeping this device signed in', r.status === 200 && (await call(tasksApi, '/api/tasks', { as: 'kaew' })).status === 200);
+
+// A new email address, proved at the new address.
+mailSent.length = 0; await sql`DELETE FROM email_otps`;
+r = await call(authApi, '/api/auth?do=email-send', { method: 'POST', as: 'kaew', body: { email: 'kaew.new@example.test' } });
+ok('a new address is sent its own code', r.status === 200 && mailSent.at(-1).to[0] === 'kaew.new@example.test');
+r = await call(authApi, '/api/auth?do=email-verify', { method: 'POST', as: 'kaew', body: { email: 'kaew.new@example.test', code: emCode() } });
+ok('...and replaces the old one', r.status === 200 && r.data.user.email === 'kaew.new@example.test' && r.data.user.emailVerified);
+
+// A new username, proved by a code to the address already on the account.
+await sql`DELETE FROM email_otps`; mailSent.length = 0;
+r = await call(authApi, '/api/auth?do=rename-send', { method: 'POST', as: 'kaew', body: {} });
+ok('a username change sends a code to the account\u2019s own address', r.status === 200 && mailSent.at(-1).to[0] === 'kaew.new@example.test');
+const rnCode = emCode();
+r = await call(authApi, '/api/auth?do=rename-verify', { method: 'POST', as: 'kaew', body: { newUsername: 'Kaew_Renamed', code: rnCode === '000000' ? '111111' : '000000' } });
+ok('a wrong code changes nothing', r.status === 400 && r.data.error === 'CODE_WRONG');
+r = await call(authApi, '/api/auth?do=rename-verify', { method: 'POST', as: 'kaew', body: { newUsername: 'Jade_Pres', code: rnCode } });
+ok('a taken username is refused', r.status === 409 && r.data.error === 'USERNAME_TAKEN');
+r = await call(authApi, '/api/auth?do=rename-verify', { method: 'POST', as: 'kaew', body: { newUsername: 'x', code: rnCode } });
+ok('a malformed one is refused', r.status === 400 && r.data.error === 'BAD_USERNAME');
+r = await call(authApi, '/api/auth?do=rename-verify', { method: 'POST', as: 'kaew', body: { newUsername: 'Kaew_Renamed', code: rnCode } });
+ok('the right code renames the account', r.status === 200 && r.data.user.username === 'Kaew_Renamed');
+ok('...the person stays signed in under the new name', (await call(tasksApi, '/api/tasks', { as: 'kaew' })).status === 200);
+ok('...and nothing is left under the old name',
+  (await sql`SELECT count(*)::int AS n FROM users WHERE username = 'Kaew_VP'`)[0].n === 0);
+delete process.env.RESEND_API_KEY;
+r = await call(authApi, '/api/auth?do=rename-send', { method: 'POST', as: 'oper', body: {} });
+ok('a person with no verified email is told to add one first', r.status === 400 && r.data.error === 'EMAIL_REQUIRED_FIRST');
+
+// Put things back for whatever follows.
+const { renameUser: rnBack } = await import('../lib/rename.js');
+await rnBack(sql, 'Kaew_Renamed', 'Kaew_VP');
+const kaewHash = await (await import('../lib/auth.js')).hashPassword('coadminPw1');
+await sql`UPDATE users SET password_hash = ${kaewHash.hash}, password_salt = ${kaewHash.salt},
+          email = NULL, email_verified_at = NULL WHERE username = 'Kaew_VP'`;
+await sql`UPDATE users SET email = NULL, email_verified_at = NULL`;
+await sql`DELETE FROM sessions WHERE username = 'Kaew_VP'`;
+await sql`DELETE FROM email_otps`;
+delete process.env.RESEND_API_KEY; mailSent.length = 0;
+const acctSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the sign-in screen\u2019s "forgot" now starts the flow instead of saying to ask an admin',
+  /auth-forgot'\)\.addEventListener\('click', function \(\) \{ renderForgot\(\)/.test(acctSrc));
+ok('the profile page offers email, username and password', /function accountBox\(\)/.test(acctSrc) && /accountBox\(\),/.test(acctSrc));
+ok('the admin reset switch is offered only to people without a verified email',
+  /u\.emailVerified && !u\.resetAllowed\) \? null : h\('button'/.test(acctSrc));
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
