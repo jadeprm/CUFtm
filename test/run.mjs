@@ -5985,6 +5985,37 @@ ok('...and saving the form without them leaves them on, because of the piece',
   r.data.task.assignees.includes('Kluayhom_HeadMerchant') && !r.data.task.assignees.includes('Kungking_HeadCon'),
   JSON.stringify(r.data.task.roles));
 
+/**
+ * A save that carries only the names must not strip the ฝ่าย tags.
+ *
+ * This is how work went missing: somebody edits who is on a task from LINE or
+ * from a half-filled form, the department tags vanish with the save, and
+ * everybody who was on the task through their ฝ่าย drops off it silently.
+ */
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin', body: {
+  title: 'แท็กฝ่ายต้องอยู่', assignees: ['Jade_Pres'],
+  departments: [{ key: 'content', scope: 'heads' }], notify: [] } });
+const keepDeptTask = r.data.task.id;
+ok('a task tagged on a ฝ่าย puts its head on it', r.data.task.roles.Kungking_HeadCon === 'dept');
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: {
+  id: keepDeptTask, assignees: ['Jade_Pres', 'Yam_HeadSpon'] } });
+ok('changing only the names leaves the ฝ่าย tag in place',
+  (r.data.task.departments || []).some((d) => d.key === 'content'), JSON.stringify(r.data.task.departments));
+ok('...so the head is still on the task through their ฝ่าย',
+  r.data.task.roles.Kungking_HeadCon === 'dept', JSON.stringify(r.data.task.roles));
+r = await call(tasksApi, '/api/tasks', { as: 'content' });
+ok('...and it still reads "via department" on their own page',
+  (r.data.tasks.find((x) => x.id === keepDeptTask) || {}).myRole === 'dept');
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'admin', body: {
+  id: keepDeptTask, departments: [] } });
+ok('sending an empty list of ฝ่าย really does clear them',
+  (r.data.task.departments || []).length === 0 && !r.data.task.roles.Kungking_HeadCon,
+  JSON.stringify(r.data.task.departments));
+
+const mineSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('"ของฉัน" counts every role the server gives, not just the named list',
+  /function isMine\(task\) \{\s*if \(roleOf\(task\)\) return true;/.test(mineSrc));
+
 // LINE says it too.
 await sql`INSERT INTO line_links (line_user_id, username, display_name)
           VALUES ('Urole', 'Kluayhom_HeadMerchant', 'K') ON CONFLICT (line_user_id) DO UPDATE SET username = EXCLUDED.username`;
@@ -6412,6 +6443,22 @@ ok('its owner renames it and adds somebody', r.status === 200 && r.data.space.na
   r.data.space.members.length === 3, JSON.stringify(r.data.space && r.data.space.members));
 r = await call(tasksApi, '/api/tasks', { as: 'unitlead' });
 ok('...and the new member can now see its task', r.data.tasks.some((t) => t.id === spaceTask));
+// ---- §111 whoever runs a space (project) may edit the tasks in it --------
+head('111. A space\u2019s starter and owners can edit every task filed in it');
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'member', body: {
+  title: 'งานของสมาชิกในทีมเวที', spaceId, assignees: ['Ploy_StaffCon'],
+} });
+const spOwnTask = r.data.task && r.data.task.id;
+ok('a member files a task into the space', r.status === 201 && spOwnTask, String(r.status));
+r = await call(tasksApi, '/api/tasks', { as: 'merch' });
+ok('the space\u2019s starter is told she may edit it', (r.data.tasks.find((t) => t.id === spOwnTask) || {}).mayEdit === true);
+r = await call(tasksApi, '/api/tasks', { as: 'oper2head' });
+ok('...a plain department-member of the space is not', (r.data.tasks.find((t) => t.id === spOwnTask) || {}).mayEdit === false);
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: spOwnTask, title: 'แก้โดยหัวหน้าทีม' } });
+ok('the starter edits it, though neither made it nor was given it', r.status === 200, String(r.status) + JSON.stringify(r.data).slice(0, 80));
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'oper2head', body: { id: spOwnTask, title: 'แอบแก้' } });
+ok('...somebody who merely sees it still cannot', r.status === 403 && r.data.error === 'NOT_TASK_OWNER');
+
 r = await call(tasksApi, '/api/tasks?do=space-leave', { method: 'POST', as: 'unitlead', body: { id: spaceId } });
 ok('anyone may take themselves off a space', r.status === 200 && !r.data.spaces.some((sp) => sp.id === spaceId));
 r = await call(tasksApi, '/api/tasks?do=space-leave', { method: 'POST', as: 'merch', body: { id: spaceId } });
@@ -9556,6 +9603,39 @@ ok('the sign-in screen\u2019s "forgot" now starts the flow instead of saying to 
 ok('the profile page offers email, username and password', /function accountBox\(\)/.test(acctSrc) && /accountBox\(\),/.test(acctSrc));
 ok('the admin reset switch is offered only to people without a verified email',
   /u\.emailVerified && !u\.resetAllowed\) \? null : h\('button'/.test(acctSrc));
+
+// ---- §110 admins and co-admins edit anybody's profile ------------------
+head('110. Admins and co-admins can change every detail of somebody else\u2019s profile');
+await call(authApi, '/api/auth?do=login', { method: 'POST', body: { username: 'Kaew_VP', password: 'coadminPw1' }, remember: 'coadmin' });
+const edBody = (over = {}) => ({ username: 'Fah_StaffCon', ...over });
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'coadmin', body: edBody({
+  displayName: 'ฟ้าใหม่', nickname: 'ฟ้า', fullName: 'ฟ้า ทดสอบ', position: 'สมาชิกฝ่ายประชาสัมพันธ์', isHead: true }) });
+ok('a co-admin edits names, position and the head flag', r.status === 200 && r.data.user.displayName === 'ฟ้าใหม่'
+  && r.data.user.fullName === 'ฟ้า ทดสอบ' && r.data.user.position === 'สมาชิกฝ่ายประชาสัมพันธ์' && r.data.user.isHead === true,
+  JSON.stringify(r.data).slice(0, 120));
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: edBody({
+  department: 'pr', departments: ['content', 'pr'] }) });
+ok('an admin moves their home department (granting it)', r.status === 200 && r.data.user.department === 'pr'
+  && r.data.user.departments.includes('pr'), JSON.stringify(r.data.user.departments));
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: edBody({ displayName: '   ' }) });
+ok('a blank display name is refused', r.status === 400 && r.data.error === 'DISPLAY_NAME_REQUIRED');
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: edBody({ email: 'not-an-email' }) });
+ok('a malformed email is refused', r.status === 400 && r.data.error === 'BAD_EMAIL');
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: edBody({ email: 'fah.fixed@example.test' }) });
+const edRow = (await sql`SELECT email, email_verified_at FROM users WHERE username = 'Fah_StaffCon'`)[0];
+ok('an email set by an admin is stored unverified', r.status === 200 && edRow.email === 'fah.fixed@example.test' && edRow.email_verified_at === null);
+await sql`UPDATE users SET email = 'taken@example.test', email_verified_at = now() WHERE username = 'Ploy_StaffCon'`;
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'admin', body: edBody({ email: 'taken@example.test' }) });
+ok('...and cannot borrow an address another account has verified', r.status === 409 && r.data.error === 'EMAIL_TAKEN');
+await sql`UPDATE users SET email = NULL, email_verified_at = NULL WHERE username IN ('Ploy_StaffCon', 'Fah_StaffCon')`;
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'coadmin', body: { username: 'Jade_Pres', position: 'x' } });
+ok('a co-admin still cannot touch an admin', r.status === 403, String(r.status));
+r = await call(usersApi, '/api/users?do=manage', { method: 'PATCH', as: 'oper', body: edBody({ position: 'x' }) });
+ok('and an editor cannot edit anybody', r.status === 403);
+await sql`UPDATE users SET display_name = 'Fah', nickname = 'ฟ้า', full_name = NULL, position = 'สมาชิกฝ่ายเนื้อหา', is_head = false, department = 'content' WHERE username = 'Fah_StaffCon'`;
+await sql`DELETE FROM user_departments WHERE username = 'Fah_StaffCon' AND department = 'pr'`;
+const edSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the admin page has an edit-profile button on every row', /function openEditProfile\(u\)/.test(edSrc) && /openEditProfile\(u\); \}/.test(edSrc));
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
