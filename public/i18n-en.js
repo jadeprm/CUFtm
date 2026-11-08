@@ -1244,7 +1244,7 @@ Object.assign(window.STRINGS, {
     saveStatus: 'Save status',
     statusLocked: 'you cannot change this status',
     statusOnlyNote: 'You can change the status only. Everything else is for the person who created this task, and Admin / Co-Admin.',
-    viewOnlyNote: 'View only. This task can be changed by the person who created it, and Admin / Co-Admin.',
+    viewOnlyNote: 'View only. This task can be changed by the person who created it, the people it was given to, the owners of its Space, and Admin / Co-Admin.',
     errNotTaskOwner: 'Only the person who created this task, and Admin / Co-Admin, can change it.',
 
     // sub-tasks and attached work
@@ -1291,7 +1291,7 @@ Object.assign(window.STRINGS, {
     eventTitlePlaceholder: 'What is happening?',
     eventsEmpty: 'No events yet',
     eventsEmptySub: 'Events are dates to know about — a rehearsal, a meeting, the fair itself. Nothing to do, they just remind everyone beforehand.',
-    eventViewOnly: 'View only. This event can be changed by whoever created it, and Admin / Co-Admin.',
+    eventViewOnly: 'View only. This event can be changed by whoever created it, the people it was given to, the owners of its Space, and Admin / Co-Admin.',
     upcoming: 'Coming up',
     past: 'Past',
     startsOn: 'Starts',
@@ -1444,6 +1444,10 @@ Object.assign(window.STRINGS, {
     docDeleteSure: 'Delete this document and its file for good? This cannot be undone.',
     errOnlyAdminSetsAccess: 'Only an Admin can change access levels.',
     errNotAllowed: 'You are not allowed to do that.',
+    editProfile: "Edit profile",
+    editProfileDone: "Saved %s's profile",
+    editProfileDeptHint: "This person's home department — access to it is granted too. Other departments are set in the row below.",
+    editProfileEmailHint: "An email changed here stays unverified; the owner confirms it with a code sent to it.",
     forgotIntro: "Enter your username or the email on your account. We send a 6-digit code to that email and you choose a new password yourself.",
     forgotWho: "Username or email",
     forgotSent: "If an account has an email on it, a code is on its way (valid 10 minutes). Enter it and choose a new password.",

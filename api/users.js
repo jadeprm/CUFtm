@@ -413,6 +413,47 @@ async function handler(request) {
       sets.push(allow ? 'reset authorised' : 'reset cancelled');
     }
 
+    /**
+     * Profile details, for admins and co-admins to correct on anybody they may
+     * act on (the same people cannotActOn lets them manage). The person's own
+     * page edits the same fields for themselves.
+     *
+     * An email set here is stored UNVERIFIED: the owner proves it with a code
+     * before it counts, so an admin can fix a typo but cannot take over an
+     * account by pointing it at an inbox of their own — password reset only
+     * ever goes to a verified address.
+     */
+    {
+      const text = (v, n) => String(v ?? '').trim().slice(0, n);
+      const fields = {};
+      if (body.displayName !== undefined) {
+        fields.display_name = text(body.displayName, 80);
+        if (!fields.display_name) return json({ error: 'DISPLAY_NAME_REQUIRED' }, 400);
+      }
+      if (body.fullName !== undefined) fields.full_name = text(body.fullName, 120) || null;
+      if (body.nickname !== undefined) fields.nickname = text(body.nickname, 60);
+      if (body.position !== undefined) fields.position = text(body.position, 120);
+      if (body.isHead !== undefined) fields.is_head = Boolean(body.isHead);
+      if (body.removeAvatar) fields.avatar = null;
+      for (const [col, val] of Object.entries(fields)) {
+        await sql.query(`UPDATE users SET ${col} = $1, updated_at = now() WHERE username = $2`, [val, target.username]);
+      }
+      if (Object.keys(fields).length) sets.push('profile details');
+
+      if (body.email !== undefined) {
+        const email = String(body.email ?? '').trim().toLowerCase().slice(0, 200);
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return json({ error: 'BAD_EMAIL' }, 400);
+        if (email) {
+          const [taken] = await sql`SELECT 1 AS x FROM users WHERE lower(email) = ${email}
+            AND email_verified_at IS NOT NULL AND username <> ${target.username}`;
+          if (taken) return json({ error: 'EMAIL_TAKEN' }, 409);
+        }
+        await sql`UPDATE users SET email = ${email || null}, email_verified_at = NULL, updated_at = now()
+                  WHERE username = ${target.username}`;
+        sets.push('email (unverified)');
+      }
+    }
+
     if (body.suspended !== undefined) {
       const suspended = Boolean(body.suspended);
       await sql`UPDATE users SET suspended = ${suspended}, updated_at = now()

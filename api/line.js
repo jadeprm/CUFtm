@@ -1,5 +1,5 @@
 import { getSql } from '../lib/db.js';
-import { spaceIdsFor } from '../lib/spaces.js';
+import { spaceIdsFor, ownedSpaceIdsFor } from '../lib/spaces.js';
 import { currentUser } from '../lib/auth.js';
 import { withNode } from '../lib/http.js';
 import { assembled } from './tasks.js';
@@ -380,6 +380,7 @@ async function personFor(sql, username) {
   delete row.depts;
   // Spaces widen what a person can see — the same rule as the web page.
   row.spaceIds = await spaceIdsFor(sql, row);
+  row.ownedSpaceIds = await ownedSpaceIdsFor(sql, row);
   return row;
 }
 

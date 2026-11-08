@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-10-29a';
+  var APP_VERSION = '2026-11-07a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -3789,7 +3789,18 @@
     ]);
   }
 
+  /**
+   * Is this task mine in any sense?
+   *
+   * Whatever the server says my role on it is: given to me by name, handed a
+   * piece of it, reached through my ฝ่าย, or asked to follow it. This used to
+   * read the assignee list by hand, which left out the people a department tag
+   * put on the task — so the "ได้รับผ่านฝ่าย" tab inside ของฉัน could only
+   * ever be empty, and work that arrived through a ฝ่าย was invisible on the
+   * one page people check.
+   */
   function isMine(task) {
+    if (roleOf(task)) return true;
     return task.assignees.indexOf(S.user.username) !== -1 ||
       (task.viewers || []).indexOf(S.user.username) !== -1;
   }
@@ -8924,6 +8935,10 @@
           ? [h('small', { style: 'color:var(--ink-faint)', text: errText(blocked) })]
           : [
             h('button', {
+              class: 'btn sm', text: t('editProfile'),
+              onclick: function () { openEditProfile(u); },
+            }),
+            h('button', {
               class: 'btn sm', text: t('renameUser'),
               onclick: function () { openRename(u); },
             }),
@@ -13888,6 +13903,81 @@
    */
 
 
+
+  /**
+   * Every detail of somebody's profile, for admins and co-admins: names,
+   * position, head flag, email (stored unverified — the owner confirms it
+   * with a code) and their home ฝ่าย. Access level and the wider department
+   * grants have their own controls in the row.
+   */
+  function openEditProfile(u) {
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var notice = h('div', { class: 'notice', hidden: true });
+    function say(cls, text) { notice.hidden = false; notice.className = 'notice ' + cls; notice.textContent = text; }
+    var f = {
+      displayName: h('input', { type: 'text', maxlength: '80', value: u.displayName || '' }),
+      nickname: h('input', { type: 'text', maxlength: '60', value: u.nickname || '' }),
+      fullName: h('input', { type: 'text', maxlength: '120', value: u.fullName || '' }),
+      position: h('input', { type: 'text', maxlength: '120', value: u.position || '' }),
+      email: h('input', { type: 'email', maxlength: '200', value: u.email || '' }),
+      isHead: h('input', { type: 'checkbox' }),
+      dept: h('select', {}, [h('option', { value: '', text: '—' })].concat(S.departments.map(function (d) {
+        return h('option', { value: d.key, text: deptOptionLabel(d) });
+      }))),
+    };
+    f.isHead.checked = Boolean(u.isHead);
+    f.dept.value = u.department || '';
+    function field(label, el, hint) {
+      return h('div', { class: 'field' }, [h('label', { text: label }), el, hint ? h('small', { class: 'hint', text: hint }) : null]);
+    }
+    var saveBtn = h('button', {
+      class: 'btn primary', text: t('save'),
+      onclick: function () {
+        var body = {
+          username: u.username, displayName: f.displayName.value, nickname: f.nickname.value,
+          fullName: f.fullName.value, position: f.position.value, isHead: f.isHead.checked,
+        };
+        if (u.email !== undefined && f.email.value.trim() !== (u.email || '')) body.email = f.email.value;
+        var dept = f.dept.value;
+        if (dept && dept !== (u.department || '')) {
+          body.department = dept;
+          // The home ฝ่าย has to be one they can work in, so it is granted too.
+          if (!u.allDepartments) {
+            body.departments = (u.departments || []).filter(function (k) { return k !== dept; }).concat([dept]);
+          }
+        }
+        saveBtn.disabled = true;
+        api('/api/users?do=manage', { method: 'PATCH', body: body }).then(function (d) {
+          var i = S.users.findIndex(function (x) { return x.username === u.username; });
+          if (i !== -1) S.users[i] = d.user;
+          veil.remove();
+          S.adminNotice = { kind: 'ok', text: t('editProfileDone').replace('%s', u.username) };
+          renderPage();
+        }).catch(function (err) { saveBtn.disabled = false; say('err', errText(err.code)); });
+      },
+    });
+    veil.appendChild(h('div', { class: 'modal', style: 'width:min(32rem,100%)' }, [
+      h('header', {}, [
+        h('h2', { text: t('editProfile') }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+      ]),
+      h('div', { class: 'body' }, [
+        notice,
+        h('p', { class: 'hint', text: u.username }),
+        field(t('displayName'), f.displayName), field(t('regNickname'), f.nickname),
+        field(t('fullName'), f.fullName), field(t('position'), f.position),
+        field(t('regDepartment'), f.dept, t('editProfileDeptHint')),
+        u.email !== undefined ? field(t('regEmail'), f.email, t('editProfileEmailHint')) : null,
+        h('label', { class: 'check' }, [f.isHead, h('span', { text: ' ' + t('isHead') })]),
+      ]),
+      h('footer', {}, [
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
+        saveBtn,
+      ]),
+    ]));
+    $('modal-root').appendChild(veil);
+  }
 
   /**
    * Correcting a username, with the account left where it is.

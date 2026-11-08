@@ -12,7 +12,7 @@ import { sendToMany } from '../lib/push.js';
 import { sortRecipients } from '../lib/notifyprefs.js';
 import { claimOnce } from '../lib/once.js';
 import { withNode } from '../lib/http.js';
-import { handleSpaces, spaceIdsFor } from '../lib/spaces.js';
+import { handleSpaces, spaceIdsFor, ownedSpaceIdsFor } from '../lib/spaces.js';
 
 /**
  * Tasks.
@@ -588,6 +588,7 @@ async function handler(request) {
   try {
     // Which spaces this person is in, for canSeeTask. One small query.
     me.spaceIds = await spaceIdsFor(sql, me);
+    me.ownedSpaceIds = await ownedSpaceIdsFor(sql, me);
     if (action && action.startsWith('space')) return await handleSpaces(sql, me, request, url, json);
 
     // Sub-tasks and attachments hang off a task, so they live on this
@@ -861,10 +862,22 @@ async function handler(request) {
         const current = await sql`SELECT username, via FROM task_people WHERE task_id = ${id}`;
         const before = new Set(current.map((r) => r.username));
 
+        /**
+         * Left out of the request means LEAVE IT ALONE, for both halves.
+         *
+         * Departments used to default to none, so any save that carried only
+         * the names — a LINE command, a quick change of who is on it — quietly
+         * stripped the department tags and with them everybody who was on the
+         * task through their ฝ่าย. The task then vanished from those people's
+         * "ของฉัน" while still naming them nowhere, which is how work went
+         * missing without anybody deleting anything.
+         */
+        const currentDepts = await sql`
+          SELECT department AS key, scope FROM task_departments WHERE task_id = ${id}`;
         const { assignees, departments } = readTags({
           // Left out of the request: keep the names, not everyone the tags reached.
           assignees: body.assignees ?? current.filter((r) => r.via === 'named').map((r) => r.username),
-          departments: body.departments ?? [],
+          departments: body.departments ?? currentDepts.map((d) => ({ key: d.key, scope: d.scope })),
         });
 
         // The same rule as creating: a unit editor cannot widen a task they

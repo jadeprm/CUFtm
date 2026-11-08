@@ -1258,7 +1258,7 @@ window.STRINGS = {
     saveStatus: 'บันทึกสถานะ',
     statusLocked: 'เปลี่ยนสถานะไม่ได้',
     statusOnlyNote: 'คุณเปลี่ยนได้เฉพาะสถานะ ส่วนรายละเอียดอื่นแก้ได้เฉพาะผู้สร้างงาน Admin และ Co-Admin',
-    viewOnlyNote: 'ดูได้อย่างเดียว แก้ไขได้เฉพาะผู้สร้างงาน Admin และ Co-Admin',
+    viewOnlyNote: 'ดูได้อย่างเดียว แก้ไขได้เฉพาะผู้สร้างงาน ผู้รับผิดชอบ เจ้าของ Space Admin และ Co-Admin',
     errNotTaskOwner: 'แก้งานนี้ได้เฉพาะผู้สร้างงาน Admin และ Co-Admin',
 
     // sub-tasks and attached work
@@ -1458,6 +1458,10 @@ window.STRINGS = {
     docDeleteSure: 'ลบเอกสารนี้ทั้งฉบับ รวมถึงไฟล์ ลบแล้วกู้คืนไม่ได้',
     errOnlyAdminSetsAccess: 'เฉพาะ Admin เท่านั้นที่เปลี่ยนระดับสิทธิ์ได้',
     errNotAllowed: 'คุณไม่มีสิทธิ์ทำสิ่งนี้',
+    editProfile: "แก้โปรไฟล์",
+    editProfileDone: "บันทึกโปรไฟล์ของ %s แล้ว",
+    editProfileDeptHint: "ฝ่ายหลักของคน ๆ นี้ — ระบบเพิ่มสิทธิ์เข้าฝ่ายนี้ให้ด้วย ส่วนสิทธิ์ฝ่ายอื่นปรับในแถวด้านล่าง",
+    editProfileEmailHint: "อีเมลที่แก้ที่นี่จะยังไม่ยืนยัน เจ้าของบัญชีต้องกรอกรหัสที่ส่งไปให้ยืนยันเอง",
     forgotIntro: "ใส่ username หรืออีเมลที่ผูกไว้ เราจะส่งรหัส 6 หลักไปที่อีเมลนั้น แล้วคุณตั้งรหัสผ่านใหม่ได้เอง",
     forgotWho: "username หรืออีเมล",
     forgotSent: "ถ้ามีบัญชีที่ผูกอีเมลไว้ เราส่งรหัสให้แล้ว (ใช้ได้ 10 นาที) ใส่รหัสและตั้งรหัสผ่านใหม่",
@@ -1825,6 +1829,7 @@ window.ERROR_KEYS = {
   SENDER_MUST_BE_YOU: 'errSenderMustBeYou',
   BAD_ROLE: 'errBadRole',
   EMAIL_REQUIRED: 'errEmailRequired',
+  DISPLAY_NAME_REQUIRED: 'errNameRequired',
   EMAIL_REQUIRED_FIRST: 'errEmailRequiredFirst',
   DUPLICATE_REQUEST: 'errDuplicate',
   MISSING_FIELDS: 'errMissingFields',
@@ -1858,7 +1863,6 @@ window.ERROR_KEYS = {
   BAD_USERNAME: 'errBadUsername',
   USERNAME_TAKEN: 'errUsernameTaken',
   NICKNAME_REQUIRED: 'errNicknameRequired',
-  NAME_REQUIRED: 'errNameRequired',
   UNIT_ALREADY_THERE: 'errUnitAlreadyThere',
   BAD_KIND: 'errBadKind',
 

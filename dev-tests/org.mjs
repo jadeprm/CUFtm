@@ -230,6 +230,21 @@ ok('...with a line saying what moved, and no talk of a sheet',
   /ย้าย/.test(await admin.locator('.notice.ok').first().textContent() || '')
   && !/ชีต|sheet/i.test(await admin.locator('.notice.ok').first().textContent() || ''));
 
+head('Editing somebody else\u2019s profile from their row');
+const editAdmin = await as('Jade_Pres', 'fairAdmin1');
+const editRow = editAdmin.locator('.users-table tbody tr', { hasText: 'Ploy_StaffCon' }).first();
+await editRow.locator('.who-cell').click(); await editAdmin.waitForTimeout(400);
+await editRow.locator('.btn', { hasText: 'แก้โปรไฟล์' }).first().click();
+await editAdmin.waitForTimeout(600);
+const ep = editAdmin.locator('.veil .modal').last();
+ok('the dialog opens with their details', (await ep.locator('input[type=text]').first().inputValue()).length > 0
+  && (await ep.locator('select').count()) === 1);
+await ep.locator('input[type=text]').nth(3).fill('สมาชิกฝ่ายเนื้อหา (แก้โดยแอดมิน)');
+await ep.locator('.btn.primary').click(); await editAdmin.waitForTimeout(2500);
+ok('saving shows it in the row', await editAdmin.locator('.users-table tbody tr', { hasText: 'แก้โดยแอดมิน' }).count() >= 1);
+await editAdmin.evaluate(() => fetch('/api/users?do=manage', { method: 'PATCH', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'Ploy_StaffCon', position: 'สมาชิกฝ่ายเนื้อหา' }) }));
+
 head('An editor is offered none of it');
 const editor = await as('Kungking_HeadCon', 'brandNew22');
 ok('no org chart', await editor.locator('.org-admin').count() === 0);

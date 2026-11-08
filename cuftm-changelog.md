@@ -11,6 +11,28 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-11-07 — projects, and two ways a task went missing from "ของฉัน" · version `2026-11-07a`
+
+No schema change; still 12 functions.
+
+**เจ้าของ Space แก้งานในโปรเจกต์ได้** — `canEditTask` รับเงื่อนไขใหม่: งานที่อยู่ใน Space ที่คุณสร้างเอง หรือถูกตั้งเป็น owner คุณแก้ได้ทั้งหมด ไม่ต้องเป็นผู้สร้างงานหรือผู้รับผิดชอบ (`ownedSpaceIdsFor` ใน lib/spaces.js, ใส่ให้ทั้ง api/tasks.js และ api/line.js) คนที่แค่เห็นงานผ่าน Space ยังแก้ไม่ได้เหมือนเดิม
+
+**แท็บ "ได้รับผ่านฝ่าย" ใต้ "ของฉัน" ขึ้น 0 เสมอ** — `isMine()` ฝั่งหน้าเว็บอ่านแต่รายชื่อผู้รับผิดชอบกับผู้ติดตาม คนที่อยู่ในงานเพราะฝ่ายถูกแท็กจึงถูกตัดออกก่อนถึงตัวกรองบทบาท ตอนนี้ใช้ `myRole` ที่เซิร์ฟเวอร์ส่งมาแทน
+
+**บันทึกงานแล้วแท็บฝ่ายหาย** — PATCH /api/tasks ที่ส่งมาเฉพาะ `assignees` เคยตีความ `departments` ที่ไม่ได้ส่งมาเป็น "ไม่มีเลย" แล้วลบแท็บฝ่ายทิ้งทั้งหมด พร้อมกับลบทุกคนที่อยู่ในงานผ่านฝ่ายออกจาก task_people งานจึงหายจากหน้า "ของฉัน" ของคนเหล่านั้นโดยไม่มีใครลบอะไร ตอนนี้ไม่ส่งมา = ไม่แตะ ส่ง `[]` มา = ล้างจริง (R0003 น่าจะมาจากข้อนี้)
+
+Tests: run.mjs §74 (แท็บฝ่าย + ไม่ลบแท็บ), §111 (เจ้าของ Space แก้งาน)
+
+## 2026-10-29 (b) — admins and co-admins edit every profile detail · version `2026-10-29b`
+
+No schema change; still 12 functions.
+
+- หน้าจัดการผู้ใช้: ปุ่ม **แก้โปรไฟล์** ในแต่ละแถว (admin / co-admin) แก้ได้ทุกอย่าง: ชื่อที่แสดง, ชื่อเล่น, ชื่อ-นามสกุล, ตำแหน่ง, **ฝ่าย**, อีเมล, ประธานฝ่าย
+- เปลี่ยนฝ่ายหลักแล้วระบบเพิ่มฝ่ายนั้นให้ในสิทธิ์ฝ่ายของผู้ใช้อัตโนมัติ (ยกเว้นคนที่เห็นทุกฝ่ายอยู่แล้ว)
+- อีเมลที่แอดมินตั้งให้จะ **ยังไม่ยืนยัน** (ผู้ใช้ต้องยืนยันด้วย OTP เอง) เพื่อไม่ให้ใช้รีเซ็ตรหัสผ่านยึดบัญชีได้; อีเมลซ้ำกับบัญชีที่ยืนยันแล้ว → `EMAIL_TAKEN`
+- co-admin ยังแก้ admin / co-admin คนอื่นไม่ได้ (`cannotActOn`)
+- Tests: run.mjs §110, dev-tests/org.mjs
+
 ## 2026-10-29 — people manage their own password, email and username · version `2026-10-29a`
 No schema change. Still 12 functions. FULL zip.
 Asked for: use automatic email for password changes so an admin no longer sets them, and make anything a person can safely manage through email self-service.
