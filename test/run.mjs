@@ -41,6 +41,11 @@ const lineSent = [];
 // Set to make LINE refuse the next reply that carries a card, as it does a card it dislikes.
 let lineRefuseFlex = false;
 let lineFails = null;         // set to a status code to make LINE refuse
+// What LINE says about the webhook, for §112: the stored endpoint and switch,
+// and what happens when LINE calls it.
+let hookState = { endpoint: 'https://fair.test/api/line', active: true };
+let lineHookTest = { success: true, timestamp: 1, statusCode: 200, reason: 'OK', detail: '200' };
+const lineHookSets = [];
 /** Each test person's Google Calendar: name -> Map(eventId -> event). */
 const googleCals = new Map();
 const googleWrites = [];
@@ -283,6 +288,15 @@ globalThis.fetch = async (url, init) => {
     lineSent.push({ kind: 'image', bytes: init.body?.length || 0,
                     type: (init.headers || {})['content-type'] });
     return new Response('{}', { status: 200 });
+  }
+  if (String(url).includes('api.line.me/v2/bot/channel/webhook')) {
+    if (String(url).includes('/test')) return new Response(JSON.stringify(lineHookTest), { status: 200 });
+    if ((init.method || 'GET') === 'PUT') {
+      lineHookSets.push(JSON.parse(init.body).endpoint);
+      hookState = { ...hookState, endpoint: JSON.parse(init.body).endpoint, active: true };
+      return new Response('{}', { status: 200 });
+    }
+    return new Response(JSON.stringify(hookState), { status: 200 });
   }
   if (String(url).includes('api.line.me')) {
     if (String(url).includes('/richmenu') && init.method === 'POST' && !String(url).includes('/user/all/')) {
@@ -9636,6 +9650,64 @@ await sql`UPDATE users SET display_name = 'Fah', nickname = 'ฟ้า', full_na
 await sql`DELETE FROM user_departments WHERE username = 'Fah_StaffCon' AND department = 'pr'`;
 const edSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
 ok('the admin page has an edit-profile button on every row', /function openEditProfile\(u\)/.test(edSrc) && /openEditProfile\(u\); \}/.test(edSrc));
+
+// ---- §112 why the bot is not answering ----------------------------------
+head('112. The webhook check: LINE itself says whether it can reach us');
+
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'content' });
+ok('an editor cannot ask', r.status === 403 && r.data.error === 'NOT_ALLOWED');
+
+// A delivery that arrives and is turned away, which is what a wrong channel
+// secret looks like from this side — and nothing else in the app records it.
+let hookRes = await lineApi(lineHook([{ type: 'message', replyToken: 'rt_x',
+  source: { type: 'user', userId: 'Uhook' }, message: { type: 'text', id: 'm', text: 'งาน' } }],
+  { secret: 'the_wrong_secret_entirely' }));
+ok('a delivery signed with the wrong secret is refused', hookRes.status === 403);
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'admin' });
+ok('...and the check says when one was last refused', Boolean(r.data.lastBad), JSON.stringify(r.data.lastBad));
+ok('...the stored URL is read back from LINE', r.data.endpoint === 'https://fair.test/api/line', r.data.endpoint);
+ok('...and it matches where this deployment actually is', r.data.matches === true && r.data.active === true);
+ok('...with LINE reporting it reached us', r.data.test && r.data.test.success === true, JSON.stringify(r.data.test));
+
+// A delivery that is accepted, which is the fact that tells an admin the
+// channel secret is right after all.
+hookRes = await lineApi(lineHook(sayToBot('Uhook', 'งาน')));
+ok('a properly signed delivery is accepted', hookRes.status === 200);
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'admin' });
+ok('...and the check says when one last arrived', Boolean(r.data.lastOk), JSON.stringify(r.data.lastOk));
+
+// The three faults the panel has to tell apart.
+hookState = { endpoint: 'https://fair.test/api/line', active: false };
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'admin' });
+ok('the switch being off is reported as off', r.data.active === false);
+
+hookState = { endpoint: 'https://somewhere.else/api/line', active: true };
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'admin' });
+ok('a URL pointing somewhere else does not match', r.data.matches === false && r.data.expected === 'https://fair.test/api/line',
+  r.data.endpoint + ' vs ' + r.data.expected);
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'admin', body: { set: true } });
+ok('...and the admin can point LINE back at this deployment',
+  lineHookSets[lineHookSets.length - 1] === 'https://fair.test/api/line' && r.data.matches === true,
+  JSON.stringify(lineHookSets));
+
+lineHookTest = { success: false, timestamp: 1, statusCode: 403, reason: 'ERROR', detail: '403' };
+r = await call(lineApi, '/api/line?do=webhook', { method: 'POST', as: 'admin' });
+ok('a 403 from our own webhook is handed back for the page to name',
+  r.data.test.statusCode === 403 && r.data.test.success === false);
+const hookSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('...and the page names it as the channel secret, not a mystery',
+  /statusCode === 403.*lineHookBadSecret/s.test(hookSrc));
+lineHookTest = { success: true, timestamp: 1, statusCode: 200, reason: 'OK', detail: '200' };
+
+// ---- §113 the list in a narrow column ------------------------------------
+head('113. The work list keeps a readable title when the column is narrow');
+const themeCss = (await import('node:fs')).readFileSync('public/theme.css', 'utf8');
+ok('the row stops being six fixed columns before the title runs out',
+  /@container glist \(max-width: 800px\)/.test(themeCss));
+ok('...measured on the list itself, not the window, so an open sidebar counts',
+  /\.glist \{[^}]*container-type: inline-size/.test(themeCss));
+ok('...and the column headings go with the columns',
+  /@container glist \(max-width: 800px\) \{[\s\S]*?\.glist-head \{ display: none; \}/.test(themeCss));
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
