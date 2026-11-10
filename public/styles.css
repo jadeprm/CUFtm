@@ -2037,3 +2037,11 @@ button.pressed { opacity: .6; cursor: progress; }
 .acct-row { display: flex; gap: 8px; align-items: center; }
 .acct-row input { flex: 1; min-width: 0; }
 .acct-panel { display: grid; gap: 8px; margin-top: 6px; }
+
+/* Why the bot is not answering — see hookPanel in app.js. */
+.hook-panel { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.hook-h { margin: 0 0 4px; font-size: .95rem; }
+.hook-out { margin-top: 8px; display: grid; gap: 6px; }
+.hook-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: .85rem; }
+.hook-k { color: var(--ink-soft); min-width: 10rem; }
+.hook-v { word-break: break-all; font-size: .8rem; }

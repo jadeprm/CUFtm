@@ -1180,3 +1180,39 @@ input[type=range].sig-size { flex: 1; max-width: 320px; accent-color: var(--acce
 .deleg-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .deleg-box .selected { margin: 6px 0 8px; }
 .deleg-box select { max-width: 22rem; }
+
+/* ---------------------------------------------------------------------------
+   The list, in a narrow column.
+
+   The row is a six-column grid whose five right-hand columns are fixed, so
+   everything the window loses comes out of the title. On a laptop with the
+   sidebar open there was not enough left for a word: the title column fell to
+   26px and then to nothing, and a Thai title came out one syllable per line,
+   three hundred pixels tall. The phone layout — title and date on top, people
+   and the rest underneath — is the right shape for that width too.
+
+   A container query, not a media query: what has run out is the width of the
+   LIST, which is the window minus whatever the sidebar is currently taking.
+   A viewport rule cannot see the sidebar, so it would fire at the wrong moment
+   in both directions.
+   --------------------------------------------------------------------------- */
+.glist { container-type: inline-size; container-name: glist; }
+
+@container glist (max-width: 800px) {
+  /* Column headings describe columns that no longer exist. */
+  .glist-head { display: none; }
+  ul.list-view li.lrow {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    grid-template-areas: "s t d" "s m m";
+    row-gap: 4px; min-height: 0;
+  }
+  ul.list-view li.lrow > .status-btn { grid-area: s; align-self: start; margin-top: 1px; }
+  ul.list-view li.lrow > .t-title { grid-area: t; }
+  ul.list-view li.lrow > .lr-due { grid-area: d; align-self: start; justify-self: end; }
+  ul.list-view li.lrow > .lr-meta {
+    grid-area: m; display: flex; align-items: center; gap: 10px; min-width: 0;
+  }
+  ul.list-view li.lrow .lr-where { margin-left: auto; max-width: 55%; }
+  ul.list-view li.lrow .lr-prio:empty { display: none; }
+  ul.list-view li.lrow .lr-who .stack .avatar { width: 20px; height: 20px; font-size: 8.5px; }
+}

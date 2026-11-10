@@ -6,7 +6,8 @@ import { assembled } from './tasks.js';
 import { assembledEvents, canSeeEvent } from './events.js';
 import {
   lineConfigured, verifySignature, reply, text, newLinkCode,
-  installRichMenu, removeRichMenu, taskLink, pageLink, botProfile } from '../lib/line.js';
+  installRichMenu, removeRichMenu, taskLink, pageLink, botProfile,
+  siteUrl, webhookEndpoint, webhookTest, setWebhookEndpoint } from '../lib/line.js';
 import { RICH_MENU_PNG_BASE64, RICH_MENU_VERSION } from '../lib/richmenu-image.js';
 import {
   readCommand, parseTaskLine, todayIso, addDays,
@@ -32,6 +33,7 @@ import { isSecretary } from '../lib/approval.js';
  *   POST /api/line?do=code      issue a linking code for the signed-in person
  *   GET  /api/line?do=status    is my LINE linked, and is the digest on
  *   DELETE /api/line?do=link    unlink, from the website side
+ *   POST /api/line?do=webhook   admins: ask LINE whether it can reach us
  *
  * Every reply the bot sends is a REPLY, never a push, so conversation is free
  * however much anybody uses it. The only charged messages this app ever sends
@@ -137,6 +139,55 @@ async function handler(request) {
     return json({ ok: true, digest: on });
   }
 
+  /**
+   * "Why is the bot not answering?", asked of LINE itself.
+   *
+   * Everything this returns is a fact from one of the two ends, never a
+   * guess: what URL the channel has stored and whether the switch is on,
+   * what happened when LINE called it a second ago, and when this app last
+   * saw a delivery arrive or turned one away. Between them those pin the
+   * fault to the switch, the URL, or the channel secret.
+   */
+  if (action === 'webhook') {
+    if (me.access !== 'admin' && me.access !== 'coadmin') {
+      return json({ error: 'NOT_ALLOWED' }, 403);
+    }
+    if (!lineConfigured()) return json({ error: 'LINE_NOT_SET_UP' }, 400);
+    const site = siteUrl();
+    const expected = site ? `${site}/api/line` : null;
+
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      // Pointing the channel at this deployment. Deliberately a separate
+      // press: it changes the committee's LINE channel, not this app.
+      if (body.set === true) {
+        if (!expected) return json({ error: 'NO_SITE_URL' }, 400);
+        const done = await setWebhookEndpoint(expected);
+        if (done.error) return json(done, 502);
+      }
+    }
+
+    const [okRow] = await sql`SELECT value FROM meta WHERE key = 'line_hook_ok'`;
+    const [badRow] = await sql`SELECT value FROM meta WHERE key = 'line_hook_bad'`;
+    const info = await webhookEndpoint();
+    const test = info.error ? null : await webhookTest(info.endpoint || expected || '');
+    return json({
+      expected,
+      endpoint: info.endpoint ?? null,
+      active: info.active ?? null,
+      matches: Boolean(expected && info.endpoint &&
+        info.endpoint.replace(/\/+$/, '') === expected.replace(/\/+$/, '')),
+      test,
+      lastOk: okRow?.value || null,
+      lastBad: badRow?.value || null,
+      error: info.error || null,
+      // LINE's own words when it refused the question itself, so an admin is
+      // not left with "something went wrong" on the one page that exists to
+      // say what went wrong.
+      message: info.message || null,
+    });
+  }
+
   return json({ error: 'UNKNOWN_ACTION' }, 400);
 }
 
@@ -156,8 +207,20 @@ async function webhook(request, sql) {
    * create, change or delete the committee's tasks for them.
    */
   if (!lineConfigured() || !verifySignature(raw, signature)) {
+    /**
+     * Write down that this happened, because it is the one fact nobody can
+     * see from either side.
+     *
+     * Notifications keep arriving while nothing can come in — they go out on
+     * the access token, and only the channel SECRET verifies what comes back.
+     * So a wrong secret looks exactly like a bot that is "ignoring messages":
+     * every delivery reaches this line and is turned away. Recorded here, the
+     * settings page can say which of the two it is instead of guessing.
+     */
+    await noteDelivery(sql, signature ? 'badsig' : 'unsigned').catch(() => {});
     return json({ error: 'BAD_SIGNATURE' }, 403);
   }
+  await noteDelivery(sql, 'ok').catch(() => {});
 
   let payload = {};
   try { payload = JSON.parse(raw); } catch { return json({ ok: true }); }
@@ -222,6 +285,17 @@ async function refreshMenu(sql) {
     console.error('[line] menu refresh failed:', String(error?.message || error).slice(0, 300));
     await sql`UPDATE meta SET value = ${`failed:${Date.now()}`} WHERE key = 'line_richmenu_version'`.catch(() => {});
   }
+}
+
+/**
+ * The last time LINE reached this app, and the last time it was turned away.
+ * Two rows in `meta`, written on the way past — no table, no cleanup.
+ */
+async function noteDelivery(sql, how) {
+  const key = how === 'ok' ? 'line_hook_ok' : 'line_hook_bad';
+  const value = how === 'ok' ? new Date().toISOString() : `${new Date().toISOString()} ${how}`;
+  await sql`INSERT INTO meta (key, value) VALUES (${key}, ${value})
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
 }
 
 async function handleEvent(sql, event) {

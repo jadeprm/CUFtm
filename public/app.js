@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-07a';
+  var APP_VERSION = '2026-11-10a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -7716,6 +7716,89 @@
   function lineBox() {
     var box = h('div', { class: 'push-box' });
 
+    /**
+     * "Why is the bot not answering?" — asked of LINE, not of the committee.
+     *
+     * Everything on this panel comes from one of the two ends: what URL the
+     * channel has stored, whether the switch is on, what LINE got when it
+     * called the URL a second ago, and when this app last accepted or refused
+     * a delivery. A bot that sends notifications but answers nothing is
+     * almost always one of three things, and this says which.
+     */
+    function hookPanel() {
+      var panel = h('div', { class: 'hook-panel' });
+      var out = h('div', { class: 'hook-out', hidden: true });
+      var btn = h('button', { class: 'btn sm', text: t('lineHookCheck') });
+
+      function row(label, value) {
+        return h('div', { class: 'hook-row' }, [
+          h('span', { class: 'hook-k', text: label }),
+          h('code', { class: 'hook-v', text: value }),
+        ]);
+      }
+
+      function show(d) {
+        clear(out);
+        out.hidden = false;
+        var verdict, kind;
+        if (d.error) { verdict = errText(d.error) + (d.message ? ' — ' + d.message : ''); kind = 'err'; }
+        else if (d.active === false) { verdict = t('lineHookOffSwitch'); kind = 'warn'; }
+        else if (!d.endpoint) { verdict = t('lineHookNoUrl'); kind = 'warn'; }
+        else if (!d.matches) { verdict = t('lineHookWrongUrl'); kind = 'warn'; }
+        else if (d.test && d.test.statusCode === 403) { verdict = t('lineHookBadSecret'); kind = 'err'; }
+        else if (d.test && !d.test.success && !d.test.statusCode) { verdict = t('lineHookNoReach'); kind = 'err'; }
+        else if (d.test && d.test.success) { verdict = t('lineHookOk'); kind = 'ok'; }
+        else { verdict = (d.test && d.test.detail) || (d.test && d.test.reason) || '—'; kind = 'warn'; }
+        out.appendChild(h('div', { class: 'notice ' + (kind === 'ok' ? '' : kind), text: verdict }));
+
+        if (d.endpoint) out.appendChild(row(t('lineHookUrlIs'), d.endpoint));
+        if (d.expected && !d.matches) out.appendChild(row(t('lineHookUrlWant'), d.expected));
+        if (d.test && d.test.statusCode) {
+          out.appendChild(row(t('lineHookStatus'), String(d.test.statusCode) +
+            (d.test.reason ? ' · ' + d.test.reason : '')));
+        }
+        out.appendChild(row(t('lineHookLastOk'), d.lastOk ? whenWording(d.lastOk.slice(0, 10)) + ' ' + d.lastOk.slice(11, 16) : t('lineHookNever')));
+        /**
+         * A refusal is worth a word of its own. "badsig" means LINE arrived
+         * and was turned away — the channel secret here is not the channel's.
+         * "unsigned" is anything else that posted to the webhook address.
+         */
+        if (d.lastBad) {
+          out.appendChild(row(t('lineHookLastBad'), d.lastBad.slice(0, 16).replace('T', ' ') +
+            (d.lastBad.indexOf('badsig') !== -1 ? ' · ' + t('lineHookBadSigWord') : '')));
+        }
+
+        // Only offered when it would actually change something.
+        if (d.expected && !d.matches) {
+          out.appendChild(h('button', {
+            class: 'btn sm primary', text: t('lineHookSetUrl'),
+            onclick: function (e) {
+              e.target.disabled = true;
+              api('/api/line?do=webhook', { method: 'POST', body: { set: true } })
+                .then(function (again) { show(again); })
+                .catch(function (err) { e.target.disabled = false; show({ error: err.code || 'SERVER', message: err.data && err.data.message }); });
+            },
+          }));
+        }
+      }
+
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        var was = btn.textContent;
+        btn.textContent = t('lineHookChecking');
+        api('/api/line?do=webhook', { method: 'POST' })
+          .then(show)
+          .catch(function (err) { show({ error: err.code || 'SERVER', message: err.data && err.data.message }); })
+          .then(function () { btn.disabled = false; btn.textContent = was; });
+      });
+
+      panel.appendChild(h('h4', { class: 'hook-h', text: t('lineHookHead') }));
+      panel.appendChild(h('p', { class: 'hint', text: t('lineHookWhy') }));
+      panel.appendChild(btn);
+      panel.appendChild(out);
+      return panel;
+    }
+
     function draw(state) {
       clear(box);
 
@@ -7761,6 +7844,8 @@
             },
           }));
         }
+
+        if (state.canManageMenu) box.appendChild(hookPanel());
 
         box.appendChild(h('button', {
           class: 'btn sm', text: t('lineDisconnect'),

@@ -11,6 +11,30 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-11-10 — the list stops crushing its own titles · version `2026-11-10a`
+
+Delivered as the changed files only (`public/theme.css` plus the three version strings), not a full zip.
+
+A list row is a six-column grid whose five right-hand columns are fixed, so every pixel the window loses comes out of the title. On a laptop with the sidebar open there was nothing left: measured at 1040px the title column was 166px, at 900px it was 26px, at 800px it was zero — and a Thai title with nowhere to wrap came out one syllable per line, in a row 357px tall.
+
+The fix is a **container query**, not a media query. What has run out is the width of the list, which is the window minus whatever the sidebar is taking at that moment; a viewport rule cannot see the sidebar and so fires at the wrong width in both directions. Below 800px of list width the row takes the shape the phone already used — title and date on top, people, priority and ฝ่าย underneath — and the column headings, which would be describing columns that no longer exist, go away with them.
+
+Tests: run.mjs §113, and a new browser suite `dev-tests/narrow.mjs` that measures the title cell and the row height at 1440 / 1200 / 1040 / 900 / 800 / 740.
+
+## 2026-11-08 — asking LINE why the bot is silent · version `2026-11-08a`
+
+No schema change; still 12 functions (the check rides `api/line.js` as `?do=webhook`).
+
+A bot that sends notifications but answers nothing is not a half-broken bot: the two directions use different credentials. Notifications go out on `LINE_CHANNEL_ACCESS_TOKEN`; a message somebody types comes in signed with the **channel secret**, and `verifySignature` turns away anything whose signature does not match. So a wrong or stale `LINE_CHANNEL_SECRET` in Vercel — the usual cause being a Reissue in the console — looks exactly like a bot ignoring everyone, while cards keep arriving. Nothing in the app said so, and nothing in LINE's console says so either.
+
+- **โปรไฟล์ → LINE → ตรวจสอบการเชื่อมต่อ** (admin / co-admin). Asks LINE three questions and reports the answers rather than a guess: what webhook URL the channel has stored (`GET /v2/bot/channel/webhook/endpoint`), whether "Use webhook" is on, and what happens when LINE calls that URL right now (`POST /v2/bot/channel/webhook/test`).
+- The panel names the fault: switch off, URL pointing elsewhere, **403 → the channel secret here is not this channel's**, or no response at all.
+- When the URL is wrong, one button points the channel back at this deployment (`PUT …/webhook/endpoint`). A separate press, because it changes the committee's LINE channel rather than this app.
+- Every delivery is now recorded in `meta`: `line_hook_ok` when one is accepted, `line_hook_bad` with its reason (`badsig` / `unsigned`) when one is turned away. "Last accepted / last refused" answers the question on its own — a recent `badsig` is the secret, a never-ever `lastOk` is the switch or the URL.
+- The diagnosis page cannot itself fail: an unreachable or refused LINE call comes back as an answer with LINE's own words, never a 500.
+
+Tests: run.mjs §112 (refused delivery recorded, stored URL read back, switch off, wrong URL and the fix, 403 named as the secret), plus a browser check of the panel on the profile page.
+
 ## 2026-11-07 — projects, and two ways a task went missing from "ของฉัน" · version `2026-11-07a`
 
 No schema change; still 12 functions.
