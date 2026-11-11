@@ -7,7 +7,13 @@ import { canSeeMeeting } from '../lib/meeting.js';
 import { isSecretary } from '../lib/approval.js';
 import { accessSet } from '../lib/scope.js';
 import { currentUser } from '../lib/auth.js';
-import { handleSchedule } from '../lib/schedule.js';
+import {
+  handleSchedule, publicHost, publicSlots, bookAsGuest, cancelAsGuest, tellOwner,
+  officeHoursOf, nowLocal, addDays, GUEST_PURPOSE, GUEST_NAME_MAX,
+} from '../lib/schedule.js';
+import { issueCode, checkCode, cleanEmail, EMAIL_SHAPE } from '../lib/signup.js';
+import { mailConfigured, sendMail } from '../lib/mail.js';
+import { siteUrl } from '../lib/line.js';
 
 /**
  * The calendar feed: GET /api/calendar?token=…
@@ -28,6 +34,16 @@ async function handler(request) {
   await ready;
 
   const url = requestUrl(request);
+
+  /**
+   * The public office-hours page: /api/calendar?book=<token>
+   *
+   * Deliberately NOT signed in — the whole point is somebody outside the
+   * committee. Everything it can answer is in lib/schedule.js, which also
+   * explains what such a visitor is and is not allowed to know.
+   */
+  if (url.searchParams.get('book')) return publicBooking(request, url, sql);
+  if (url.searchParams.get('unbook')) return publicCancel(request, url, sql);
 
   /**
    * The personal schedule, office hours and Google link — signed-in, cookie
@@ -180,6 +196,114 @@ async function handler(request) {
       'cache-control': 'public, max-age=600',
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Booking somebody's office hours without an account
+// ---------------------------------------------------------------------------
+
+/**
+ * How a stranger is kept honest without being made to sign up.
+ *
+ * The only claim a visitor makes that anybody later relies on is their email
+ * address, so that is the one thing checked: a six-digit code, the same
+ * machinery members verify their own address with (lib/signup.js). Until the
+ * code comes back, nothing is written to anybody's calendar — which is what
+ * stops a bored stranger filling a ประธานฝ่าย's week with appointments that
+ * reach nobody.
+ *
+ * Nothing here is told whether a name exists, what any other booking is, or
+ * anything about the host beyond the name they chose to publish and the
+ * hours they chose to open.
+ */
+const PUBLIC_DAYS = 21;
+const clean = (v, max = 200) => String(v ?? '').trim().slice(0, max);
+
+async function publicBooking(request, url, sql) {
+  const token = String(url.searchParams.get('book') || '');
+  const host = await publicHost(sql, token);
+  // One answer for "no such page" and "switched off", so a retired address
+  // tells nobody whether it was ever real.
+  if (!host) return json({ error: 'NO_SUCH_PAGE' }, 404);
+
+  const who = {
+    name: host.display_name || host.username,
+    nickname: host.nickname || '',
+    position: host.position || '',
+  };
+  const action = url.searchParams.get('do') || '';
+
+  if (request.method === 'GET') {
+    const fromOn = nowLocal().on;
+    const toOn = addDays(fromOn, PUBLIC_DAYS - 1);
+    return json({
+      host: who, fromOn, toOn,
+      windows: (await officeHoursOf(sql, host.username)).map((w) => ({ day: w.day, from: w.from, to: w.to, slot: w.slot, place: w.place })),
+      slots: await publicSlots(sql, host.username, fromOn, toOn),
+      // Without mail configured there is no way to check an address, so the
+      // page says so rather than taking bookings it cannot stand behind.
+      canBook: mailConfigured(),
+    });
+  }
+
+  if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
+  const body = await request.json().catch(() => ({}));
+  const email = cleanEmail(body.email);
+  const name = clean(body.name, GUEST_NAME_MAX);
+  if (!EMAIL_SHAPE.test(email)) return json({ error: 'BAD_EMAIL' }, 400);
+  if (!name) return json({ error: 'NAME_REQUIRED' }, 400);
+  if (!mailConfigured()) return json({ error: 'MAIL_NOT_CONFIGURED' }, 503);
+
+  // ---- the code ----------------------------------------------------------
+  if (action === 'code') {
+    const got = await issueCode(sql, { purpose: GUEST_PURPOSE, subject: `${token}:${email}`, email });
+    if (!got.ok) return json({ error: got.error, wait: got.wait }, got.error === 'CODE_TOO_SOON' ? 429 : 400);
+    return json({ ok: true });
+  }
+
+  // ---- the booking -------------------------------------------------------
+  if (action === 'confirm') {
+    const checked = await checkCode(sql, { purpose: GUEST_PURPOSE, subject: `${token}:${email}`, email, code: body.code });
+    if (!checked.ok) return json({ error: checked.error }, 400);
+
+    const on = /^\d{4}-\d{2}-\d{2}$/.test(String(body.on || '')) ? String(body.on) : null;
+    const at = /^\d{2}:\d{2}$/.test(String(body.at || '')) ? String(body.at) : null;
+    if (!on || !at) return json({ error: 'BAD_TIME' }, 400);
+
+    const made = await bookAsGuest(sql, host, { name, email, on, at, note: clean(body.note, 1000) });
+    if (!made.ok) return json({ error: made.error }, 409);
+
+    // Advertised address first, else the one the visitor is standing on.
+    const site = siteUrl() || url.origin;
+    const cancelUrl = `${site}/#/unbook/${made.guestToken}`;
+    const when = `${made.slot.on} ${made.slot.at}–${made.slot.to}`;
+    await sendMail({
+      to: email,
+      subject: `ยืนยันนัดหมาย ${when} / Appointment confirmed`,
+      text:
+        `นัดหมายกับ ${who.name} เรียบร้อยแล้ว\n` +
+        `วันเวลา: ${when} น.\n` +
+        (made.slot.place ? `สถานที่: ${made.slot.place}\n` : '') +
+        (cancelUrl ? `\nถ้าต้องการยกเลิก เปิดลิงก์นี้: ${cancelUrl}\n` : '') +
+        `\nYour appointment with ${who.name} is confirmed.\n${when}\n` +
+        (cancelUrl ? `To cancel, open: ${cancelUrl}\n` : ''),
+    });
+    await tellOwner(sql, host.username, `นัดหมายใหม่ · ${when}`,
+      `${name} (${email}) จองเวลา Office hour ของคุณ` + (body.note ? ' — ' + clean(body.note, 200) : ''));
+
+    return json({ ok: true, slot: made.slot, cancelUrl, host: who }, 201);
+  }
+
+  return json({ error: 'UNKNOWN_ACTION' }, 400);
+}
+
+/** The link in the guest's confirmation email. */
+async function publicCancel(request, url, sql) {
+  const token = String(url.searchParams.get('unbook') || '');
+  if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
+  const done = await cancelAsGuest(sql, token);
+  if (!done.ok) return json({ error: done.error }, 404);
+  return json({ ok: true, on: done.on, at: done.at });
 }
 
 export default withNode(handler);

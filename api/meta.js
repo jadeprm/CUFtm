@@ -5,9 +5,16 @@ import { STATUSES, PRIORITIES } from '../lib/scope.js';
 import { withNode } from '../lib/http.js';
 import { currentUser, canEditTasks, canMakeShortLink, canManageAccounts } from '../lib/auth.js';
 import { makeCode, readCode, readTarget, shortUrl } from '../lib/shortlink.js';
+import { SHARE_KINDS, shareOf, makeShare, dropShare, readShare, shareUrl } from '../lib/share.js';
+import { assembled, withRights } from './tasks.js';
+import { assembledEvents, canSeeEvent, canEditEvent } from './events.js';
+import { assembleMeetings } from '../lib/meetingstore.js';
+import { canSeeMeeting, canEditMeeting } from '../lib/meeting.js';
+import { isSecretary } from '../lib/approval.js';
+import { spaceIdsFor, ownedSpaceIdsFor } from '../lib/spaces.js';
 import { siteUrl, siteHosts, shortlinkUrl } from '../lib/line.js';
 import { CIRCLES } from '../lib/circles.js';
-import { accessSet, seesEverything } from '../lib/scope.js';
+import { accessSet, seesEverything, canSeeTask, canEditTask } from '../lib/scope.js';
 import {
   MAX_DEPTH, MAX_NODES, canAddToShelf, canSeeNode, canEditNode, canDeleteNode,
   visibleTree, shapeNode, allNodes, childCounts, descendantsOf, addNode, editNode,
@@ -48,6 +55,11 @@ import {
  *   GET    /api/meta?do=report-digest   the day's summary, as text to copy
  *   POST   /api/meta?do=report-team     who else gets the urgent alert (admins only)
  *
+ *   GET    /api/meta?do=share&t=…       open the task / meeting / event a link points at
+ *   GET    /api/meta?do=share&kind=&id= the live link for this thing, if any
+ *   POST   /api/meta?do=share           start sharing one
+ *   DELETE /api/meta?do=share&kind=&id= stop sharing it
+ *
  *   GET    /api/meta?do=shelf           the shelf of important links, as I may see it
  *   POST   /api/meta?do=shelf-add       add a link or a folder
  *   PATCH  /api/meta?do=shelf-edit      rename, re-scope or move one
@@ -68,6 +80,7 @@ async function handler(request) {
   if (hasDatabase && (action === 'links' || action === 'link')) {
     return links(request, action);
   }
+  if (hasDatabase && action === 'share') return share(request);
   if (hasDatabase && action.indexOf('report') === 0) return reports(request, action);
   if (hasDatabase && action.indexOf('shelf') === 0) return shelf(request, action);
 
@@ -414,6 +427,146 @@ async function links(request, action) {
   }
 
   return json({ error: 'UNKNOWN_ACTION' }, 400);
+}
+
+
+/**
+ * One address that opens one task, meeting or event — see lib/share.js.
+ */
+async function share(request) {
+  const { sql, ready } = getSql();
+  await ready;
+
+  const me = await currentUser(request, sql);
+  if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+  const url = requestUrl(request);
+  const method = request.method;
+
+  /**
+   * The space ids this person is in, which canSeeTask needs. Put on the user
+   * here exactly as /api/tasks does it, so a task filed into a teamspace
+   * reads the same way through a link as it does on the page.
+   */
+  const asViewer = async () => ({
+    ...me,
+    spaceIds: await spaceIdsFor(sql, me),
+    ownedSpaceIds: await ownedSpaceIdsFor(sql, me),
+  });
+
+  /** The thing itself, and the two questions asked about it everywhere else. */
+  async function findOne(kind, id) {
+    const viewer = await asViewer();
+    if (kind === 'task') {
+      const task = (await assembled(sql)).find((t) => t.id === id);
+      if (!task) return null;
+      /**
+       * The same rights stamp /api/tasks puts on every row.
+       *
+       * A link is not a second set of rules: somebody who follows one to a
+       * task they are already on keeps their buttons, and somebody who is
+       * not on it gets the page with every button already knowing to be
+       * quiet. The server would refuse them anyway — this is so the page
+       * does not offer first and refuse second.
+       */
+      const [stamped] = withRights(viewer, [task]);
+      return { kind, item: stamped, mayShare: canEditTask(viewer, task), maySee: canSeeTask(viewer, task) };
+    }
+    if (kind === 'event') {
+      const event = (await assembledEvents(sql)).find((e) => e.id === id);
+      if (!event) return null;
+      const mayEdit = canEditEvent(viewer, event);
+      return { kind, item: { ...event, mayEdit }, mayShare: mayEdit, maySee: canSeeEvent(viewer, event) };
+    }
+    const secretary = isSecretary(viewer);
+    const meeting = (await assembleMeetings(sql)).find((m) => m.id === id);
+    if (!meeting) return null;
+    const row = { ...meeting, meets_on: meeting.meetsOn, created_by: meeting.createdBy };
+    const mayEdit = canEditMeeting(viewer, row, { isSecretary: secretary });
+    return {
+      kind,
+      item: {
+        ...meeting, mayEdit,
+        myReply: (meeting.people.find((p) => p.username === viewer.username) || {}).reply || null,
+      },
+      mayShare: mayEdit,
+      maySee: canSeeMeeting(viewer, row, meeting.people, { isSecretary: secretary }),
+    };
+  }
+
+  const readKind = (v) => (SHARE_KINDS.includes(String(v)) ? String(v) : null);
+
+  // ---- following a link --------------------------------------------------
+  if (method === 'GET' && url.searchParams.get('t')) {
+    const link = await readShare(sql, url.searchParams.get('t'));
+    if (!link) return json({ error: 'NO_SUCH_SHARE' }, 404);
+    const got = await findOne(link.kind, link.ref_id);
+    /**
+     * The thing is gone but the link is not: tidy it away rather than
+     * leaving an address that will answer 404 for ever.
+     */
+    if (!got) {
+      await dropShare(sql, link.kind, link.ref_id);
+      return json({ error: 'NO_SUCH_SHARE' }, 404);
+    }
+    /**
+     * Being sent the link IS the permission — that is what sharing means —
+     * so what comes back does not depend on whether this person could have
+     * found it themselves. What they may DO with it still does: `mayEdit`
+     * and the rest are decided by the same rules as everywhere else, and the
+     * page greys out what they may not touch.
+     */
+    return json({
+      kind: link.kind, item: got.item, sharedBy: link.created_by,
+      viaShare: !got.maySee,
+    });
+  }
+
+  const kind = readKind(url.searchParams.get('kind'));
+
+  // ---- what the share button shows ---------------------------------------
+  if (method === 'GET') {
+    const id = String(url.searchParams.get('id') || '');
+    if (!kind || !id) return json({ error: 'BAD_SHARE_TARGET' }, 400);
+    const got = await findOne(kind, id);
+    if (!got) return json({ error: 'NO_SUCH_SHARE' }, 404);
+    if (!got.maySee) return json({ error: 'NOT_ALLOWED' }, 403);
+    const link = await shareOf(sql, kind, id);
+    return json({
+      kind, id, mayShare: got.mayShare,
+      url: link ? shareUrl(siteUrl() || url.origin, link.token) : null,
+      sharedBy: link ? link.created_by : null,
+      sharedAt: link ? link.created_at : null,
+    });
+  }
+
+  // ---- starting and stopping ---------------------------------------------
+  if (method === 'POST' || method === 'DELETE') {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    const wantKind = readKind(body.kind || url.searchParams.get('kind'));
+    const id = String(body.id || url.searchParams.get('id') || '');
+    if (!wantKind || !id) return json({ error: 'BAD_SHARE_TARGET' }, 400);
+
+    const got = await findOne(wantKind, id);
+    if (!got) return json({ error: 'NO_SUCH_SHARE' }, 404);
+    // Sharing widens who can see something, so it belongs to whoever runs it.
+    if (!got.mayShare) return json({ error: 'NOT_ALLOWED' }, 403);
+
+    if (method === 'DELETE') {
+      await dropShare(sql, wantKind, id);
+      return json({ ok: true, url: null });
+    }
+    const link = await makeShare(sql, wantKind, id, me.username);
+    if (!link) return json({ error: 'SERVER' }, 500);
+    /**
+     * The address this deployment advertises, or failing that the one the
+     * person is actually looking at. A deployment with no SITE_URL set is
+     * not a reason to refuse to share — the browser asking is standing on a
+     * working address by definition.
+     */
+    return json({ ok: true, kind: wantKind, id, url: shareUrl(siteUrl() || url.origin, link.token) }, 201);
+  }
+
+  return json({ error: 'METHOD' }, 405);
 }
 
 

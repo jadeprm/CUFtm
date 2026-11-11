@@ -11,6 +11,20 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-11-11 — a link to one thing, and a door for people with no account · version `2026-11-11a`
+
+Schema `2026-11-11a`: `share_links`, `users.office_public` / `office_token`, `appointments.guest_name` / `guest_email` / `guest_token`. Still 12 functions — sharing rides `api/meta.js` (`?do=share`), public booking rides `api/calendar.js` (`?book=<token>`), which already answered without a cookie for the calendar feed.
+
+**Share links** (`lib/share.js`). A งาน, ประชุม or กิจกรรม can be opened by any signed-in member through one address, whether or not their own ฝ่าย would ever show it to them. The alternative people were using was a screenshot, which is why read-only is the point rather than a limitation. Made from the dialog's own footer by whoever may change the thing; opening one grants sight and nothing else, so every button still asks the question it always asked and the server refuses what the page greys out. Pressing share twice returns the same address rather than retiring one already pasted somewhere; stopping and starting again makes a new one. Nobody without an account can open one at all.
+
+**iPhones can't be sent into an installed web app by a link** — iOS hands every link to Safari, where the person is signed in separately. Saying so is not a fix, so the search box on the work page now opens a share link pasted into it. Copy, open the app, paste.
+
+**Office hours anybody can book** (`lib/schedule.js`, `api/calendar.js`). Off per person until they turn it on. The page lives on a token of its own rather than a username, so it cannot be found by guessing names, and "เปลี่ยนลิงก์ใหม่" retires an address that got loose. A visitor sees WHEN and never WHAT: open slots and whether each is still free, with no title, place, note or anybody's name anywhere in the payload — and they cannot book over an existing appointment, because unlike a colleague they cannot see what they would be pushing in front of. Nothing is written until they have read a six-digit code sent to the address they typed, which is what stops a stranger filling a ประธานฝ่าย's week with appointments that reach nobody. The booking lands on the host's schedule with the visitor's name, the bell rings, and the visitor gets an email with the details and a link that cancels without signing in to anything.
+
+Also: a share link and a guest cancel link both build on `SITE_URL`, falling back to the origin the request arrived on rather than refusing — a deployment with no SITE_URL set is not a reason to be unable to share.
+
+Tests: run.mjs §114 (18 checks) and §115 (31 checks), plus `dev-tests/sharebook.mjs` end to end in a browser — owner shares, a member of another ฝ่าย opens it read-only, the same address pasted into the search box opens it, and a visitor signed in to nothing books a slot, is emailed a code, and cancels from the email.
+
 ## 2026-11-10 — the list stops crushing its own titles · version `2026-11-10a`
 
 Delivered as the changed files only (`public/theme.css` plus the three version strings), not a full zip.

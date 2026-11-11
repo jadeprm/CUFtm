@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-10a';
+  var APP_VERSION = '2026-11-11a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1198,6 +1198,200 @@
     load();
   }
 
+
+  /* ======================================================================
+     The public booking page — somebody with no account at all
+     ====================================================================== */
+
+  /**
+   * #/book/<token> — a visitor picking a time out of somebody's office hours.
+   *
+   * Rendered before anything else and without a session, because the person
+   * reading it has no account and never will. It borrows the gate view, which
+   * is the app's one full-page layout with no shell around it: no sidebar, no
+   * bell, nothing to click back into. Everything shown comes from the public
+   * half of /api/calendar — open slots and whether each is still free, and
+   * nothing whatever about what fills the rest of the host's week.
+   */
+  function renderPublicBooking(token) {
+    var box = h('div', { class: 'pub-book' }, [h('p', { class: 'muted-line', text: t('loading') })]);
+    showGate([box]);
+
+    var state = { data: null, slot: null, name: '', email: '', note: '' };
+
+    function fail(message) {
+      clear(box);
+      box.appendChild(h('h1', { text: t('bookPublicTitle') }));
+      box.appendChild(h('div', { class: 'notice err', text: message }));
+    }
+
+    function head() {
+      var who = state.data.host;
+      return h('div', { class: 'pb-head' }, [
+        h('h1', { text: t('bookPublicTitle') }),
+        h('p', { class: 'pb-who' }, [
+          h('b', { text: who.name }),
+          who.position ? h('small', { text: who.position }) : null,
+        ].filter(Boolean)),
+      ]);
+    }
+
+    /** The open slots, by day. Taken ones are shown and not offered. */
+    function drawSlots() {
+      clear(box);
+      box.appendChild(head());
+
+      if (!state.data.canBook) {
+        box.appendChild(h('div', { class: 'notice warn', text: t('bookPublicNoMail') }));
+        return;
+      }
+
+      var free = state.data.slots;
+      if (!free.length) {
+        box.appendChild(h('p', { class: 'muted-line', text: t('bookPublicNone') }));
+        return;
+      }
+
+      box.appendChild(h('p', { class: 'hint', text: t('bookPublicPick') }));
+      var days = [];
+      free.forEach(function (sl) {
+        var day = days.filter(function (d) { return d.on === sl.on; })[0];
+        if (!day) { day = { on: sl.on, slots: [] }; days.push(day); }
+        day.slots.push(sl);
+      });
+
+      days.forEach(function (day) {
+        box.appendChild(h('div', { class: 'pb-day' }, [
+          h('h3', { text: whenWording(day.on) }),
+          h('div', { class: 'pb-slots' }, day.slots.map(function (sl) {
+            return h('button', {
+              type: 'button', class: 'pb-slot' + (sl.taken ? ' taken' : ''),
+              disabled: sl.taken,
+              title: sl.taken ? t('bookPublicTaken') : (sl.place || ''),
+              onclick: function () { state.slot = sl; drawForm(); },
+            }, [h('b', { text: sl.at }), h('small', { text: '–' + sl.to })]);
+          })),
+        ]));
+      });
+    }
+
+    /** Who are you, and how do we reach you. */
+    function drawForm() {
+      clear(box);
+      box.appendChild(head());
+      var sl = state.slot;
+      box.appendChild(h('div', { class: 'pb-chosen' }, [
+        h('b', { text: whenWording(sl.on, sl.at, sl.to) }),
+        sl.place ? h('small', { text: sl.place }) : null,
+      ].filter(Boolean)));
+
+      var name = h('input', { type: 'text', maxlength: '120', value: state.name, placeholder: t('bookPublicNameHint') });
+      var email = h('input', { type: 'email', maxlength: '200', value: state.email, placeholder: 'you@example.com' });
+      var note = h('textarea', { rows: '2', maxlength: '1000', placeholder: t('bookPublicNoteHint') });
+      note.value = state.note;
+      var n = gateNotice();
+      var go = h('button', { type: 'submit', class: 'btn primary', text: t('bookPublicSendCode') });
+
+      box.appendChild(h('form', { onsubmit: function (e) {
+        e.preventDefault();
+        state.name = name.value.trim();
+        state.email = email.value.trim();
+        state.note = note.value;
+        if (!state.name) { gateSay(n, t('bookPublicNameNeeded')); name.focus(); return; }
+        go.disabled = true;
+        api('/api/calendar?book=' + encodeURIComponent(token) + '&do=code', {
+          method: 'POST', body: { name: state.name, email: state.email },
+        }).then(function () { drawCode(); })
+          .catch(function (err) { go.disabled = false; gateSay(n, errText(err.code)); });
+      } }, [
+        n,
+        field(t('bookPublicName'), name),
+        field(t('bookPublicEmail'), email),
+        h('p', { class: 'hint', text: t('bookPublicWhyEmail') }),
+        field(t('bookPublicNote'), note),
+        h('div', { class: 'share-acts' }, [
+          go,
+          h('button', { type: 'button', class: 'btn', text: t('back'), onclick: drawSlots }),
+        ]),
+      ]));
+    }
+
+    /** The six digits, then the booking is written. */
+    function drawCode() {
+      clear(box);
+      box.appendChild(head());
+      box.appendChild(codeStep({
+        title: t('bookPublicCodeTitle'),
+        sent: t('regCodeSent').replace('%s', state.email),
+        resendUrl: '/api/calendar?book=' + encodeURIComponent(token) + '&do=code',
+        resendBody: function () { return { name: state.name, email: state.email }; },
+        verifyUrl: '/api/calendar?book=' + encodeURIComponent(token) + '&do=confirm',
+        verifyBody: function (code) {
+          return {
+            name: state.name, email: state.email, code: code,
+            on: state.slot.on, at: state.slot.at, note: state.note,
+          };
+        },
+        done: function (d) { drawDone(d); },
+        extra: [h('button', { type: 'button', class: 'link', text: t('back'), onclick: drawForm })],
+      }));
+    }
+
+    function drawDone(d) {
+      clear(box);
+      box.appendChild(head());
+      box.appendChild(h('div', { class: 'notice ok', text: t('bookPublicDone') }));
+      box.appendChild(h('div', { class: 'pb-chosen' }, [
+        h('b', { text: whenWording(d.slot.on, d.slot.at, d.slot.to) }),
+        d.slot.place ? h('small', { text: d.slot.place }) : null,
+      ].filter(Boolean)));
+      box.appendChild(h('p', { class: 'hint', text: t('bookPublicDoneMail') }));
+    }
+
+    api('/api/calendar?book=' + encodeURIComponent(token))
+      .then(function (d) { state.data = d; drawSlots(); })
+      .catch(function (err) { fail(err.code === 'NO_SUCH_PAGE' ? t('bookPublicGone') : errText(err.code)); });
+  }
+
+  /**
+   * The two addresses that belong to somebody with no account.
+   *
+   * Checked on arrival AND on every hash change, because the second of them
+   * is reached from the first: a visitor who books is sitting on #/book/… and
+   * then follows the cancel link out of their email into the same tab, which
+   * changes the hash without loading anything. Without this they would land
+   * on an app that wants them to sign in.
+   */
+  function publicRouteNow() {
+    return (location.hash || '').match(/^#\/(book|unbook)\/([A-Za-z0-9_-]{16,64})$/);
+  }
+
+  function openPublicRoute() {
+    var route = publicRouteNow();
+    if (!route) return false;
+    ensureLang(S.lang, function () {
+      if (route[1] === 'book') renderPublicBooking(route[2]);
+      else renderGuestCancel(route[2]);
+    });
+    return true;
+  }
+
+  /** #/unbook/<token> — the link in the visitor's confirmation email. */
+  function renderGuestCancel(token) {
+    var box = h('div', { class: 'pub-book' });
+    showGate([box]);
+    function draw(kids) { clear(box); box.appendChild(h('h1', { text: t('bookingCancel') })); kids.forEach(function (k) { box.appendChild(k); }); }
+    var go = h('button', { class: 'btn danger', text: t('bookPublicCancelGo'), onclick: function () {
+      go.disabled = true;
+      api('/api/calendar?unbook=' + encodeURIComponent(token), { method: 'POST' })
+        .then(function () { draw([h('div', { class: 'notice ok', text: t('bookPublicCancelled') })]); })
+        .catch(function (err) {
+          draw([h('div', { class: 'notice err', text: err.code === 'NO_SUCH_APPOINTMENT' ? t('bookPublicCancelGone') : errText(err.code) })]);
+        });
+    } });
+    draw([h('p', { class: 'hint', text: t('bookPublicCancelSure') }), go]);
+  }
+
   /* ======================================================================
      Shell
      ====================================================================== */
@@ -1842,7 +2036,9 @@
   }
 
   window.addEventListener('hashchange', function () {
-    routeFromHash(); renderShell(); renderPage(); flushPendingTask();
+    // A visitor with no account moving between the public pages.
+    if (openPublicRoute()) return;
+    routeFromHash(); renderShell(); renderPage(); flushPendingTask(); flushPendingShare();
   });
   function routeFromHash() {
     var raw = (location.hash || '#/home').replace('#/', '');
@@ -1869,6 +2065,20 @@
       S.openDocId = decodeURIComponent(raw.slice(2));
       location.replace('#/docs');
       S.page = 'docs';
+      return;
+    }
+
+    /**
+     * #/s/<token> — a share link somebody was sent.
+     *
+     * Remembered rather than followed here, for the same reason as a task
+     * link below: this runs before the first load has finished. Whoever
+     * finishes loading opens it.
+     */
+    if (raw.indexOf('s/') === 0) {
+      S.openShareToken = decodeURIComponent(raw.slice(2));
+      location.replace('#/work');
+      S.page = 'work';
       return;
     }
 
@@ -1960,6 +2170,138 @@
       .catch(function () { S.openTaskId = null; alert(t('taskNotFound')); });
   }
 
+  /**
+   * Opens whatever a share link points at.
+   *
+   * The thing is fetched by the link rather than looked for in the lists
+   * already loaded, because the whole point of a share link is that it may
+   * be something this person's own pages never show them. What comes back
+   * is put into the list all the same, so every button, badge and colour on
+   * the dialog finds what it expects — and dropped again on the next load,
+   * since nothing else here should start showing it.
+   */
+  /** The token in a pasted share link, or null if it is ordinary text. */
+  function shareTokenIn(value) {
+    var m = String(value || '').trim().match(/#\/s\/([A-Za-z0-9_-]{16,64})$/);
+    return m ? m[1] : null;
+  }
+
+  function flushPendingShare() {
+    var token = S.openShareToken;
+    if (!token) return;
+    S.openShareToken = null;
+
+    api('/api/meta?do=share&t=' + encodeURIComponent(token)).then(function (d) {
+      var item = d.item;
+      if (!item) { alert(t('shareGone')); return; }
+      var into = { task: 'tasks', event: 'events', meeting: 'meetings' }[d.kind];
+      if (into) {
+        var list = (S[into] || []).filter(function (x) { return x.id !== item.id; });
+        list.push(item);
+        S[into] = list;
+      }
+      renderPage();
+      if (d.kind === 'task') openTask(item);
+      else if (d.kind === 'event') openEvent(item);
+      else openMeeting(item);
+    }).catch(function (err) {
+      alert(err.code === 'NO_SUCH_SHARE' ? t('shareGone') : errText(err.code));
+    });
+  }
+
+
+
+  /* ======================================================================
+     Sharing one thing with somebody who cannot see it
+     ====================================================================== */
+
+  /**
+   * A link that opens this งาน / ประชุม / กิจกรรม for any member who is
+   * signed in — see lib/share.js for why read-only is the point rather than
+   * a limitation.
+   *
+   * The dialog is deliberately dull: the address, a copy button, and a way
+   * to stop it working. The one thing it insists on saying is WHO can open
+   * it, because "share" means different things in different apps and a
+   * person about to paste a link into a group chat deserves to know which
+   * one this is.
+   */
+  function openShareDialog(kind, id) {
+    var box = h('div', { class: 'share-box' }, [h('p', { class: 'muted-line', text: t('loading') })]);
+    var veil = formModal(t('shareTitle'), [box], []);
+
+    function draw(d) {
+      clear(box);
+      box.appendChild(h('p', { class: 'hint', text: t('shareWho') }));
+
+      if (!d.url) {
+        if (!d.mayShare) {
+          box.appendChild(h('p', { class: 'muted-line', text: t('shareNotYours') }));
+          return;
+        }
+        box.appendChild(h('button', {
+          class: 'btn primary', text: t('shareStart'),
+          onclick: function (e) {
+            e.currentTarget.disabled = true;
+            api('/api/meta?do=share', { method: 'POST', body: { kind: kind, id: id } })
+              .then(function (got) { draw({ url: got.url, mayShare: true }); })
+              .catch(function (err) { e.currentTarget.disabled = false; fail(errText(err.code)); });
+          },
+        }));
+        return;
+      }
+
+      var field = h('input', { type: 'text', readonly: true, value: d.url, class: 'share-url' });
+      field.addEventListener('focus', function () { field.select(); });
+      box.appendChild(field);
+
+      var copy = h('button', { class: 'btn primary', text: t('copyLink'), onclick: function () {
+        (navigator.clipboard ? navigator.clipboard.writeText(d.url) : Promise.reject())
+          .then(function () {
+            copy.textContent = t('codeCopied');
+            setTimeout(function () { copy.textContent = t('copyLink'); }, 1400);
+          })
+          .catch(function () { field.focus(); field.select(); });
+      } });
+      box.appendChild(h('div', { class: 'share-acts' }, [
+        copy,
+        d.mayShare ? h('button', { class: 'btn danger', text: t('shareStop'), onclick: function (e) {
+          if (!confirm(t('shareStopSure'))) return;
+          e.currentTarget.disabled = true;
+          api('/api/meta?do=share&kind=' + encodeURIComponent(kind) + '&id=' + encodeURIComponent(id), { method: 'DELETE' })
+            .then(function () { draw({ url: null, mayShare: true }); })
+            .catch(function (err) { e.currentTarget.disabled = false; fail(errText(err.code)); });
+        } }) : null,
+      ].filter(Boolean)));
+
+      /**
+       * iPhones cannot be sent into an installed web app by a link — iOS
+       * opens every link in Safari, where the person is signed in separately.
+       * Saying so here, next to the link, is kinder than letting them find
+       * out by being asked to sign in again in a browser they never use.
+       */
+      box.appendChild(h('p', { class: 'hint', text: t('shareIosNote') }));
+    }
+
+    function fail(message) {
+      clear(box);
+      box.appendChild(h('div', { class: 'notice err', text: message }));
+    }
+
+    api('/api/meta?do=share&kind=' + encodeURIComponent(kind) + '&id=' + encodeURIComponent(id))
+      .then(draw)
+      .catch(function (err) { fail(errText(err.code)); });
+    return veil;
+  }
+
+  /** The button that opens it. Null when this person may not share. */
+  function shareButton(kind, id, mayShare) {
+    if (!mayShare) return null;
+    return h('button', {
+      class: 'btn', title: t('shareTitle'),
+      onclick: function () { openShareDialog(kind, id); },
+    }, [icon('link'), h('span', { text: t('share') })]);
+  }
 
   /* ======================================================================
      Documents for signing
@@ -4301,6 +4643,23 @@
       placeholder: t('searchPlaceholder'), 'aria-label': t('searchPlaceholder'),
     });
     searchBox.addEventListener('input', function () {
+      /**
+       * A share link pasted in here opens, rather than being searched for.
+       *
+       * This is the way in on an iPhone. iOS sends every link to Safari, so
+       * somebody who keeps the app on their home screen cannot be taken
+       * there by one — but they can copy it, open the app and paste it, and
+       * the box they would naturally paste into is this one. Searching for
+       * the address itself would only ever find nothing.
+       */
+      var shared = shareTokenIn(searchBox.value);
+      if (shared) {
+        searchBox.value = '';
+        S.q = '';
+        S.openShareToken = shared;
+        flushPendingShare();
+        return;
+      }
       S.q = searchBox.value;
       clearTimeout(searchBox._t);
       // Redrawing on every keystroke loses focus and feels jumpy; a short
@@ -5833,6 +6192,9 @@
             href: googleCalUrl(task), text: '📅 ' + (isPhone() ? 'Google Calendar' : t('addToCalendar')),
           }));
         }
+        // A link for somebody in another ฝ่าย who cannot see this task.
+        var shareTask = shareButton('task', task.id, mayEdit);
+        if (shareTask) footer.appendChild(shareTask);
         return;
       }
 
@@ -6737,6 +7099,8 @@
             onclick: function () { mode = 'edit'; paintEvent(); },
           }));
         }
+        var shareEvent = !isNew && shareButton('event', event.id, mayEdit);
+        if (shareEvent) footer.appendChild(shareEvent);
         return;
       }
       footer.appendChild(h('button', {
@@ -10643,6 +11007,10 @@
     footer.appendChild(editBtn);
     footer.appendChild(saveBtn);
     footer.appendChild(delBtn);
+    if (!isNew) {
+      var shareMtg = shareButton('meeting', meeting.id, mayEdit);
+      if (shareMtg) footer.appendChild(shareMtg);
+    }
     footer.appendChild(h('button', { class: 'btn', text: t('close'),
       onclick: function () { veil.remove(); } }));
 
@@ -12846,6 +13214,71 @@
     return minutesOfClock(p);
   }
 
+
+  /**
+   * The switch that lets people outside the committee book a time.
+   *
+   * Off until it is turned on, and its address is a token rather than a
+   * username — see lib/schedule.js. The wording here has one job: to make
+   * sure nobody turns this on without knowing that the address works for
+   * anybody who has it, with no sign-in at all.
+   */
+  function publicOfficeBox() {
+    var box = h('div', { class: 'pub-oh' });
+
+    function draw(state) {
+      clear(box);
+      var on = Boolean(state.public && state.token);
+      box.appendChild(h('label', { class: 'pub-switch' }, [
+        h('input', {
+          type: 'checkbox', checked: on,
+          onchange: function (e) {
+            var want = e.currentTarget.checked;
+            if (want && !confirm(t('officePublicSure'))) { e.currentTarget.checked = false; return; }
+            e.currentTarget.disabled = true;
+            api('/api/calendar?do=office-public', { method: 'POST', body: { public: want } })
+              .then(draw)
+              .catch(function (err) { alert(errText(err.code)); draw(state); });
+          },
+        }),
+        h('span', { text: t('officePublic') }),
+      ]));
+      box.appendChild(h('p', { class: 'hint', text: t('officePublicWhy') }));
+      if (!on) return;
+
+      var link = location.origin + '/#/book/' + state.token;
+      var field = h('input', { type: 'text', readonly: true, value: link, class: 'share-url' });
+      field.addEventListener('focus', function () { field.select(); });
+      box.appendChild(field);
+      var copy = h('button', { class: 'btn sm primary', text: t('copyLink'), onclick: function () {
+        (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject())
+          .then(function () {
+            copy.textContent = t('codeCopied');
+            setTimeout(function () { copy.textContent = t('copyLink'); }, 1400);
+          })
+          .catch(function () { field.focus(); field.select(); });
+      } });
+      box.appendChild(h('div', { class: 'share-acts' }, [
+        copy,
+        h('a', { class: 'btn sm', href: link, target: '_blank', rel: 'noopener', text: t('officePublicOpen') }),
+        /**
+         * A new address, when an old one has gone somewhere it should not
+         * have. Says plainly that the old one stops working, because that is
+         * the entire effect and it cannot be undone.
+         */
+        h('button', { class: 'btn sm danger', text: t('officePublicNew'), onclick: function (e) {
+          if (!confirm(t('officePublicNewSure'))) return;
+          e.currentTarget.disabled = true;
+          api('/api/calendar?do=office-public', { method: 'POST', body: { public: true, reissue: true } })
+            .then(draw).catch(function (err) { e.currentTarget.disabled = false; alert(errText(err.code)); });
+        } }),
+      ]));
+    }
+
+    draw({ public: S.sched && S.sched.officePublic, token: S.sched && S.sched.officeToken });
+    return box;
+  }
+
   /** One day, as a list down the page: all-day things first, then by the clock. */
   function dayTimeline(items, iso) {
     var mine = items.filter(function (it) { return it.on === iso; });
@@ -12957,6 +13390,7 @@
           btn.textContent = t('codeCopied'); setTimeout(function () { btn.textContent = t('officeCopyLink'); }, 1400);
         }).catch(function () { prompt(t('officeCopyLink'), link); });
       } }) : null,
+      oh.length ? publicOfficeBox() : null,
     ]));
 
     // Legend.
@@ -13586,6 +14020,7 @@
       renderPage();
       // The list is loaded by now, so a link followed from LINE can open.
       flushPendingTask();
+      flushPendingShare();
       refreshSubscription();
       showPending();
       // After whatever they came for has had its turn — see maybeShowGuide.
@@ -13621,7 +14056,13 @@
    * holding page that appears because a request failed would lock the
    * committee out of their own system.
    */
-  Promise.all([
+  /**
+   * Two addresses that belong to somebody with no account, answered before
+   * the app asks anybody to sign in: the public booking page and the cancel
+   * link in its confirmation email. Both are full-page and stop here.
+   */
+  if (publicRouteNow()) openPublicRoute();
+  else Promise.all([
     api('/api/auth'),
     api('/api/meta').catch(function () { return {}; }),
   ]).then(function (res) {

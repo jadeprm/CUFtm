@@ -189,7 +189,7 @@ const withTags = (tasks, by) =>
   tasks.map((task) => ({ ...task, tags: (by.get(task.id) || []).slice().sort() }));
 
 /** Stamps each task with what this person is allowed to do to it. */
-const withRights = (me, tasks) =>
+export const withRights = (me, tasks) =>
   tasks.map((task) => ({
     ...task,
     mayEdit: canEditTask(me, task),

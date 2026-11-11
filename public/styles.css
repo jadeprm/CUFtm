@@ -2045,3 +2045,26 @@ button.pressed { opacity: .6; cursor: progress; }
 .hook-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: .85rem; }
 .hook-k { color: var(--ink-soft); min-width: 10rem; }
 .hook-v { word-break: break-all; font-size: .8rem; }
+
+/* The share dialog — see openShareDialog in app.js. */
+.share-box { display: grid; gap: 10px; }
+.share-url { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); color: var(--ink); }
+.share-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* The public office-hours switch, and the page a visitor sees. */
+.pub-oh { margin-top: 10px; display: grid; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.pub-switch { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; }
+.pub-book { display: grid; gap: 14px; }
+.pb-head h1 { margin: 0 0 2px; }
+.pb-who { margin: 0; display: flex; gap: 8px; align-items: baseline; }
+.pb-who small { color: var(--ink-soft); }
+.pb-day h3 { margin: 14px 0 6px; font-size: 14px; }
+.pb-slots { display: flex; flex-wrap: wrap; gap: 8px; }
+.pb-slot { display: inline-flex; gap: 4px; align-items: baseline; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; }
+.pb-slot:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.pb-slot small { color: var(--ink-soft); font-size: 11.5px; }
+.pb-slot.taken { opacity: .45; cursor: not-allowed; text-decoration: line-through; }
+.pb-chosen { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--line-soft); }
