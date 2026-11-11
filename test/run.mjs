@@ -9709,5 +9709,221 @@ ok('...measured on the list itself, not the window, so an open sidebar counts',
 ok('...and the column headings go with the columns',
   /@container glist \(max-width: 800px\) \{[\s\S]*?\.glist-head \{ display: none; \}/.test(themeCss));
 
+// ---- §114 share links ----------------------------------------------------
+head('114. A link that opens one task, meeting or event for any member');
+
+r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'content', body: {
+  title: 'งานลับเฉพาะฝ่ายเนื้อหา', department: 'content', notify: [] } });
+const shTask = r.data.task.id;
+ok('a task is filed into one ฝ่าย', r.status === 201, String(r.status));
+
+// Somebody in another ฝ่าย with no business seeing it.
+r = await call(tasksApi, '/api/tasks', { as: 'merch' });
+const sawBefore = r.data.tasks.some((x) => x.id === shTask);
+
+r = await call(metaApi, '/api/meta?do=share', { method: 'POST', as: 'merch', body: { kind: 'task', id: shTask } });
+ok('somebody who does not run the task cannot share it', r.status === 403 && r.data.error === 'NOT_ALLOWED', JSON.stringify(r.data));
+
+r = await call(metaApi, '/api/meta?do=share', { method: 'POST', as: 'content', body: { kind: 'task', id: shTask } });
+ok('its owner can', r.status === 201 && /#\/s\//.test(r.data.url || ''), JSON.stringify(r.data).slice(0, 120));
+const shUrl = r.data.url;
+const shToken = shUrl.split('#/s/')[1];
+ok('...and the token is long enough not to be guessed', shToken.length >= 16, shToken);
+
+r = await call(metaApi, '/api/meta?do=share', { method: 'POST', as: 'content', body: { kind: 'task', id: shTask } });
+ok('sharing again hands back the SAME address, not a new one', r.data.url === shUrl, r.data.url);
+
+r = await call(metaApi, `/api/meta?do=share&t=${encodeURIComponent(shToken)}`, { as: 'merch' });
+ok('a member from another ฝ่าย can open the link', r.status === 200 && r.data.item && r.data.item.id === shTask,
+  JSON.stringify(r.data).slice(0, 120));
+ok('...and it is only readable: no edit, no delete, no status',
+  r.data.item.mayEdit === false && r.data.item.mayDelete === false && r.data.item.maySetStatus === false,
+  JSON.stringify({ e: r.data.item.mayEdit, d: r.data.item.mayDelete, s: r.data.item.maySetStatus }));
+ok('...and the answer says it was reached through the link rather than by right',
+  r.data.viaShare === !sawBefore);
+
+r = await call(tasksApi, '/api/tasks', { method: 'PATCH', as: 'merch', body: { id: shTask, title: 'แอบแก้' } });
+ok('seeing it through a link does not let them change it', r.status === 403, String(r.status));
+
+const shAnon = await metaApi(makeRequest(`/api/meta?do=share&t=${encodeURIComponent(shToken)}`));
+ok('somebody with no account gets nothing at all', shAnon.status === 401, String(shAnon.status));
+
+r = await call(metaApi, `/api/meta?do=share&t=${encodeURIComponent('x'.repeat(22))}`, { as: 'admin' });
+ok('an invented token is simply not a link', r.status === 404 && r.data.error === 'NO_SUCH_SHARE');
+
+// Meetings and events share the same machinery.
+r = await call(eventsApi, '/api/events?do=meeting', { method: 'POST', as: 'admin', body: {
+  title: 'ประชุมที่แชร์ได้', meetsOn: nextMonday, meetsAt: '10:00', people: ['Jade_Pres'] } });
+const shMeeting = r.data.id;
+ok('a meeting exists to share', Boolean(shMeeting), JSON.stringify(r.data).slice(0, 100));
+r = await call(metaApi, '/api/meta?do=share', { method: 'POST', as: 'admin', body: { kind: 'meeting', id: shMeeting } });
+ok('a meeting can be shared', r.status === 201 && Boolean(r.data.url));
+const shMtgToken = r.data.url.split('#/s/')[1];
+r = await call(metaApi, `/api/meta?do=share&t=${encodeURIComponent(shMtgToken)}`, { as: 'member' });
+ok('...and somebody not invited can read it, agenda and all',
+  r.status === 200 && r.data.kind === 'meeting' && Array.isArray(r.data.item.agenda), JSON.stringify(r.data).slice(0, 110));
+ok('...but is not handed the organiser’s buttons', r.data.item.mayEdit === false);
+
+r = await call(metaApi, '/api/meta?do=share', { method: 'POST', as: 'admin', body: { kind: 'nonsense', id: shTask } });
+ok('a kind the app does not have is refused', r.status === 400 && r.data.error === 'BAD_SHARE_TARGET');
+
+// Turning it off.
+r = await call(metaApi, `/api/meta?do=share&kind=task&id=${encodeURIComponent(shTask)}`, { method: 'DELETE', as: 'merch' });
+ok('somebody else cannot turn the link off either', r.status === 403);
+r = await call(metaApi, `/api/meta?do=share&kind=task&id=${encodeURIComponent(shTask)}`, { method: 'DELETE', as: 'content' });
+ok('its owner can', r.status === 200);
+r = await call(metaApi, `/api/meta?do=share&t=${encodeURIComponent(shToken)}`, { as: 'merch' });
+ok('...and the address stops working at once', r.status === 404 && r.data.error === 'NO_SUCH_SHARE');
+r = await call(metaApi, '/api/meta?do=share', { method: 'POST', as: 'content', body: { kind: 'task', id: shTask } });
+ok('sharing again makes a NEW address, not the retired one', r.status === 201 && r.data.url !== shUrl);
+
+// A thing that is gone takes its link with it.
+const shDead = r.data.url.split('#/s/')[1];
+await call(tasksApi, `/api/tasks?id=${encodeURIComponent(shTask)}`, { method: 'DELETE', as: 'content' });
+r = await call(metaApi, `/api/meta?do=share&t=${encodeURIComponent(shDead)}`, { as: 'admin' });
+ok('a link to something deleted answers "no such link", not a crash', r.status === 404);
+
+const shSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the page offers the link from the task, meeting and event dialogs',
+  /shareButton\('task'/.test(shSrc) && /shareButton\('meeting'/.test(shSrc) && /shareButton\('event'/.test(shSrc));
+ok('a share link pasted into the search box opens it — the way in on an iPhone',
+  /shareTokenIn\(searchBox\.value\)/.test(shSrc));
+
+// ---- §115 office hours the public may book -------------------------------
+head('115. Somebody with no account books a time, having proved their email');
+
+process.env.RESEND_API_KEY = 're_test_key';
+mailSent.length = 0;
+/**
+ * With mail configured the email rule is live, so the host needs a verified
+ * address of their own before they can sign in at all — see §104. The guest
+ * never has an account and proves their address a different way, which is
+ * the whole point of this section.
+ */
+await sql`UPDATE users SET email = 'oper@fair.test', email_verified_at = now()
+          WHERE username = 'Ikkew_HeadOper1'`;
+await call(authApi, '/api/auth?do=login', { method: 'POST',
+  body: { username: 'Ikkew_HeadOper1', password: 'editorPw2' }, remember: 'oper' });
+const obMon = (() => { const d = new Date(nextMonday + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 14); return d.toISOString().slice(0, 10); })();
+r = await sched('/api/calendar?do=office', { method: 'PUT', as: 'oper', body: { windows: [
+  { day: 'mon', from: '13:00', to: '15:00', slot: 30, place: 'ห้องประชุม 2' }] } });
+ok('a ประธานฝ่าย opens two hours on Mondays', r.status === 200, JSON.stringify(r.data).slice(0, 100));
+
+r = await sched('/api/calendar?do=office', { as: 'oper' });
+ok('the public page is off until it is turned on', r.data.public === false && r.data.token === null,
+  JSON.stringify({ p: r.data.public, t: r.data.token }));
+
+const obAnonOff = await calApi(makeRequest('/api/calendar?book=' + 'z'.repeat(22)));
+ok('an invented address is not a page', obAnonOff.status === 404);
+
+r = await sched('/api/calendar?do=office-public', { method: 'POST', as: 'oper', body: { public: true } });
+ok('turning it on issues an address', r.status === 200 && r.data.public === true && String(r.data.token).length >= 16);
+const obToken = r.data.token;
+ok('...which is not their username', obToken.indexOf('Ikkew') === -1 && obToken.indexOf('oper') === -1);
+
+r = await sched('/api/calendar?do=office-public', { method: 'POST', as: 'oper', body: { public: true } });
+ok('pressing it again keeps the SAME address, so sent links keep working', r.data.token === obToken);
+
+/** The visitor's view: no cookie at all, the way a stranger arrives. */
+const obPage = async (path, body) => {
+  const res = await calApi(new Request('https://app.test' + path, body === undefined
+    ? {}
+    : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+  const text = await res.text();
+  let data = {}; try { data = JSON.parse(text); } catch {}
+  return { status: res.status, data };
+};
+
+let ob = await obPage('/api/calendar?book=' + obToken);
+ok('a stranger, signed in to nothing, gets the page', ob.status === 200, String(ob.status));
+ok('...with the host’s name and the hours they opened',
+  ob.data.host.name && ob.data.windows.length === 1 && ob.data.windows[0].from === '13:00',
+  JSON.stringify(ob.data.host) + JSON.stringify(ob.data.windows));
+ok('...and the open slots, in half hours', ob.data.slots.length >= 4 && ob.data.slots[0].to > ob.data.slots[0].at,
+  JSON.stringify(ob.data.slots.slice(0, 2)));
+ok('...saying only WHEN, never what: no title, note or name anywhere in it',
+  !/title|note|with|username|owner/.test(JSON.stringify(ob.data.slots)), JSON.stringify(ob.data.slots[0]));
+
+const obSlot = ob.data.slots.find((x) => x.on === obMon && !x.taken) || ob.data.slots.find((x) => !x.taken);
+
+ob = await obPage(`/api/calendar?book=${obToken}&do=confirm`, {
+  name: 'คุณสมชาย', email: 'somchai@outside.test', code: '000000', on: obSlot.on, at: obSlot.at });
+ok('a booking without a verified email is refused', ob.status === 400 && /CODE_/.test(ob.data.error), JSON.stringify(ob.data));
+
+ob = await obPage(`/api/calendar?book=${obToken}&do=code`, { name: 'คุณสมชาย', email: 'not-an-email' });
+ok('...and so is an address that is not one', ob.status === 400 && ob.data.error === 'BAD_EMAIL');
+ob = await obPage(`/api/calendar?book=${obToken}&do=code`, { name: '', email: 'somchai@outside.test' });
+ok('...and a booking with no name at all', ob.status === 400 && ob.data.error === 'NAME_REQUIRED');
+
+mailSent.length = 0;
+ob = await obPage(`/api/calendar?book=${obToken}&do=code`, { name: 'คุณสมชาย', email: 'somchai@outside.test' });
+ok('the visitor is sent a six-digit code', ob.status === 200 && mailSent.length === 1 &&
+  String(mailSent[0].to) === 'somchai@outside.test', JSON.stringify(mailSent.at(-1) || {}).slice(0, 100));
+const obCode = emCode();
+
+ob = await obPage(`/api/calendar?book=${obToken}&do=confirm`, {
+  name: 'คุณสมชาย', email: 'somchai@outside.test', code: '111111', on: obSlot.on, at: obSlot.at });
+ok('the wrong code books nothing', ob.status === 400 && ob.data.error === 'CODE_WRONG');
+
+mailSent.length = 0;
+ob = await obPage(`/api/calendar?book=${obToken}&do=confirm`, {
+  name: 'คุณสมชาย', email: 'somchai@outside.test', code: obCode,
+  on: obSlot.on, at: obSlot.at, note: 'ขอคุยเรื่องสปอนเซอร์' });
+ok('the right one books the slot', ob.status === 201 && ob.data.slot.at === obSlot.at, JSON.stringify(ob.data).slice(0, 140));
+ok('...and the visitor is sent the details and a way out', mailSent.length === 1 &&
+  /#\/unbook\//.test(mailSent[0].text), (mailSent[0] || {}).text?.slice(0, 160));
+const obCancel = /#\/unbook\/([A-Za-z0-9_-]+)/.exec(mailSent[0].text)[1];
+
+r = await sched(`/api/calendar?do=schedule&from=${obSlot.on}&to=${obSlot.on}`, { as: 'oper' });
+const obMine = r.data.appointments.filter((a) => a.kind === 'booking');
+ok('it is on the host’s own schedule', obMine.length === 1 && obMine[0].at === obSlot.at, JSON.stringify(obMine));
+ok('...carrying the visitor’s name', /สมชาย/.test(obMine[0].title), obMine[0].title);
+const [obBell] = await sql`SELECT title FROM notifications WHERE username = 'Ikkew_HeadOper1' ORDER BY created_at DESC LIMIT 1`;
+ok('...and the host is told', /นัดหมายใหม่/.test(obBell?.title || ''), obBell?.title);
+
+ob = await obPage('/api/calendar?book=' + obToken);
+ok('the slot now shows as taken to the next visitor',
+  (ob.data.slots.find((x) => x.on === obSlot.on && x.at === obSlot.at) || {}).taken === true);
+ok('...and still says nothing about who took it or why',
+  !/somchai|สมชาย|booking|busy/.test(JSON.stringify(ob.data.slots)), JSON.stringify(ob.data.slots.find((x) => x.taken)));
+
+ob = await obPage(`/api/calendar?book=${obToken}&do=code`, { name: 'คนที่สอง', email: 'second@outside.test' });
+const obCode2 = emCode();
+ob = await obPage(`/api/calendar?book=${obToken}&do=confirm`, {
+  name: 'คนที่สอง', email: 'second@outside.test', code: obCode2, on: obSlot.on, at: obSlot.at });
+ok('a second visitor cannot book over the first', ob.status === 409 && ob.data.error === 'SLOT_TAKEN', JSON.stringify(ob.data));
+
+ob = await obPage(`/api/calendar?unbook=${obCancel}`, {});
+ok('the visitor’s own link cancels it', ob.status === 200, JSON.stringify(ob.data));
+r = await sched(`/api/calendar?do=schedule&from=${obSlot.on}&to=${obSlot.on}`, { as: 'oper' });
+ok('...and it leaves the host’s schedule', !r.data.appointments.some((a) => a.kind === 'booking'));
+ob = await obPage(`/api/calendar?unbook=${obCancel}`, {});
+ok('...and cancelling twice is simply nothing to cancel', ob.status === 404);
+
+// Switching off, and the new-address button.
+r = await sched('/api/calendar?do=office-public', { method: 'POST', as: 'oper', body: { public: false } });
+ok('the host can switch the page off', r.data.public === false);
+ob = await obPage('/api/calendar?book=' + obToken);
+ok('...and the address stops answering', ob.status === 404);
+r = await sched('/api/calendar?do=office-public', { method: 'POST', as: 'oper', body: { public: true } });
+ok('switching back on does NOT silently change the address', r.data.token === obToken);
+r = await sched('/api/calendar?do=office-public', { method: 'POST', as: 'oper', body: { public: true, reissue: true } });
+ok('asking for a new one does', r.data.token !== obToken && String(r.data.token).length >= 16);
+ob = await obPage('/api/calendar?book=' + obToken);
+ok('...and retires the old address immediately', ob.status === 404);
+
+delete process.env.RESEND_API_KEY;
+ob = await obPage(`/api/calendar?book=${r.data.token}&do=code`, { name: 'x', email: 'x@outside.test' });
+ok('with no mail configured the page refuses rather than taking a booking it cannot confirm',
+  ob.status === 503 && ob.data.error === 'MAIL_NOT_CONFIGURED', JSON.stringify(ob.data));
+ob = await obPage('/api/calendar?book=' + r.data.token);
+ok('...and says so on the page itself', ob.data.canBook === false);
+
+const obSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the booking page is drawn before anything asks anybody to sign in',
+  /#\\\/\(book\|unbook\)\\\//.test(obSrc) && /renderPublicBooking/.test(obSrc));
+ok('the profile card offers the switch, with what it means spelt out',
+  /publicOfficeBox\(\)/.test(obSrc) && /officePublicSure/.test(obSrc));
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
