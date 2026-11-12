@@ -2714,7 +2714,12 @@ r = await call(docsApi, '/api/documents?do=propose', {
 ok('a chain is proposed', r.status === 200, JSON.stringify(r.data).slice(0, 80));
 let roles = r.data.steps.map((s) => s.role).join(' → ');
 ok('...a department head signs their own letter, then it climbs to the director',
-  roles === 'author → director → secretary', roles);
+  roles === 'secretaryCheck → author → director → secretary', roles);
+ok('...with เลขานุการ reading it BEFORE anybody signs, and posting it at the end',
+  r.data.steps[0].role === 'secretaryCheck' &&
+  r.data.steps[0].username === r.data.steps[r.data.steps.length - 1].username,
+  r.data.steps.map((x) => x.role + ':' + x.username).join(' → '));
+ok('...and the check carries no signature of its own', r.data.steps[0].signs === false);
 
 /**
  * The director's own letter: nobody approves it, but it still carries his
@@ -2724,7 +2729,7 @@ ok('...a department head signs their own letter, then it climbs to the director'
 r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'admin', body: {} });
 roles = r.data.steps.map((s) => s.role).join(' → ');
 ok('the director gets a step to sign his own letter, then the secretary',
-  roles === 'author → secretary', roles);
+  roles === 'secretaryCheck → author → secretary', roles);
 
 head('42. Documents: uploading, and what is refused');
 
@@ -2775,9 +2780,28 @@ head('43. Documents: who may press, and in what order');
  * helps nobody. The order of the chain is unchanged: it still advances one
  * step at a time, and the step records who really pressed.
  */
+/**
+ * เลขานุการ reads it first — and that step is the one the 18-October rule
+ * does NOT open up, because a check the writer can tick is not a check.
+ */
 r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'content' });
-ok('it is waiting on the first approver', r.data.progress.length >= 3, JSON.stringify(r.data.progress.map(p => p.key)));
-ok('...and the writer, being in its chain, may deal with it', r.data.myTurn === true);
+ok('it is waiting on เลขานุการ to check it, before anybody signs',
+  r.data.progress.length >= 3 && r.data.progress.find((p) => p.state === 'waiting')?.role === 'secretaryCheck',
+  JSON.stringify(r.data.progress.map((p) => p.role + ':' + p.state)));
+ok('...and the writer may NOT tick it off for them', r.data.myTurn === false);
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'content', body: { id: docId } });
+ok('...the server refuses them too, not just the page',
+  r.status === 403 && r.data.error === 'NOT_YOUR_TURN', JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'merch', body: { id: docId } });
+ok('...and so is somebody with no part in the letter at all',
+  r.status === 403 && r.data.error === 'NOT_YOUR_TURN', JSON.stringify(r.data));
+// An admin stands in for the secretariat, which is how this works when the
+// named secretary is away.
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: docId } });
+ok('เลขานุการ (an admin standing in) checks it, and the letter moves on', r.status === 200, JSON.stringify(r.data).slice(0, 110));
+
+r = await call(docsApi, `/api/documents?id=${docId}`, { as: 'content' });
+ok('...now it is with the signers, and the writer is back in its chain', r.data.myTurn === true);
 
 // Somebody with no part in this letter still has none.
 r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'merch', body: { id: docId } });
@@ -3119,6 +3143,9 @@ r = await call(docsApi, '/api/documents?do=create', {
   },
 });
 const archId = r.data.id;
+// Twice: เลขานุการ's read-through first (an admin standing in), then the
+// director's own signature.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: archId } });
 await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: archId } });
 
 r = await call(docsApi, `/api/documents?id=${archId}`, { as: 'admin' });
@@ -3192,6 +3219,8 @@ r = await call(docsApi, '/api/documents?do=create', {
             mark: s.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
 const secondId = r.data.id;
+// เลขานุการ's read-through, then the director's signature.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: secondId } });
 await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: secondId } });
 r = await call(docsApi, `/api/documents?id=${secondId}`, { as: 'admin' });
 const sec2 = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[r.data.steps.find((s) => s.role === 'secretary').username];
@@ -3229,6 +3258,8 @@ r = await call(docsApi, '/api/documents?do=create', {
             mark: st.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null })) },
 });
 const ownId = r.data.id;
+// เลขานุการ's read-through, then the director's signature.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: ownId } });
 await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: ownId } });
 r = await call(docsApi, `/api/documents?id=${ownId}`, { as: 'admin' });
 const ownSec = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[
@@ -3295,6 +3326,9 @@ r = await call(docsApi, '/api/documents?do=create', {
 });
 const lineDocId = r.data.id;
 ok('a document is waiting on the director', Boolean(lineDocId), JSON.stringify(r.data).slice(0, 60));
+// เลขานุการ reads it before the signers now, so that step is taken here —
+// what this section is about is what the chat can do with the rest.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: lineDocId } });
 
 lineSent.length = 0;
 await lineApi(lineHook(sayToBot('Udoc1', 'เอกสาร')));
@@ -3329,7 +3363,7 @@ ok('a watcher can follow the status of every document they may see',
 
 r = await call(docsApi, `/api/documents?id=${lineDocId}`, { as: 'admin' });
 ok('it is still waiting, no approver has acted',
-  r.data.steps.filter((s) => s.role !== 'author').every((s) => s.state === 'waiting'),
+  r.data.steps.filter((s) => s.role !== 'author' && s.role !== 'secretaryCheck').every((s) => s.state === 'waiting'),
   r.data.steps.map((s) => s.role + ':' + s.state).join(' '));
 
 // Rejecting from the chat must carry a reason.
@@ -3617,11 +3651,11 @@ head('58. Short codes, and finding things by them');
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin',
   body: { title: 'งานที่มีรหัส', description: 'รายละเอียดเรื่องเวทีกลาง', notify: [] } });
 const coded = r.data.task;
-ok('a new task gets a short code', /^T\d{4}$/.test(coded.code || ''), coded.code);
+ok('a new task gets a short code', /^T\d{4,}$/.test(coded.code || ''), coded.code);
 
 r = await call(eventsApi, '/api/events', { method: 'POST', as: 'admin',
   body: { title: 'กิจกรรมที่มีรหัส', startsOn: '2026-11-25' } });
-ok('...and so does an event', /^E\d{4}$/.test(r.data.event.code || ''), r.data.event.code);
+ok('...and so does an event', /^E\d{4,}$/.test(r.data.event.code || ''), r.data.event.code);
 const eventCode = r.data.event.code;
 
 r = await call(tasksApi, '/api/tasks', { method: 'POST', as: 'admin',
@@ -3685,12 +3719,18 @@ async function toSecretary(as, body) {
     },
   });
   const id = made.data.id;
-  // Everyone above the uploader signs, until it reaches the secretary.
-  for (let guard = 0; guard < 4; guard++) {
+  /**
+   * เลขานุการ reads it, then everyone above the uploader signs, until it is
+   * back with เลขานุการ to post. The admin presses the check step: they may
+   * stand in for the secretariat, and which secretary was picked is random.
+   */
+  for (let guard = 0; guard < 6; guard++) {
     const view = (await call(docsApi, `/api/documents?id=${id}`, { as: 'admin' })).data;
     const step = view.steps.find((st) => st.state === 'waiting');
     if (!step || step.role === 'secretary') break;
-    const session = { Jade_Pres: 'admin', Kungking_HeadCon: 'content' }[step.username];
+    const session = step.role === 'secretaryCheck'
+      ? 'admin'
+      : { Jade_Pres: 'admin', Kungking_HeadCon: 'content' }[step.username];
     if (!session) break;
     await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: session, body: { id } });
   }
@@ -3905,16 +3945,29 @@ r = await call(docsApi, '/api/documents?do=create', {
 });
 const costId = r.data.id;
 
+const LINE_OF = { Jade_Pres: 'Ucost1', Sunday_Sec: 'Ucost2', Donat_Sec: 'Ucost3', Pin_Sec: 'Ucost4' };
+const waitingName = async () => (await call(docsApi, `/api/documents?id=${costId}`, { as: 'admin' }))
+  .data.steps.find((st) => st.state === 'waiting').username;
+
 let charged = lineSent.filter((m) => m.kind === 'push');
-ok('submitting charges for exactly one LINE message — the approver',
-  charged.length === 1 && charged[0].to === 'Ucost1',
-  `${charged.length} push(es) → ${charged.map((m) => m.to).join(',')}`);
+let turnNow = await waitingName();
+ok('submitting charges for exactly one LINE message — เลขานุการ, who reads it first',
+  charged.length === 1 && charged[0].to === LINE_OF[turnNow],
+  `${charged.length} push(es) → ${charged.map((m) => m.to).join(',')} for ${turnNow}`);
 
 // Everybody still hears about it, through the channels that cost nothing.
 r = await call(notifApi, '/api/notifications', { as: 'sunday' });
 ok('...while every secretary still gets it in the bell, free',
   r.data.notifications.some((n) => /หนังสือวัดค่าใช้จ่าย/.test(n.title)),
   r.data.notifications.map((n) => n.title).join(' | ').slice(0, 60));
+
+lineSent.length = 0;
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: costId } });
+charged = lineSent.filter((m) => m.kind === 'push');
+turnNow = await waitingName();
+ok('the check charges for one more — the signer whose turn it now is',
+  charged.length === 1 && charged[0].to === LINE_OF[turnNow],
+  `${charged.length} → ${charged.map((m) => m.to).join(',')} for ${turnNow}`);
 
 lineSent.length = 0;
 await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: costId } });
@@ -4225,7 +4278,7 @@ head('64. Signing and approving are different acts');
 const topChain = (await call(docsApi, '/api/documents?do=propose',
   { method: 'POST', as: 'admin', body: {} })).data.steps;
 ok('the director now gets a step to sign his letter',
-  topChain[0].role === 'author' && topChain[0].username === 'Jade_Pres',
+  topChain[1].role === 'author' && topChain[1].username === 'Jade_Pres',
   topChain.map((x) => x.role + ':' + x.username).join(' → '));
 ok('...and still nobody is asked to approve it',
   !topChain.some((x) => ['unitHead', 'deptHead', 'director'].includes(x.role)),
@@ -4249,8 +4302,8 @@ const dirView = (await call(docsApi, `/api/documents?id=${dirDocId}`, { as: 'adm
 ok('...his step is already done — he does not wait on himself',
   dirView.steps.find((x) => x.role === 'author').state === 'approved',
   dirView.steps.map((x) => x.role + ':' + x.state).join(' '));
-ok('...the letter waits on the secretary instead',
-  dirView.steps.find((x) => x.state === 'waiting').role === 'secretary',
+ok('...the letter waits on เลขานุการ to read it instead',
+  dirView.steps.find((x) => x.state === 'waiting').role === 'secretaryCheck',
   dirView.steps.map((x) => x.role + ':' + x.state).join(' '));
 ok('...and his signature is stamped into a signed copy straight away',
   (await sql`SELECT count(*)::int AS n FROM doc_files
@@ -4281,7 +4334,9 @@ ok('a staff letter still climbs to the head first', noSig.status === 201,
  * point in the suite the ฝ่ายเนื้อหา uploader is themselves a head. The flag
  * lives on the step, not the role, so ประธานฝ่าย behaves identically.
  */
-const waitingRole = baseChain.find((x) => x.role !== 'author').role;
+// เลขานุการ's read-through comes first; this section is about the signers.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: noSigId } });
+const waitingRole = baseChain.find((x) => x.role !== 'author' && x.role !== 'secretaryCheck').role;
 r = await call(docsApi, '/api/documents?do=approve', {
   method: 'POST', as: waitingRole === 'director' ? 'admin' : 'editor',
   body: { id: noSigId, comment: 'เห็นชอบ', withoutSignature: true },
@@ -4320,12 +4375,14 @@ const multi = await call(docsApi, '/api/documents?do=create', {
 ok('a letter can be created with three boxes for one signer', multi.status === 201,
   JSON.stringify(multi.data).slice(0, 120));
 const multiId = multi.data.id;
+const multiSigner = multiChain.find((x) => x.role !== 'author' && x.role !== 'secretaryCheck').role;
 ok('...and all three are stored',
   (await sql`SELECT count(*)::int AS n FROM doc_boxes b
              JOIN doc_steps s ON s.id = b.step_id
-             WHERE s.doc_id = ${multiId} AND s.role = ${multiChain.find((x) => x.role !== 'author').role}`)[0].n === 3);
+             WHERE s.doc_id = ${multiId} AND s.role = ${multiSigner}`)[0].n === 3);
 
-const multiSigner = multiChain.find((x) => x.role !== 'author').role;
+// Past เลขานุการ's read-through first.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: multiId } });
 r = await call(docsApi, '/api/documents?do=approve', {
   method: 'POST', as: multiSigner === 'director' ? 'admin' : 'editor',
   body: { id: multiId, comment: 'ลงนามครบ' },
@@ -6166,7 +6223,7 @@ r = await call(docsApi, '/api/documents?do=propose', {
 });
 chainLine = r.data.steps.map((st) => st.role).join(' → ');
 ok('a letter from อำนวยการ 2 climbs through อำนวยการใหญ่ before ประธานโครงการ',
-  chainLine === 'author → divisionHead → director → secretary', chainLine);
+  chainLine === 'secretaryCheck → author → divisionHead → director → secretary', chainLine);
 const div = r.data.steps.find((st) => st.role === 'divisionHead');
 ok('...and อำนวยการใหญ่ is the person who runs it', div.username === 'Totti_HeadOp', div.username);
 ok('...who signs the letter, not just approves it', div.signs === true);
@@ -6186,7 +6243,7 @@ await call(docsApi, '/api/documents?do=signature', { method: 'POST', as: 'opall'
 await call(usersApi, '/api/users?do=me', { method: 'PATCH', as: 'opall', body: { fullName: 'ต๊อด ใจเย็น' } });
 r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'opall', body: { department: 'operations' } });
 chainLine = r.data.steps.map((st) => st.role).join(' → ');
-ok('อำนวยการใหญ่’s own letter has no step through itself', chainLine === 'author → director → secretary', chainLine);
+ok('อำนวยการใหญ่’s own letter has no step through itself', chainLine === 'secretaryCheck → author → director → secretary', chainLine);
 
 // Sending it yourself.
 r = await call(docsApi, '/api/documents?do=propose', {
@@ -6266,7 +6323,7 @@ r = await call(docsApi, '/api/documents?do=create', {
 ok('a signer added by hand is accepted', r.status === 201, JSON.stringify(r.data).slice(0, 80));
 r = await call(docsApi, `/api/documents?id=${r.data.id}`, { as: 'oper2head' });
 ok('...and takes their place in the order', r.data.steps.map((st) => st.role).join(' → ') ===
-  'author → divisionHead → director → deptHead → secretary', r.data.steps.map((st) => st.role).join(' → '));
+  'secretaryCheck → author → divisionHead → director → deptHead → secretary', r.data.steps.map((st) => st.role).join(' → '));
 
 // All the way through a letter the writer posts themselves.
 const selfSteps = withBoxes(selfChain);
@@ -6395,7 +6452,7 @@ ok('a รองประธาน’s own letter still goes up to ประธ�
   /director:Jade_Pres/.test(deputyChain), deputyChain);
 r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'admin', body: {} });
 deputyChain = r.data.steps.map((st) => st.role).join(' → ');
-ok('...and ประธานโครงการ’s own letter has nobody above it', deputyChain === 'author → secretary', deputyChain);
+ok('...and ประธานโครงการ’s own letter has nobody above it', deputyChain === 'secretaryCheck → author → secretary', deputyChain);
 
 await sql`DELETE FROM users WHERE username = 'Beam_OpDeputy'`;
 
@@ -7051,6 +7108,11 @@ r = await call(docsApi, '/api/documents?do=create', {
 });
 const standId = r.data.id;
 ok('a letter to stand in on', r.status === 201 && Boolean(standId), JSON.stringify(r.data).slice(0, 70));
+/**
+ * Past เลขานุการ's read-through: standing in is about the SIGNERS covering
+ * for each other, and the check step deliberately does not work that way.
+ */
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: standId } });
 
 const standState = await call(docsApi, `/api/documents?id=${standId}`, { as: 'admin' });
 const waitingOn = standState.data.progress.find((p) => p.state === 'waiting' && p.username);
@@ -7097,7 +7159,10 @@ ok('somebody else in the chain can approve the step',
   r.status === 200, JSON.stringify(r.data).slice(0, 80));
 
 const afterStand = await call(docsApi, `/api/documents?id=${standId}`, { as: 'admin' });
-const doneStep = afterStand.data.progress.find((p) => p.state === 'approved' && p.actedBy);
+// The step that was stood in ON, not the earlier เลขานุการ check which an
+// admin also pressed for somebody else.
+const doneStep = afterStand.data.progress
+  .find((p) => p.state === 'approved' && p.actedBy && p.username === waitingOn.username);
 ok('...and the history says who really pressed',
   Boolean(doneStep && doneStep.actedBy === standName), JSON.stringify(doneStep || {}));
 /**
@@ -7137,6 +7202,8 @@ const lentDoc = await call(docsApi, '/api/documents?do=create', {
           recipient: 'สำนักบริหารระบบกายภาพ', pdf: await makePdf(2),
           department: 'content', steps: standSteps },
 });
+// Past เลขานุการ's read-through first: a lent signature is about signing.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: lentDoc.data.id } });
 r = await call(docsApi, '/api/documents?do=approve', {
   method: 'POST', as: 'content', body: { id: lentDoc.data.id, comment: 'เซ็นแทนตามที่มอบอำนาจ' },
 });
@@ -7240,6 +7307,8 @@ r = await call(docsApi, '/api/documents?do=create', {
 const moveId = r.data.id;
 ok('a letter whose signature will need moving', r.status === 201 && Boolean(moveId),
   JSON.stringify(r.data).slice(0, 70));
+// Past เลขานุการ's read-through, which signs nothing and so has nothing to move.
+await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'admin', body: { id: moveId } });
 
 // Whoever it is sitting with signs it, so there is a stamped signature to move.
 let mvState = await call(docsApi, `/api/documents?id=${moveId}`, { as: 'admin' });
@@ -9924,6 +9993,106 @@ ok('the booking page is drawn before anything asks anybody to sign in',
   /#\\\/\(book\|unbook\)\\\//.test(obSrc) && /renderPublicBooking/.test(obSrc));
 ok('the profile card offers the switch, with what it means spelt out',
   /publicOfficeBox\(\)/.test(obSrc) && /officePublicSure/.test(obSrc));
+
+// ---- §116 เลขานุการ reads it before anybody signs -------------------------
+head('116. Documents: เลขานุการ checks the letter first, and posts it last');
+
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'content', body: { department: 'content' } });
+const chkChain = r.data.steps;
+ok('the check is the FIRST step, before the writer’s own signature',
+  chkChain[0].role === 'secretaryCheck' && chkChain[1].role === 'author',
+  chkChain.map((x) => x.role).join(' → '));
+ok('...and the same person posts it at the end',
+  chkChain[0].username === chkChain[chkChain.length - 1].username,
+  `${chkChain[0].username} / ${chkChain[chkChain.length - 1].username}`);
+ok('...the check signs nothing — it is a read, not a signature', chkChain[0].signs === false);
+ok('...and the form is told what to call it', r.data.roles.some((x) => x.role === 'secretaryCheck'),
+  r.data.roles.map((x) => x.role).join(','));
+
+// A letter the writer posts themselves never goes near the secretariat.
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'content', body: { department: 'content', sendMode: 'self' } });
+ok('a letter the writer posts themselves has no check and no secretary',
+  !r.data.steps.some((x) => x.role === 'secretaryCheck' || x.role === 'secretary'),
+  r.data.steps.map((x) => x.role).join(' → '));
+
+// And a secretary's own letter is unchanged — they would be checking themselves.
+r = await call(docsApi, '/api/documents?do=propose', { method: 'POST', as: 'sunday', body: { department: 'secretariat' } });
+ok('เลขานุการ’s own letter skips the check and still ends with the secretariat',
+  !r.data.steps.some((x) => x.role === 'secretaryCheck') &&
+  r.data.steps[r.data.steps.length - 1].role === 'secretary',
+  r.data.steps.map((x) => x.role).join(' → '));
+
+/**
+ * The whole point, tested: the letter cannot reach a signer until the
+ * secretariat has read it, and the people in the chain cannot wave it past.
+ */
+const chkSteps = chkChain.map((x) => ({
+  role: x.role, username: x.username,
+  mark: x.signs ? { page: 1, x: 0.6, y: 0.75, w: 0.25, h: 0.07 } : null,
+}));
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือที่เลขาต้องตรวจก่อน',
+          pdf: await makePdf(1), department: 'content', steps: chkSteps },
+});
+const chkId = r.data.id;
+ok('a letter is submitted', r.status === 201 && Boolean(chkId), JSON.stringify(r.data).slice(0, 90));
+
+const chkSecretary = chkChain[0].username;
+const chkSession = { Sunday_Sec: 'sunday', Donat_Sec: 'donat', Pin_Sec: 'pin' }[chkSecretary];
+r = await call(docsApi, `/api/documents?id=${chkId}`, { as: chkSession });
+ok('...and it is sitting with เลขานุการ, not with a signer',
+  r.data.steps.find((x) => x.state === 'waiting').role === 'secretaryCheck',
+  r.data.steps.map((x) => x.role + ':' + x.state).join(' '));
+ok('...who is told it is theirs to deal with', r.data.myTurn === true);
+
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'content', body: { id: chkId } });
+ok('the writer cannot tick off the check on their behalf', r.status === 403, JSON.stringify(r.data));
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: 'oper', body: { id: chkId } });
+ok('...nor can a ประธานฝ่าย who is not in this letter', r.status === 403, JSON.stringify(r.data));
+
+// Another secretary covering for them can, which is how the desk works.
+const otherSec = ['sunday', 'donat', 'pin'].find((x) => x !== chkSession);
+r = await call(docsApi, '/api/documents?do=approve', { method: 'POST', as: otherSec, body: { id: chkId } });
+ok('another เลขานุการ covering the desk can', r.status === 200, JSON.stringify(r.data).slice(0, 90));
+
+r = await call(docsApi, `/api/documents?id=${chkId}`, { as: 'admin' });
+ok('...and only now does it reach the signers',
+  r.data.steps.find((x) => x.state === 'waiting').role === 'director',
+  r.data.steps.map((x) => x.role + ':' + x.state).join(' '));
+ok('...with the history recording who really read it',
+  r.data.progress.find((x) => x.role === 'secretaryCheck').actedBy === { sunday: 'Sunday_Sec', donat: 'Donat_Sec', pin: 'Pin_Sec' }[otherSec],
+  JSON.stringify(r.data.progress.find((x) => x.role === 'secretaryCheck')));
+
+// เลขานุการ can also send it straight back, which is the cheap moment to do it.
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือที่เลขาตีกลับ',
+          pdf: await makePdf(1), department: 'content', steps: chkSteps },
+});
+const bounceId = r.data.id;
+r = await call(docsApi, '/api/documents?do=reject', { method: 'POST', as: chkSession,
+  body: { id: bounceId, comment: 'หัวจดหมายยังไม่ถูกต้อง' } });
+ok('เลขานุการ can bounce it at the check, before four people have signed it',
+  r.status === 200, JSON.stringify(r.data).slice(0, 90));
+r = await call(docsApi, `/api/documents?id=${bounceId}`, { as: 'content' });
+ok('...and the writer gets it back with the reason', r.data.document.stage === 'rejected',
+  r.data.document.stage);
+
+// A hand-made chain cannot bury the check in the middle of the signers.
+const outOfOrder = [chkSteps[1], chkSteps[0], ...chkSteps.slice(2)];
+r = await call(docsApi, '/api/documents?do=create', {
+  method: 'POST', as: 'content',
+  body: { recipientEmail: 'office@example.ac.th', title: 'หนังสือที่สลับลำดับ',
+          pdf: await makePdf(1), department: 'content', steps: outOfOrder },
+});
+ok('a check that is not first is refused', r.status === 400 && r.data.error === 'CHECK_MUST_BE_FIRST',
+  JSON.stringify(r.data));
+
+const chkSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('the form locks the check row rather than offering it as a choice',
+  /var isCheck = step\.role === 'secretaryCheck';/.test(chkSrc) &&
+  /var locked = isSending \|\| isCheck/.test(chkSrc));
 
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
