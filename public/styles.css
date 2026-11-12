@@ -2068,3 +2068,17 @@ button.pressed { opacity: .6; cursor: progress; }
 .pb-slot.taken { opacity: .45; cursor: not-allowed; text-decoration: line-through; }
 .pb-chosen { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px; border-radius: 10px;
   background: var(--surface-2); border: 1px solid var(--line-soft); }
+
+/* One day at a time on the public booking page — see renderPublicBooking. */
+.pb-day-pick { width: 100%; padding: 10px 12px; font: inherit; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.pb-place { flex-basis: 100%; margin: 0 0 2px; }
+.pb-slots { align-content: flex-start; }
+
+/* The committee's mark on the pages a visitor with no account sees. */
+.pb-brand { display: flex; align-items: center; gap: 10px;
+  padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
+.pb-mark { width: 40px; height: 40px; border-radius: 11px; flex: none; }
+.pb-brand > div { display: flex; flex-direction: column; line-height: 1.2; }
+.pb-brand b { font-size: 16px; font-weight: 700; }
+.pb-brand span { font-size: 12px; color: var(--ink-faint); }

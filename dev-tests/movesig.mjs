@@ -96,12 +96,17 @@ const made = await kk.evaluate(async (title) => {
 }, TITLE);
 ok('a two-page letter is uploaded', Boolean(made && made.id), JSON.stringify(made).slice(0, 60));
 
+/**
+ * Twice: เลขานุการ reads it first now (the director presses that one as an
+ * admin standing in for the desk), and then signs it as the director.
+ */
 const signed = await boss.evaluate(async (id) => {
-  const r = await fetch('/api/documents?do=approve', {
+  const press = async () => (await fetch('/api/documents?do=approve', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
-  });
-  return r.status;
+  })).status;
+  await press();
+  return press();
 }, made.id);
 ok('...and the director signs it', signed === 200, String(signed));
 

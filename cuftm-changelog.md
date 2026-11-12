@@ -11,6 +11,37 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-11-12 — เลขานุการ reads the letter before anybody signs it · version `2026-11-12a`
+
+Schema unchanged; the chain gains a role. `secretaryCheck` is now the first step of every document that goes out through the secretariat:
+
+    before   author? → unitHead? → deptHead… → divisionHead? → director → secretary
+    after    secretaryCheck → author? → unitHead? → deptHead… → divisionHead? → director → secretary
+
+The reason is the order the work was already happening in. The secretariat are the ones who know what a หนังสือราชการ has to look like, and they were only seeing a letter at the very end, with four signatures already on it. A format mistake found there costs all four of those signatures again; found at the top it costs nothing, because nobody has signed anything yet.
+
+- **The same secretary at both ends.** Whoever reads it first is the one who posts it, so a letter is one person's piece of work rather than two half-reads by two desks.
+- **The check signs nothing.** It is a read, not a signature — `signsPdf('secretaryCheck')` is false and the form hides the ลงนาม tick on that row.
+- **It is the one step the 18-October "anybody in the chain may press" rule does not open up** (`canAct`). A check the writer can tick off is not a check: the letter would reach the ประธานฝ่าย exactly as unchecked as before. It stays with the secretariat — the person named, another secretary covering the desk, or an admin.
+- **เลขานุการ can bounce it there**, which is the cheap moment to do it rather than after a full chain of signatures.
+- **Two documents skip it**, both because there is nobody for the secretariat to check ahead of: a letter written BY a secretary (they would be checking their own — "เลขาส่งเอกสารเหมือนเดิม"), and one whose writer chose ส่งเอง, which never goes near the secretariat.
+- The row is locked in the form — which secretary can be changed, that it happens and that it happens first cannot — and the server refuses a hand-made chain with the check anywhere but first (`CHECK_MUST_BE_FIRST`) or with somebody outside the secretariat on it (`NOT_A_SECRETARY`).
+- The first notification now says what it is asking for: เอกสารรอตรวจ · "ให้คุณตรวจก่อนส่งต่อให้ผู้ลงนาม", not "ให้คุณลงนาม/อนุมัติ".
+
+Documents already in flight keep the chain they were submitted with — chains are frozen at submission, as they always have been.
+
+Tests: run.mjs §116 (20 checks on the new order, who may and may not press it, bouncing at the check, and the two cases that skip it), plus every existing document section updated to walk through the extra step; `dev-tests/movesig.mjs` and `signsoff.mjs` re-run green.
+
+## 2026-11-11 (b) — the booking page asks one question at a time · version `2026-11-11b`
+
+No schema change.
+
+Twenty-one days of half hours is about a hundred buttons, and the page they made was one nobody read: a visitor scrolled it hunting for a date rather than choosing a time. The date is the question they are answering first, so it is now asked first and on its own — a drop-down of only the days that have anything, each saying how many slots are left — and only that day's times are drawn. It opens on the first day with something free rather than on a full one, and the whole page fits a phone screen without scrolling.
+
+The ซุฟต้ม mark and the fair's name now sit at the top of both pages a stranger sees (booking and the cancel link). They arrive from a link in an email or LINE with no idea whose page this is; the lockup the app wears everywhere else is how they know in one glance.
+
+Tests: `dev-tests/sharebook.mjs` (unchanged and still passing against the new picker), plus the full browser sweep.
+
 ## 2026-11-11 — a link to one thing, and a door for people with no account · version `2026-11-11a`
 
 Schema `2026-11-11a`: `share_links`, `users.office_public` / `office_token`, `appointments.guest_name` / `guest_email` / `guest_token`. Still 12 functions — sharing rides `api/meta.js` (`?do=share`), public booking rides `api/calendar.js` (`?book=<token>`), which already answered without a cookie for the calendar feed.

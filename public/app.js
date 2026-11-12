@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-11a';
+  var APP_VERSION = '2026-11-12a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1221,13 +1221,33 @@
 
     function fail(message) {
       clear(box);
+      box.appendChild(brand());
       box.appendChild(h('h1', { text: t('bookPublicTitle') }));
       box.appendChild(h('div', { class: 'notice err', text: message }));
+    }
+
+    /**
+     * The committee's own mark at the top.
+     *
+     * A visitor arrives here from a link in an email or a LINE message, with
+     * no idea whose page this is. The same lockup the app wears everywhere —
+     * the ซุฟต้ม mark and the fair's name — is how they know in one glance
+     * that they are in the right place and who is asking.
+     */
+    function brand() {
+      return h('div', { class: 'pb-brand' }, [
+        h('img', { src: './icon-192.png', alt: '', class: 'pb-mark' }),
+        h('div', {}, [
+          h('b', { text: t('appName') }),
+          h('span', { text: t('appSub') }),
+        ]),
+      ]);
     }
 
     function head() {
       var who = state.data.host;
       return h('div', { class: 'pb-head' }, [
+        brand(),
         h('h1', { text: t('bookPublicTitle') }),
         h('p', { class: 'pb-who' }, [
           h('b', { text: who.name }),
@@ -1253,6 +1273,16 @@
       }
 
       box.appendChild(h('p', { class: 'hint', text: t('bookPublicPick') }));
+
+      /**
+       * A day at a time, not three weeks at once.
+       *
+       * Every open half hour for twenty-one days is about a hundred buttons,
+       * and a page of a hundred buttons is a page nobody reads: the visitor
+       * scrolls looking for a date rather than choosing a time. The date is
+       * the question they are actually answering first, so it is asked first
+       * and on its own, and only that day's times are drawn.
+       */
       var days = [];
       free.forEach(function (sl) {
         var day = days.filter(function (d) { return d.on === sl.on; })[0];
@@ -1260,19 +1290,41 @@
         day.slots.push(sl);
       });
 
-      days.forEach(function (day) {
-        box.appendChild(h('div', { class: 'pb-day' }, [
-          h('h3', { text: whenWording(day.on) }),
-          h('div', { class: 'pb-slots' }, day.slots.map(function (sl) {
-            return h('button', {
-              type: 'button', class: 'pb-slot' + (sl.taken ? ' taken' : ''),
-              disabled: sl.taken,
-              title: sl.taken ? t('bookPublicTaken') : (sl.place || ''),
-              onclick: function () { state.slot = sl; drawForm(); },
-            }, [h('b', { text: sl.at }), h('small', { text: '–' + sl.to })]);
-          })),
-        ]));
-      });
+      var openOf = function (day) {
+        return day.slots.filter(function (sl) { return !sl.taken; }).length;
+      };
+      // Opens on the first day that has anything left, not on a full one.
+      var first = days.filter(openOf)[0] || days[0];
+
+      var pick = h('select', { class: 'pb-day-pick' }, days.map(function (day) {
+        var n = openOf(day);
+        return h('option', {
+          value: day.on, selected: day === first,
+          text: whenWording(day.on) + ' · ' + (n ? t('bookPublicFreeN').replace('%n', String(n)) : t('bookPublicDayFull')),
+        });
+      }));
+      var times = h('div', { class: 'pb-slots' });
+
+      function drawTimes() {
+        clear(times);
+        var day = days.filter(function (d) { return d.on === pick.value; })[0];
+        if (!day) return;
+        var place = (day.slots.find(function (sl) { return sl.place; }) || {}).place;
+        if (place) times.appendChild(h('p', { class: 'hint pb-place', text: place }));
+        day.slots.forEach(function (sl) {
+          times.appendChild(h('button', {
+            type: 'button', class: 'pb-slot' + (sl.taken ? ' taken' : ''),
+            disabled: sl.taken,
+            title: sl.taken ? t('bookPublicTaken') : (sl.place || ''),
+            onclick: function () { state.slot = sl; drawForm(); },
+          }, [h('b', { text: sl.at }), h('small', { text: '–' + sl.to })]));
+        });
+      }
+      pick.addEventListener('change', drawTimes);
+
+      box.appendChild(h('div', { class: 'field' }, [h('label', { text: t('bookPublicDay') }), pick]));
+      box.appendChild(h('div', { class: 'field' }, [h('label', { text: t('bookPublicTime') }), times]));
+      drawTimes();
     }
 
     /** Who are you, and how do we reach you. */
@@ -1380,7 +1432,15 @@
   function renderGuestCancel(token) {
     var box = h('div', { class: 'pub-book' });
     showGate([box]);
-    function draw(kids) { clear(box); box.appendChild(h('h1', { text: t('bookingCancel') })); kids.forEach(function (k) { box.appendChild(k); }); }
+    function draw(kids) {
+      clear(box);
+      box.appendChild(h('div', { class: 'pb-brand' }, [
+        h('img', { src: './icon-192.png', alt: '', class: 'pb-mark' }),
+        h('div', {}, [h('b', { text: t('appName') }), h('span', { text: t('appSub') })]),
+      ]));
+      box.appendChild(h('h1', { text: t('bookingCancel') }));
+      kids.forEach(function (k) { box.appendChild(k); });
+    }
     var go = h('button', { class: 'btn danger', text: t('bookPublicCancelGo'), onclick: function () {
       go.disabled = true;
       api('/api/calendar?unbook=' + encodeURIComponent(token), { method: 'POST' })
@@ -3041,7 +3101,13 @@
 
       var rows = chain.map(function (step, i) {
         var isSending = step === sendStep;
-        var locked = isSending || step.role === 'author';
+        /**
+         * เลขานุการ reads it before anybody signs. Which secretary can be
+         * changed; that it happens, and that it happens first, cannot — it
+         * is the committee's rule rather than a choice per letter.
+         */
+        var isCheck = step.role === 'secretaryCheck';
+        var locked = isSending || isCheck || step.role === 'author';
 
         var person = h('select', {
           onchange: function (e) { step.username = e.target.value || null; },
@@ -3082,7 +3148,7 @@
           return h('button', {
             type: 'button', class: 'btn ghost sm', text: by < 0 ? '\u2191' : '\u2193',
             disabled: locked || i + by < 0 || i + by >= chain.length - 1 ||
-              chain[i + by].role === 'author',
+              chain[i + by].role === 'author' || chain[i + by].role === 'secretaryCheck',
             onclick: function () {
               var other = chain[i + by];
               chain[i + by] = step; chain[i] = other;
@@ -3099,7 +3165,7 @@
                 ? h('label', { text: step.roleLabel || step.role })
                 : roleSelect,
               h('span', { class: 'grow' }),
-              isSending ? null : h('label', { class: 'inline-check sm' }, [signBox, t('docSigns')]),
+              (isSending || isCheck) ? null : h('label', { class: 'inline-check sm' }, [signBox, t('docSigns')]),
               move(-1), move(1),
               h('button', {
                 type: 'button', class: 'btn ghost sm danger', text: '\u2715',
@@ -3112,6 +3178,7 @@
             ]),
             person,
             isSending ? h('small', { class: 'field-hint', text: t(step.role === 'sender' ? 'docSenderIsYou' : 'docSecretarySends') }) : null,
+            isCheck ? h('small', { class: 'field-hint', text: t('docSecretaryChecks') }) : null,
           ]),
         ]);
       });

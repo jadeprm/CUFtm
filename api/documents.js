@@ -684,6 +684,21 @@ async function createDocument(sql, me, body) {
     if (allowed.length && !allowed.includes(lastStep.username)) {
       return json({ error: 'NOT_A_SECRETARY' }, 400);
     }
+    /**
+     * And so must whoever is checking it first. Same desk, same guard: a
+     * check step pointing at somebody outside the secretariat would park the
+     * letter on a person with no reason to be reading it.
+     */
+    const checking = steps.filter((st) => st.role === 'secretaryCheck');
+    // At most one, and first: a check that happens after two signatures is
+    // not the thing that was asked for.
+    if (checking.length > 1) return json({ error: 'BAD_CHAIN_END' }, 400);
+    if (checking.length && steps[0].role !== 'secretaryCheck') {
+      return json({ error: 'CHECK_MUST_BE_FIRST' }, 400);
+    }
+    if (checking.length && allowed.length && !allowed.includes(checking[0].username)) {
+      return json({ error: 'NOT_A_SECRETARY' }, 400);
+    }
   }
 
   /**
@@ -810,13 +825,21 @@ async function createDocument(sql, me, body) {
   const first = steps.find((s) => clean(s.role, 20) !== 'author') || steps[0];
   const watchers = await secretaries(sql);
   const numberTag = numbering?.ok ? ` · เลขที่ ${numbering.number}` : '';
+  /**
+   * Said as what it actually is. The first person to see a letter is now
+   * usually เลขานุการ, who is being asked to CHECK it, not to sign it —
+   * telling them a document is waiting for their signature would be asking
+   * for the wrong thing in the one message that sets the whole chain going.
+   */
+  const checking = clean(first.role, 20) === 'secretaryCheck';
   await tellPeople(sql, {
     usernames: [first.username, ...watchers],
     actor: first.username,
     docId: id,
     priority: body.priority,
-    title: `${urgencyTag(body.priority)}เอกสารรออนุมัติ: ${title}`,
-    body: `${me.display_name || me.username} ส่งเอกสารให้คุณลงนาม/อนุมัติ${numberTag}`,
+    title: `${urgencyTag(body.priority)}${checking ? 'เอกสารรอตรวจ' : 'เอกสารรออนุมัติ'}: ${title}`,
+    body: `${me.display_name || me.username} ส่งเอกสาร` +
+      (checking ? 'ให้คุณตรวจก่อนส่งต่อให้ผู้ลงนาม' : 'ให้คุณลงนาม/อนุมัติ') + numberTag,
   });
 
   /**
@@ -1112,7 +1135,7 @@ async function approve(sql, me, body) {
             next.role === 'secretary' && doc.recipient_email ? `ส่งไปที่ ${doc.recipient_email}` : '',
             next.role === 'secretary' && doc.internal_unit ? 'หน่วยงานภายในจุฬาฯ' : '',
           ].filter(Boolean).join(' · ')
-        : `${me.display_name || me.username} อนุมัติแล้ว ถึงคิวของคุณ`,
+        : `${me.display_name || me.username} ${clean(step.role, 20) === 'secretaryCheck' ? 'ตรวจเอกสารแล้ว' : 'อนุมัติแล้ว'} ถึงคิวของคุณ`,
     });
   } else {
     await tellPeople(sql, {
