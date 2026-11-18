@@ -11,8 +11,15 @@ import { updateStatus as updateRegisterStatus, REGISTER_STATUS } from '../lib/do
 
 
 /**
- * The reminder run. Something external calls this every hour — see README,
- * "Hourly reminders".
+ * The reminder run. Vercel's own scheduler calls this at the top of every
+ * hour — see `crons` in vercel.json, and README, "Hourly reminders".
+ *
+ * It used to be poked by cron-job.org, because the free plan allowed a
+ * schedule only once a day. That arrangement failed silently on 20 October
+ * 2026 and nobody noticed for a month: no deadline reminders, no daily
+ * digest, no documents moved to Drive. Vercel's scheduler sends the secret
+ * itself and logs every invocation beside the rest of the app, so the next
+ * failure is visible in the place somebody is already looking.
  *
  * Reminders are decided on *calendar days in Bangkok*, not on an exact number
  * of hours. That matters: an hourly poke can arrive late, or not at all if the
@@ -95,7 +102,14 @@ const EVENT_MESSAGES = {
 async function handler(request) {
   if (!hasDatabase) return noDatabase();
 
-  // If a secret is configured it must match, so the endpoint can't be hammered.
+  /**
+   * If a secret is configured it must match, so the endpoint can't be hammered.
+   *
+   * Two ways in, because two things call this. Vercel's scheduler sends
+   * `Authorization: Bearer <CRON_SECRET>` by itself, which is the way that
+   * keeps the secret out of any URL. `?key=` stays for a hand-run from a
+   * browser and for anything older still pointed at it.
+   */
   const secret = process.env.CRON_SECRET || '';
   if (secret) {
     const url = requestUrl(request);
@@ -434,7 +448,10 @@ async function handler(request) {
     archive,
     roster,
     secured: Boolean(secret),
-    ...(secret ? {} : { warning: 'Set CRON_SECRET in Vercel and add ?key=… to the ping URL.' }),
+    // Which scheduler this run came from, so a glance at the answer says
+    // whether Vercel's own cron is the thing calling it.
+    by: request.headers.get('x-vercel-cron-schedule') ? 'vercel-cron' : 'manual',
+    ...(secret ? {} : { warning: 'Set CRON_SECRET in Vercel; its scheduler then signs every run.' }),
   });
 }
 

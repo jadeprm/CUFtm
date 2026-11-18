@@ -11,6 +11,24 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
 
 
+## 2026-11-18 — the hourly run belongs to Vercel now, and the functions moved to Singapore · version `2026-11-18a`
+
+Two lines of `vercel.json`, and the slowest thing about this app stopped being slow.
+
+**The functions were running in Washington and the database is in Singapore.** Measured from a browser in Bangkok on 18 November: `x-vercel-id` read `sin1::iad1`, a bare `SELECT 1` cost **217ms**, and `/api/tasks` took **2.4–3.1 seconds**. Every page load makes dozens of queries, each paying a trip across the Pacific and back. With `"regions": ["sin1"]` the same query costs **3–5ms** and the same endpoint **138–231ms** — roughly fifteen times faster, for a configuration line. If the Neon instance is ever moved, that line moves with it.
+
+**The hourly reminder run had been dead for a month.** cron-job.org's last successful call was **20 October**; every attempt since failed with an HTTP error, and nothing in the committee's view said so. No deadline reminders (7 days, 3 days, tomorrow, today, overdue), no daily LINE digest, no sent documents archived to Drive, no retry of เลขรันเอกสาร that the spreadsheet had refused. The Pro plan removes the reason that arrangement existed — Hobby allows one scheduled run a day, Pro allows one a minute — so the schedule now lives in `vercel.json`:
+
+    "crons": [{ "path": "/api/cron", "schedule": "0 * * * *" }]
+
+Vercel sends `Authorization: Bearer $CRON_SECRET` itself, which `api/cron.js` already accepted, so no handler change was needed. The secret never appears in a URL again, every run is logged beside the rest of the app under Schedules → Cron Jobs, and the answer now says `by: "vercel-cron"` or `"manual"` so a hand-run is distinguishable from the real thing. `?key=` still works for running it from a browser.
+
+The schedule is UTC, which for Bangkok (UTC+7, no daylight saving) is also the top of the hour. Hourly is what the code is written for: the "meeting in 1 hour" notice is worked out in whole hours, and `reminders_sent` makes every other reminder once-per-person-per-thing, so a missed run catches up and a repeated run sends nothing twice.
+
+Two things to do by hand after deploying: delete the cron-job.org job, and rotate `CRON_SECRET` (edit it in Vercel, redeploy) — the old one sat in a third party's URL for a month.
+
+Tests: run.mjs §117 — the schedule and region are in `vercel.json`, an unsigned or wrongly-signed poke is refused, Vercel's own invocation (header only, nothing in the URL) is accepted and recorded, and a hand-run still works and is labelled as one.
+
 ## 2026-11-12 — เลขานุการ reads the letter before anybody signs it · version `2026-11-12a`
 
 Schema unchanged; the chain gains a role. `secretaryCheck` is now the first step of every document that goes out through the secretariat:
