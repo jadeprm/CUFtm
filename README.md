@@ -87,13 +87,21 @@ Everyone else does the same with their own username.
 
 ### 4. Hourly reminders
 
-Reminders need something to poke the app each hour, because Vercel's free plan only allows a once-daily schedule.
+Vercel runs this itself, from `crons` in `vercel.json`:
 
-1. In Vercel → Settings → Environment Variables, add `CRON_SECRET` with any long random string. Redeploy.
-2. Sign up free at [cron-job.org](https://cron-job.org).
-3. Create a job that fetches `https://your-site.vercel.app/api/cron?key=YOUR_SECRET` every hour.
+```json
+"crons": [{ "path": "/api/cron", "schedule": "0 * * * *" }]
+```
 
-Without this, reminders simply never fire — nothing else breaks. The same endpoint also refreshes the roster from the sheet, so adding someone to the sheet brings them in within the hour without anyone pressing Sync.
+1. In Vercel → Settings → Environment Variables, add `CRON_SECRET` with any long random string (letters and numbers; it is sent as an HTTP header).
+2. Deploy. Vercel sends that secret as `Authorization: Bearer …` on every run, and `/api/cron` checks it.
+3. Watch it under Schedules → Cron Jobs → View Logs.
+
+The schedule is in **UTC**, which for Bangkok (UTC+7, no daylight saving) means the top of every hour either way. An hourly run is what the code expects: the "meeting in 1 hour" notice is worked out from whole hours, and the day-based reminders are written once per person per thing, so a missed run catches up on the next one and a repeated run sends nothing twice.
+
+This needs a **Pro** plan. Hobby allows one run a day, which is why this used to be poked from cron-job.org — an arrangement that failed quietly on 20 October 2026 and went unnoticed for a month. If you are on Hobby, keep an external pinger on `https://your-site.vercel.app/api/cron?key=YOUR_SECRET` and check it monthly.
+
+Without the hourly run, reminders simply never fire, the daily digest never goes out, and sent documents are never archived to Drive — nothing else breaks.
 
 ### 5. Phone notifications
 
@@ -386,7 +394,9 @@ Both templates download from the dialog itself — the button hands you whicheve
 
 Two free-tier facts decide how fast the app feels, and one of them you can fix in five minutes.
 
-**The database sleeps.** Neon's free plan shuts the database down after a few minutes with no traffic, and waking it costs a second or two on whichever request arrives first. Point a free pinger at `https://your-site.vercel.app/api/meta?ping=1` every 5 minutes and it stays awake. That endpoint does one trivial query, needs no sign-in, and exposes nothing. Use the same [cron-job.org](https://cron-job.org) account as the hourly reminder job.
+**The database sleeps.** Neon's free plan shuts the database down after a few minutes with no traffic, and waking it costs a second or two on whichever request arrives first. `https://your-site.vercel.app/api/meta?ping=1` wakes it with one trivial query, needs no sign-in and exposes nothing. Think before scheduling it every five minutes, though: a database that never sleeps burns compute hours around the clock, which is more than Neon's free plan allows in a month.
+
+**Run the functions where the database is.** `regions` in `vercel.json` pins them to Singapore, next to the Neon instance. This is not a detail: measured on 18 November 2026 with the functions still in Washington, one `SELECT 1` cost 217ms and `/api/tasks` took 2.4–3.1 seconds. Moved to `sin1`, the same query cost 3–5ms and the same endpoint 138–231ms. If the database is ever moved, this line moves with it.
 
 **Saving is written to be one conversation, not twenty.** Creating a task used to take about forty separate round trips to the database and sent each phone notification one after another. It is now fifteen, with the notifications going out together — and the app no longer waits for any of it: the task appears in the list the moment you press the button and quietly firms up when the server agrees. If a save ever does fail, the task disappears again and you are told, which is the honest trade for it feeling instant.
 
@@ -426,7 +436,7 @@ Open **Profile → แจ้งเตือนเข้ามือถือ** o
 
 **Passwords.** Salted scrypt, HttpOnly cookies, no plaintext anywhere. Sensible for an internal club tool; not bank-grade. There's no two-factor and no rate limiting beyond Vercel's own. Nobody should reuse a password here that protects anything important.
 
-**Phone notifications need the hourly pinger.** Being added to a task, and any announcement, pushes immediately. But the due-date reminders — 7 days, 24 hours, due today — only go out when something calls `/api/cron`, and Vercel's free plan allows that only once a day. Set up a free hourly ping at cron-job.org (see Setup) or deadlines will be reminded about late.
+**Phone notifications need the hourly run.** Being added to a task, and any announcement, pushes immediately. But the due-date reminders — 7 days, 3 days, 24 hours, due today, overdue — only go out when something calls `/api/cron`. On Pro that is Vercel's own scheduler (see Setup); on Hobby it has to be an external pinger, because Hobby allows one run a day.
 
 **iPhone needs the Home Screen step.** Apple will not deliver a push to a site sitting in a Safari tab. Everyone on an iPhone has to open the site in Safari, tap Share → Add to Home Screen, then turn notifications on from inside the app. The Profile page walks them through it. Apple's delivery is also less reliable than Android's — roughly 70–85% of pushes arrive, against 90–95% — and iOS sometimes drops a subscription after a long quiet spell, which is why the app silently re-registers every time someone opens it.
 

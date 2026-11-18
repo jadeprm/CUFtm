@@ -10094,5 +10094,54 @@ ok('the form locks the check row rather than offering it as a choice',
   /var isCheck = step\.role === 'secretaryCheck';/.test(chkSrc) &&
   /var locked = isSending \|\| isCheck/.test(chkSrc));
 
+// ---- §117 the hourly run is Vercel's own scheduler -----------------------
+head('117. The reminder run is scheduled by Vercel, and signed');
+
+const vj = JSON.parse((await import('node:fs')).readFileSync('vercel.json', 'utf8'));
+ok('vercel.json schedules the reminder run itself',
+  (vj.crons || []).some((c) => c.path === '/api/cron' && c.schedule === '0 * * * *'),
+  JSON.stringify(vj.crons));
+/**
+ * Bangkok is UTC+7 with no daylight saving, so a UTC schedule on the hour is
+ * also on the hour locally — which is what the '1h' meeting notice assumes.
+ */
+ok('...on the hour, which is what the meeting notice is worked out from',
+  (vj.crons || []).every((c) => /^0 /.test(c.schedule)), JSON.stringify(vj.crons));
+ok('...and the functions run beside the database, not across an ocean',
+  (vj.regions || []).includes('sin1'), JSON.stringify(vj.regions));
+
+process.env.CRON_SECRET = 'a-long-enough-secret-for-a-header';
+let cr = await cronApi(new Request('https://app.test/api/cron'));
+ok('an unsigned poke is refused', cr.status === 401, String(cr.status));
+cr = await cronApi(new Request('https://app.test/api/cron', {
+  headers: { authorization: 'Bearer not-the-secret' } }));
+ok('...and so is the wrong secret', cr.status === 401, String(cr.status));
+
+/** Exactly what Vercel sends: the secret in the header, no key in the URL. */
+cr = await cronApi(new Request('https://app.test/api/cron', {
+  headers: {
+    authorization: `Bearer ${process.env.CRON_SECRET}`,
+    'user-agent': 'vercel-cron/1.0',
+    'x-vercel-cron-schedule': '0 * * * *',
+  },
+}));
+const crBody = await cr.json();
+ok('Vercel’s own invocation is accepted, with nothing in the URL', cr.status === 200 && crBody.ok === true,
+  String(cr.status) + JSON.stringify(crBody).slice(0, 80));
+ok('...and the answer says which scheduler ran it', crBody.by === 'vercel-cron', crBody.by);
+ok('...and it wrote down that the run happened',
+  Boolean((await sql`SELECT value FROM meta WHERE key = 'last_cron'`)[0]?.value));
+
+// The old way still works, for a hand-run from a browser.
+cr = await cronApi(new Request(`https://app.test/api/cron?key=${process.env.CRON_SECRET}`));
+const crManual = await cr.json();
+ok('a hand-run with ?key= still works, and says it was by hand',
+  cr.status === 200 && crManual.by === 'manual', String(cr.status) + ' ' + crManual.by);
+delete process.env.CRON_SECRET;
+
+const rmSrc = (await import('node:fs')).readFileSync('README.md', 'utf8');
+ok('the README tells the next person how it is scheduled now',
+  /crons.*\/api\/cron/s.test(rmSrc) && !/Create a job that fetches/.test(rmSrc));
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
