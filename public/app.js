@@ -111,6 +111,30 @@
     else if (!S.user && auth && !auth.hidden) renderAuth();
   }
 
+  /**
+   * The strings file and this file must come from the same build.
+   *
+   * A deployment that copies app.js and forgets i18n.js shows raw key names
+   * everywhere a new string was added — navControl, ctlSub, ctlWhoTitle —
+   * which reads as a broken app rather than as a missing file, and has cost
+   * this project a day more than once. The check costs one comparison and the
+   * message is deliberately hard-coded in both languages: the one thing that
+   * cannot be trusted at this moment is the translation table.
+   */
+  function checkStrings() {
+    var th = window.STRINGS_VERSION || null;
+    if (th === APP_VERSION) return;
+    var bar = document.getElementById('stale-strings');
+    if (bar) return;
+    bar = document.createElement('div');
+    bar.id = 'stale-strings';
+    bar.className = 'stale-strings';
+    bar.textContent = 'ไฟล์ภาษาไม่ตรงกับเวอร์ชันของเว็บ (i18n.js = ' + (th || 'ไม่มี')
+      + ' · app.js = ' + APP_VERSION + ') — อัปโหลด public/i18n.js และ public/i18n-en.js ให้ครบแล้วดีพลอยใหม่'
+      + '  ·  Language file is from another build — upload public/i18n.js and public/i18n-en.js, then deploy again.';
+    document.body.appendChild(bar);
+  }
+
   var t = function (key) {
     var table = window.STRINGS[S.lang];
     if (!table) {
@@ -124,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-20a';
+  var APP_VERSION = '2026-11-20b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -676,6 +700,7 @@
   /** Takes the splash down. Safe to call more than once. */
   function bootDone() {
     if (typeof window.__bootDone === 'function') window.__bootDone();
+    checkStrings();
   }
 
   /**

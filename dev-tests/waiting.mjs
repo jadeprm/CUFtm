@@ -4,7 +4,7 @@
  */
 import { chromium } from 'playwright';
 import { quietGuide } from './quiet.mjs';
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const ctx = await b.newContext({ viewport:{width:1280,height:900}, deviceScaleFactor:1.4 });
 const pg = await ctx.newPage();
 const errs=[]; pg.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));

@@ -11,7 +11,7 @@ import { chromium } from 'playwright';
 import { quietGuide, expandUpcoming } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4700';
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const ctx = await b.newContext({ viewport: { width: 1500, height: 1000 }, deviceScaleFactor: 1.4 });
 const pg = await ctx.newPage();
 const errs = [];

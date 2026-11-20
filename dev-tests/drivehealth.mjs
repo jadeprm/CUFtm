@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 import { quietGuide } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4400';
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const ctx = await b.newContext({ viewport: { width: 1180, height: 900 }, deviceScaleFactor: 2 });
 const pg = await ctx.newPage();
 const errs = [];

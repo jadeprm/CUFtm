@@ -20,7 +20,7 @@ const OUT = process.argv[2] || '/tmp/claude-0/sweep';
 const PORT = process.argv[3] || '4700';
 mkdirSync(OUT, { recursive: true });
 
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const ctx = await b.newContext({
   viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true,
   colorScheme: process.env.DARK ? 'dark' : 'light',

@@ -15,7 +15,7 @@ import { quietGuide } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4700';
 const base = `http://localhost:${PORT}`;
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 let failed = 0; const errs = [];
 const ok = (l, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${l}${d ? ' — ' + d : ''}`); if (!c) failed++; };
 const head = (s) => console.log('\n' + s);

@@ -11,6 +11,16 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-20 (b) — a half-deployed site now says so · version `2026-11-20b`
+
+The live site was showing `navControl`, `ctlSub`, `ctlWhoTitle` and `ctlPeople` as its labels. Nothing was broken: `public/app.js` had been deployed and `public/i18n.js` had not, so `t()` fell through to returning the key for every string added since the strings file on the server was written. The sidebar's older labels were still Thai, which made it look like a bug in the new pages rather than a missing file.
+
+This is the fourth time a partial upload has cost a day — `tasks.js` on 8 October, the documents work on 10 October, the page at `2026-10-24a` against an API at `2026-10-22d` — and the version check added back then compares `lib/version.js` with `public/app.js`, which were both fine here.
+
+So the strings files now stamp themselves. `window.STRINGS_VERSION` in `i18n.js` and `window.STRINGS_EN_VERSION` in `i18n-en.js` carry the build, `checkStrings()` compares the Thai one with `APP_VERSION` at boot, and a mismatch puts a red band across the bottom of every screen naming the two files to upload. The message is hard-coded in both languages rather than looked up, because the one thing that cannot be trusted at that moment is the lookup table.
+
+Tests: §77 gained four checks — both stamps equal `APP_VERSION`, the page calls the check at boot, and the message does not come from the strings file. Browser-checked both ways: no band on a matching build, the band with the two version numbers when the strings file is served from an older one.
+
 ## 2026-11-20 — the database was being billed for four hundred photographs · version `2026-11-20a`
 
 No schema change. Neon mailed a warning: 4.5 GB of the project's 5 GB monthly public network transfer, with ten days of the month left. On the Free plan that allowance is not billed as an overage — the project's **compute is suspended** until the next billing period, which means the whole site stops — so this was a fortnight away from taking CUFTM down.

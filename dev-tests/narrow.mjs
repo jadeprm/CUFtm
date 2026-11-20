@@ -12,7 +12,7 @@ import { chromium } from 'playwright';
 
 const PORT = process.argv[2] || '4700';
 const ORIGIN = `http://localhost:${PORT}`;
-const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const b = await chromium.launch();
 let failed = 0;
 const errs = [];
 const ok = (label, cond, detail = '') => {

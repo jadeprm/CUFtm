@@ -20,7 +20,7 @@ const SA_BOTTOM = 34;
 const W = 393;
 const H = 852;
 
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const ctx = await b.newContext({ viewport: { width: W, height: H }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
 const pg = await ctx.newPage();
 const errs = [];

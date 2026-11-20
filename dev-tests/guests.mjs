@@ -1,7 +1,7 @@
 /** Inviting somebody with no account here, the way a person would do it. */
 import { chromium } from 'playwright';
 import { quietGuide, expandUpcoming } from './quiet.mjs';
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const pg = await (await b.newContext({viewport:{width:1700,height:1000},deviceScaleFactor:1.3})).newPage();
 const errs=[]; pg.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
 pg.on('console',m=>{if(m.type()==='error'&&!/Failed to load resource/.test(m.text()))errs.push(m.text());});

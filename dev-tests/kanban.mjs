@@ -11,7 +11,7 @@ import { chromium } from 'playwright';
 import { quietGuide } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4700';
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 let failed = 0;
 const errs = [];
 const ok = (label, cond, detail = '') => {

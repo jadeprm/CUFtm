@@ -3,7 +3,7 @@ import { chromium } from 'playwright';
 import { quietGuide } from './quiet.mjs';
 import { writeFileSync } from 'node:fs';
 
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const pg = await (await b.newContext({ viewport: { width: 1200, height: 950 } })).newPage();
 const errs = [];
 pg.on('pageerror', e => errs.push('PAGEERROR: ' + e.message));

@@ -9,7 +9,7 @@
 import { chromium } from 'playwright';
 import { quietGuide, expandUpcoming } from './quiet.mjs';
 
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const ctx = await b.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2, isMobile: true, hasTouch: true,

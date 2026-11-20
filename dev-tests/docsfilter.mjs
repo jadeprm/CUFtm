@@ -1,7 +1,7 @@
 /** The documents page filters, seen rather than assumed. */
 import { chromium } from 'playwright';
 import { quietGuide } from './quiet.mjs';
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const pg = await (await b.newContext({viewport:{width:1180,height:940},deviceScaleFactor:2})).newPage();
 const errs=[]; pg.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
 pg.on('console',m=>{if(m.type()==='error'&&!/Failed to load resource/.test(m.text()))errs.push(m.text());});

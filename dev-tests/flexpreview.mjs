@@ -66,7 +66,7 @@ const bubble = (b) => `<div style="width:300px;flex:none;background:#fff;border-
 const html = `<html><head><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;700&display=swap"></head>
 <body style="margin:0;padding:20px;background:#8cabd9;display:flex;gap:16px;align-items:flex-start">${cards.map(bubble).join('')}</body></html>`;
 writeFileSync('/tmp/claude-0/flexprev/cards.html', html);
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }));
+const b = quietGuide(await chromium.launch());
 const pg = await (await b.newContext({ viewport: { width: 1320, height: 900 }, deviceScaleFactor: 2 })).newPage();
 await pg.goto('file:///tmp/claude-0/flexprev/cards.html'); await pg.waitForTimeout(1200);
 await pg.screenshot({ path: '/tmp/claude-0/flexprev/cards.png', fullPage: true });

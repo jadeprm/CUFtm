@@ -12,7 +12,7 @@ import { quietGuide } from './quiet.mjs';
 
 const PORT = process.argv[2] || '4700';
 // This is the one suite that wants the real pop-up through.
-const b = quietGuide(await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' }), { popups: true });
+const b = quietGuide(await chromium.launch(), { popups: true });
 let failed = 0; const errs = [];
 const ok = (l, c, d = '') => { console.log(`  ${c ? 'PASS' : 'FAIL'}  ${l}${d ? ' — ' + d : ''}`); if (!c) failed++; };
 const head = (s) => console.log('\n' + s);

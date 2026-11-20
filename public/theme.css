@@ -592,6 +592,17 @@ button.kpi:hover { transform: translateY(-1px); }
 .kpi-n { font-size: 26px; font-weight: 700; color: var(--ink); }
 .kpi-l { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .kpi-s { font-size: 11.5px; color: var(--ink-faint); }
+/* A pressed number stays lit and owns the panel that opened below it. */
+.kpi[aria-expanded="true"], .kpi.on {
+  border-color: var(--k); box-shadow: 0 0 0 1px var(--k) inset, var(--shadow-2);
+  background: color-mix(in srgb, var(--k) 7%, var(--surface));
+}
+.kpi[aria-expanded="true"] .kpi-ic, .kpi.on .kpi-ic { background: var(--k); color: #fff; }
+.kpi-panel { margin: -6px 0 18px; border-top: 3px solid var(--k); }
+.kpi-panel .card-head small { color: var(--ink-faint); font-size: 12px; }
+.kpi-list .kpi-code { color: var(--ink-faint); font-variant-numeric: tabular-nums; font-size: 11.5px; flex: none; }
+.kpi-list .done-chip { background: var(--done-soft); color: var(--done); font-weight: 600; }
+
 
 .home-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; align-items: start; }
 .hc-today { grid-column: span 5; align-self: stretch; }
@@ -1215,4 +1226,326 @@ input[type=range].sig-size { flex: 1; max-width: 320px; accent-color: var(--acce
   ul.list-view li.lrow .lr-where { margin-left: auto; max-width: 55%; }
   ul.list-view li.lrow .lr-prio:empty { display: none; }
   ul.list-view li.lrow .lr-who .stack .avatar { width: 20px; height: 20px; font-size: 8.5px; }
+}
+
+/* The warning above อนุมัติ when the step in front of you is somebody else's. */
+.notice.act-for { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0 0 8px; font-size: 13px; }
+.notice.act-for .ic svg { width: 17px; height: 17px; flex: none; }
+
+/* ======================================================================
+   Profile, in groups — and the account on a page of its own
+   ====================================================================== */
+
+.pf-group {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-1); overflow: hidden;
+}
+.pf-group-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.pf-group-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; }
+.pf-group-head .ic svg { width: 17px; height: 17px; color: var(--accent); }
+.pf-group-body { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
+.pf-group-body > .field { margin: 0; }
+/* Every control stops at the same right edge, which is what was ragged. */
+.pf-group-body input, .pf-group-body select, .pf-group-body textarea { width: 100%; max-width: 100%; }
+.pf-me { display: flex; gap: 16px; align-items: center; }
+.pf-me-btns { display: flex; flex-direction: column; gap: 6px; }
+
+.pf-link {
+  display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 11px 13px;
+  background: var(--surface-2);
+}
+.pf-link:hover { border-color: var(--accent); background: var(--accent-soft); }
+.pf-link-ic {
+  width: 34px; height: 34px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent);
+}
+.pf-link:hover .pf-link-ic { background: var(--accent); color: var(--accent-ink); }
+.pf-link-ic svg { width: 18px; height: 18px; }
+.pf-link-tx { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.pf-link-tx b { font-size: 13.5px; }
+.pf-link-tx small { font-size: 11.5px; color: var(--ink-faint); }
+.pf-link-go { margin-inline-start: auto; color: var(--ink-faint); font-size: 20px; line-height: 1; }
+
+.acct-page { max-width: 640px; }
+.acct-body { display: flex; flex-direction: column; gap: 12px; }
+.acct-intro { margin: 0; font-size: 13px; color: var(--ink-faint); }
+.acct-card {
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 12px 14px; background: var(--surface);
+}
+.acct-card .acct-row { display: flex; align-items: center; gap: 12px; }
+.acct-what { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
+.acct-what label { font-size: 11.5px; color: var(--ink-faint); margin: 0; }
+.acct-val { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.acct-card .hint { display: block; margin-top: 6px; }
+.acct-card .acct-panel {
+  display: grid; gap: 8px; margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed var(--line-strong);
+}
+.acct-card .acct-panel input { width: 100%; }
+.acct-change.on {
+  background: var(--surface); border-color: var(--accent); color: var(--accent); font-weight: 600;
+}
+.acct-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+
+/* ======================================================================
+   The control panel
+   ====================================================================== */
+
+.ctl-sub { margin: -6px 0 16px; font-size: 13px; color: var(--ink-faint); }
+.ctl-wait { padding: 20px; color: var(--ink-faint); font-size: 13px; }
+.ctl-tiles {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px; margin-bottom: 18px;
+}
+.ctl-tile {
+  display: flex; align-items: center; gap: 11px; text-decoration: none; color: inherit;
+  background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--k);
+  border-radius: var(--radius); padding: 12px 13px; box-shadow: var(--shadow-1); min-width: 0;
+}
+a.ctl-tile:hover { box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.ctl-tile-ic {
+  width: 36px; height: 36px; border-radius: 11px; flex: none; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--k) 14%, transparent); color: var(--k);
+}
+.ctl-tile-ic svg { width: 19px; height: 19px; }
+.ctl-tile-tx { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.ctl-tile-tx b { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ctl-tile-tx span { font-size: 12.5px; font-weight: 600; color: var(--ink-soft); }
+.ctl-tile-tx small { font-size: 11px; color: var(--ink-faint); }
+
+.ctl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.ctl-card { min-width: 0; }
+.ctl-card.wide { grid-column: 1 / -1; }
+.ctl-card .card-head .ic svg { width: 18px; height: 18px; color: var(--accent); }
+
+.ctl-stack-wrap { display: flex; flex-direction: column; gap: 10px; }
+.ctl-stack { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
+.ctl-stack i { display: block; height: 100%; }
+.ctl-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.ctl-legend li { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
+.ctl-legend i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.ctl-legend b { font-variant-numeric: tabular-nums; color: var(--ink); }
+
+.ctl-rows { list-style: none; margin: 12px 0 0; padding: 0; }
+.ctl-rows li {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  padding: 7px 0; border-top: 1px solid var(--line-soft); font-size: 13px;
+}
+.ctl-rows li:first-child { border-top: 0; }
+.ctl-row-k { color: var(--ink-soft); min-width: 0; }
+.ctl-row-v { font-weight: 600; font-variant-numeric: tabular-nums; flex: none; }
+.ctl-rows li.bad .ctl-row-v { color: var(--danger); }
+
+.ctl-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ctl-table th, .ctl-table td { text-align: start; padding: 7px 8px; border-bottom: 1px solid var(--line-soft); }
+.ctl-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); font-weight: 600; }
+.ctl-table td:not(:first-child) { text-align: end; font-variant-numeric: tabular-nums; }
+.ctl-table td.late { color: var(--danger); font-weight: 600; }
+
+.ctl-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.ctl-list li {
+  display: flex; align-items: center; gap: 8px; padding: 7px 0;
+  border-top: 1px solid var(--line-soft); font-size: 13px; cursor: pointer;
+}
+.ctl-list li:first-child { border-top: 0; }
+.ctl-li-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-list small { color: var(--ink-faint); font-size: 11.5px; flex: none; }
+
+.ctl-health {
+  display: flex; align-items: center; gap: 8px; padding: 9px 11px;
+  border-radius: var(--radius-sm); font-size: 12.5px; font-weight: 600;
+}
+.ctl-health.good { background: var(--done-soft); color: var(--done); }
+.ctl-health.bad { background: var(--danger-soft); color: var(--danger); }
+.ctl-health svg { width: 17px; height: 17px; flex: none; }
+
+.ctl-jump { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@media (max-width: 1100px) {
+  .ctl-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .ctl-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ctl-grid { grid-template-columns: minmax(0, 1fr); }
+  .ctl-tile-tx b { font-size: 19px; }
+}
+
+/* ======================================================================
+   How to use this
+   ====================================================================== */
+
+.guide-top {
+  display: flex; align-items: center; gap: 20px; margin-bottom: 18px;
+  background: var(--grad); color: #fff; border-radius: var(--radius);
+  padding: 20px 24px; box-shadow: var(--shadow-2);
+}
+.guide-top-tx { flex: 1; min-width: 0; }
+.guide-top-tx h2 { margin: 0 0 6px; font-size: 21px; font-weight: 700; }
+.guide-top-tx p { margin: 0 0 14px; font-size: 13.5px; opacity: .92; max-width: 56ch; line-height: 1.6; }
+.guide-top-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.guide-top-btns .btn { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.3); color: #fff; box-shadow: none; }
+.guide-top-btns .btn:hover { background: rgba(255,255,255,.26); border-color: rgba(255,255,255,.5); }
+.guide-top-btns .btn.primary { background: #fff; color: var(--accent); border-color: transparent; }
+.guide-top-art { flex: none; opacity: .5; }
+.guide-top-art svg { width: 76px; height: 76px; stroke-width: 1.2; }
+
+.guide-find-wrap { margin-bottom: 14px; }
+.guide-find {
+  width: 100%; max-width: 30rem; border: 1px solid var(--line-strong); border-radius: 10px;
+  padding: 9px 13px; font: inherit; font-size: 13.5px; background: var(--surface); color: var(--ink);
+}
+.guide-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
+  gap: 14px; align-items: start;
+}
+.guide-card { display: flex; flex-direction: column; gap: 10px; }
+.guide-card-head { display: flex; align-items: center; gap: 11px; }
+.guide-ic {
+  width: 38px; height: 38px; border-radius: 12px; flex: none; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent);
+}
+.guide-ic svg { width: 19px; height: 19px; }
+.guide-card-tx { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.guide-card-tx b { font-size: 15px; font-weight: 600; }
+.guide-card-tx small { font-size: 11px; color: var(--ink-faint); }
+.guide-what { margin: 0; font-size: 13px; color: var(--ink-soft); line-height: 1.65; }
+.guide-tips { margin: 0; padding-inline-start: 18px; display: grid; gap: 6px; }
+.guide-tips li { font-size: 12.5px; color: var(--ink-faint); line-height: 1.6; }
+.guide-tips li::marker { color: var(--accent); }
+.guide-go { align-self: flex-start; margin-top: auto; display: inline-flex; gap: 6px; align-items: center; }
+.guide-foot { margin-top: 16px; }
+
+@media (max-width: 700px) {
+  .guide-top { flex-direction: column; align-items: flex-start; padding: 18px; }
+  .guide-top-art { display: none; }
+}
+
+/* ======================================================================
+   Colour: one hue per page, one per ฝ่าย
+
+   The complaint was that page after page read as the same white card on the
+   same grey. Nothing below changes a layout — it gives each page a colour of
+   its own and spends it in three places: the line under the top bar, the icon
+   beside a card's heading, and whatever the page says when it is empty.
+   ====================================================================== */
+
+:root { --page: var(--accent); }
+body[data-page="home"]     { --page: #c8306f; }
+body[data-page="schedule"] { --page: #5b5bd6; }
+body[data-page="work"]     { --page: #2f7ff0; }
+body[data-page="space"]    { --page: #0fa5a0; }
+body[data-page="calendar"] { --page: #8b5cf6; }
+body[data-page="docs"]     { --page: #f0a020; }
+body[data-page="shelf"]    { --page: #12a36b; }
+body[data-page="reports"]  { --page: #e5484d; }
+body[data-page="links"]    { --page: #0fa5a0; }
+body[data-page="profile"]  { --page: #c8306f; }
+body[data-page="account"]  { --page: #8b5cf6; }
+body[data-page="guide"]    { --page: #c8306f; }
+body[data-page="control"]  { --page: #5b5bd6; }
+body[data-page="admin"]    { --page: #5b5bd6; }
+body[data-page="announce"] { --page: #f59e0b; }
+body[data-page="requests"] { --page: #12a36b; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body[data-page="home"]     { --page: #ff6fa3; }
+  :root:not([data-theme="light"]) body[data-page="schedule"] { --page: #a9a4ff; }
+  :root:not([data-theme="light"]) body[data-page="work"]     { --page: #7fb0ff; }
+  :root:not([data-theme="light"]) body[data-page="space"]    { --page: #5fd6cf; }
+  :root:not([data-theme="light"]) body[data-page="calendar"] { --page: #b89bff; }
+  :root:not([data-theme="light"]) body[data-page="docs"]     { --page: #ffc35c; }
+  :root:not([data-theme="light"]) body[data-page="shelf"]    { --page: #5ad7a3; }
+  :root:not([data-theme="light"]) body[data-page="reports"]  { --page: #ff7d8c; }
+  :root:not([data-theme="light"]) body[data-page="links"]    { --page: #5fd6cf; }
+  :root:not([data-theme="light"]) body[data-page="profile"]  { --page: #ff6fa3; }
+  :root:not([data-theme="light"]) body[data-page="account"]  { --page: #b89bff; }
+  :root:not([data-theme="light"]) body[data-page="guide"]    { --page: #ff6fa3; }
+  :root:not([data-theme="light"]) body[data-page="control"]  { --page: #a9a4ff; }
+  :root:not([data-theme="light"]) body[data-page="admin"]    { --page: #a9a4ff; }
+  :root:not([data-theme="light"]) body[data-page="announce"] { --page: #f0c05a; }
+  :root:not([data-theme="light"]) body[data-page="requests"] { --page: #5ad7a3; }
+}
+:root[data-theme="dark"] body[data-page="home"]     { --page: #ff6fa3; }
+:root[data-theme="dark"] body[data-page="schedule"] { --page: #a9a4ff; }
+:root[data-theme="dark"] body[data-page="work"]     { --page: #7fb0ff; }
+:root[data-theme="dark"] body[data-page="space"]    { --page: #5fd6cf; }
+:root[data-theme="dark"] body[data-page="calendar"] { --page: #b89bff; }
+:root[data-theme="dark"] body[data-page="docs"]     { --page: #ffc35c; }
+:root[data-theme="dark"] body[data-page="shelf"]    { --page: #5ad7a3; }
+:root[data-theme="dark"] body[data-page="reports"]  { --page: #ff7d8c; }
+:root[data-theme="dark"] body[data-page="links"]    { --page: #5fd6cf; }
+:root[data-theme="dark"] body[data-page="profile"]  { --page: #ff6fa3; }
+:root[data-theme="dark"] body[data-page="account"]  { --page: #b89bff; }
+:root[data-theme="dark"] body[data-page="guide"]    { --page: #ff6fa3; }
+:root[data-theme="dark"] body[data-page="control"]  { --page: #a9a4ff; }
+:root[data-theme="dark"] body[data-page="admin"]    { --page: #a9a4ff; }
+:root[data-theme="dark"] body[data-page="announce"] { --page: #f0c05a; }
+:root[data-theme="dark"] body[data-page="requests"] { --page: #5ad7a3; }
+
+/* The top bar wears it as a hairline, which is enough to tell pages apart. */
+.topbar { border-bottom: 2px solid color-mix(in srgb, var(--page) 55%, var(--line)); }
+
+/* A card's heading icon becomes a tinted badge rather than a grey glyph. */
+.card-head .ic {
+  width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none;
+  background: color-mix(in srgb, var(--page) 13%, transparent);
+}
+.card-head .ic svg { width: 17px; height: 17px; color: var(--page); }
+/* The home page's cards each keep the colour of the thing they are about. */
+.hc-today .card-head .ic { background: color-mix(in srgb, #f59e0b 15%, transparent); }
+.hc-today .card-head .ic svg { color: #f59e0b; }
+.hc-next .card-head .ic { background: color-mix(in srgb, #2f7ff0 15%, transparent); }
+.hc-next .card-head .ic svg { color: #2f7ff0; }
+.hc-badges .card-head .ic { background: color-mix(in srgb, #12a36b 15%, transparent); }
+.hc-badges .card-head .ic svg { color: #12a36b; }
+.hc-team .card-head .ic { background: color-mix(in srgb, #8b5cf6 15%, transparent); }
+.hc-team .card-head .ic svg { color: #8b5cf6; }
+
+/* Nothing here yet should still look like part of the page. */
+.muted-line, .today-empty {
+  background: color-mix(in srgb, var(--page) 6%, var(--surface-2));
+  border: 1px dashed color-mix(in srgb, var(--page) 28%, var(--line));
+  border-radius: var(--radius-sm); padding: 14px 16px; color: var(--ink-faint);
+}
+.today-empty .ic svg { color: var(--page); }
+
+/* The segmented control and the page's own tabs follow the page colour. */
+.seg button.on { background: var(--page); border-color: transparent; color: #fff; }
+
+/* A ฝ่าย, in its own colour, wherever it appears as a chip. */
+.chip.dept.tinted {
+  background: color-mix(in srgb, var(--d) 12%, var(--surface));
+  color: color-mix(in srgb, var(--d) 82%, var(--ink));
+  border-color: color-mix(in srgb, var(--d) 30%, var(--line));
+  font-weight: 600;
+}
+:root[data-theme="dark"] .chip.dept.tinted {
+  background: color-mix(in srgb, var(--d) 24%, var(--surface));
+  color: color-mix(in srgb, var(--d) 55%, #ffffff);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .chip.dept.tinted {
+    background: color-mix(in srgb, var(--d) 24%, var(--surface));
+    color: color-mix(in srgb, var(--d) 55%, #ffffff);
+  }
+}
+
+/* Tables stop being four grey lines. */
+.users-table thead th, .ctl-table th {
+  background: color-mix(in srgb, var(--page) 7%, var(--surface-2));
+}
+
+/* Said when app.js and i18n.js come from different builds — see checkStrings.
+   Fixed to the bottom so it cannot be scrolled past, and loud on purpose:
+   every label on the page is a raw key name until somebody uploads the file. */
+.stale-strings {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 9999;
+  background: #b02a1f; color: #fff; font-size: 12.5px; line-height: 1.5;
+  padding: 10px max(14px, env(safe-area-inset-right, 0px))
+           calc(10px + env(safe-area-inset-bottom, 0px)) max(14px, env(safe-area-inset-left, 0px));
+  text-align: center; box-shadow: 0 -6px 20px -10px rgba(0,0,0,.5);
 }
