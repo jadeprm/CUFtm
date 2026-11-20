@@ -10214,5 +10214,68 @@ ok('...but does carry the version, for the page to build a URL from',
 
 await sql`UPDATE users SET avatar = NULL WHERE username = 'Jade_Pres'`;
 
+
+head('119. The short-link domain is checked, not assumed');
+
+/*
+ * On 20 November every printed short link pointed at chulafair.com, which had
+ * become the public website's own Vercel project and answered 404. The app was
+ * healthy, the links were dead, and nothing in CUFTM could see the difference
+ * because the domain belongs to a setting, not to the code.
+ */
+r = await call(metaApi, '/api/meta?go=__check__', {});
+ok('the probe code answers without looking anything up',
+  r.data.cuftm === true && r.data.what === 'shortlink', JSON.stringify(r.data));
+ok('...and says which build answered', r.data.version === APP_VERSION, r.data.version);
+
+r = await call(metaApi, '/api/meta?do=linkcheck', {});
+ok('a stranger cannot make the server fetch a URL', r.status === 401, String(r.status));
+r = await call(metaApi, '/api/meta?do=linkcheck', { as: 'editor' });
+ok('...and neither can an editor', r.status === 403, String(r.status));
+
+/** The domain answers as this app: what a correct setup looks like. */
+const beforeShort = process.env.SHORTLINK_URL;
+process.env.SHORTLINK_URL = 'https://links.test';
+const realFetch3 = globalThis.fetch;
+let probeAsked = '';
+// Only the short domain is answered here; everything else — the database
+// driver included — goes on using the real fetch.
+globalThis.fetch = async (u, init) => {
+  if (!String(u).includes('links.test')) return realFetch3(u, init);
+  probeAsked = String(u);
+  return new Response(JSON.stringify({ cuftm: true, what: 'shortlink', version: APP_VERSION }),
+    { status: 200, headers: { 'content-type': 'application/json' } });
+};
+r = await call(metaApi, '/api/meta?do=linkcheck', { as: 'admin' });
+ok('the check fetches the configured domain, not the app’s own address',
+  probeAsked === 'https://links.test/s/__check__', probeAsked);
+ok('...and reports it reaching this deployment', r.data.ok === true, JSON.stringify(r.data).slice(0, 120));
+ok('...naming the version that answered', r.data.sawVersion === APP_VERSION, r.data.sawVersion);
+
+/** The domain belongs to somebody else's project: what went wrong here. */
+globalThis.fetch = async (u, init) => {
+  if (!String(u).includes('links.test')) return realFetch3(u, init);
+  return new Response('<!doctype html><title>404: NOT_FOUND</title><h1>This page doesn’t exist</h1>',
+    { status: 404, headers: { 'content-type': 'text/html' } });
+};
+r = await call(metaApi, '/api/meta?do=linkcheck', { as: 'admin' });
+ok('a domain that is somebody else’s project is reported as broken', r.data.ok === false);
+ok('...with the status it really gave', r.data.status === 404, String(r.data.status));
+ok('...and what was there instead, so it is recognisable',
+  /404/.test(r.data.saw || ''), r.data.saw);
+
+/** The domain does not answer at all. */
+globalThis.fetch = async (u, init) => {
+  if (!String(u).includes('links.test')) return realFetch3(u, init);
+  throw new Error('getaddrinfo ENOTFOUND links.test');
+};
+r = await call(metaApi, '/api/meta?do=linkcheck', { as: 'admin' });
+ok('a domain that answers nothing is reported with the reason',
+  r.data.ok === false && /ENOTFOUND/.test(r.data.reason || ''), r.data.reason);
+
+globalThis.fetch = realFetch3;
+if (beforeShort === undefined) delete process.env.SHORTLINK_URL;
+else process.env.SHORTLINK_URL = beforeShort;
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
