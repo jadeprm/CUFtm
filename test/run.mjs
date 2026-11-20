@@ -6388,6 +6388,27 @@ const shell = (await import('node:fs')).readFileSync('public/index.html', 'utf8'
 const stamps = [...new Set([...shell.matchAll(/\?v=([0-9a-z-]+)/g)].map((m) => m[1]))];
 ok('index.html asks for this version of every file', stamps.length === 1 && stamps[0] === APP_VERSION, stamps.join(', '));
 
+/**
+ * And the strings. On 20 November the committee's live site showed navControl,
+ * ctlSub and ctlWhoTitle as its labels: app.js had been deployed and i18n.js
+ * had not, which looks like a broken app and is a missing file. Both tables
+ * now stamp the build they belong to, and app.js says so on screen when they
+ * disagree — but the cheapest place to catch it is here.
+ */
+const thSrc = (await import('node:fs')).readFileSync('public/i18n.js', 'utf8');
+const enSrc = (await import('node:fs')).readFileSync('public/i18n-en.js', 'utf8');
+const thStamp = thSrc.match(/window\.STRINGS_VERSION = '([^']+)'/);
+const enStamp = enSrc.match(/window\.STRINGS_EN_VERSION = '([^']+)'/);
+ok('the Thai strings say which build they belong to', thStamp && thStamp[1] === APP_VERSION,
+  `${thStamp && thStamp[1]} vs ${APP_VERSION}`);
+ok('...and the English ones too', enStamp && enStamp[1] === APP_VERSION,
+  `${enStamp && enStamp[1]} vs ${APP_VERSION}`);
+const bootSrc = (await import('node:fs')).readFileSync('public/app.js', 'utf8');
+ok('...and the page checks them at boot rather than showing raw key names',
+  /function checkStrings\(/.test(bootSrc) && /checkStrings\(\);/.test(bootSrc));
+ok('...with a message that does not itself come from the strings file',
+  /i18n\.js/.test(bootSrc) && /stale-strings/.test(bootSrc));
+
 // ===========================================================================
 head('78. Who may sign as ประธานโครงการ, and who the form suggests first');
 

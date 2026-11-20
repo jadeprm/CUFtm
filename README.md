@@ -85,6 +85,30 @@ Open your site. Enter the username exactly as it appears in the sheet — `Jade_
 
 Everyone else does the same with their own username.
 
+### The pages, and the three added in 2026-11
+
+Every page is listed, with what it is for, inside the app itself:
+**วิธีใช้งาน** (`#/guide`), reachable from the profile menu. It is written for
+somebody's first week and is the place to add an explanation rather than in a
+LINE message that scrolls away.
+
+Three pages were added in `2026-11-19a`, and one was removed:
+
+* **`#/account`** — email, username and password, split out of the profile.
+  The profile is how the committee sees you; this is how you get in, and
+  mixing them put a password field under a profile picture.
+* **`#/guide`** — the page above.
+* **`#/control`** — the control panel, admin and co-admin only: people, work,
+  documents, meetings and the state of the machinery (the hourly run, push,
+  LINE, Drive, storage) on one screen. Read-only by design.
+* **ฟีดโครงการ was removed.** The page, its strings and its stylesheet are
+  gone. `lib/feed.js`, the endpoints on `/api/notifications` and the tables
+  are deliberately still there, so nothing anybody wrote was destroyed and
+  the page can be restored by putting back `pageFeed` and its route.
+
+`dev-tests/shots.mjs` photographs every page for the handbook; it is not a
+test and nothing fails if it is never run.
+
 ### 4. Hourly reminders
 
 Vercel runs this itself, from `crons` in `vercel.json`:
