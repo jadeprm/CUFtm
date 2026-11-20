@@ -124,7 +124,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-18a';
+  var APP_VERSION = '2026-11-20a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -456,10 +456,25 @@
     return { w: w, h: hh };
   }
 
+  /**
+   * Where a profile picture comes from.
+   *
+   * Not from the directory any more: four hundred base64 pictures rode in on
+   * every page load and were most of what Neon billed for egress in November.
+   * The row carries a ten-character version instead, and the picture is
+   * fetched once per face per browser and then cached for a year — the
+   * version in the URL is what lets a changed picture through.
+   */
+  function avatarUrl(u) {
+    if (!u || !u.avatarV) return null;
+    return '/api/users?do=avatar&user=' + encodeURIComponent(u.username) + '&v=' + encodeURIComponent(u.avatarV);
+  }
+
   function avatarNode(username, size) {
     var u = userBy(username);
     var cls = 'avatar' + (size ? ' ' + size : '');
-    if (u && u.avatar) return h('span', { class: cls, title: nameOf(username) }, [h('img', { src: u.avatar, alt: '' })]);
+    var src = avatarUrl(u);
+    if (src) return h('span', { class: cls, title: nameOf(username) }, [h('img', { src: src, alt: '', loading: 'lazy' })]);
     return h('span', { class: cls, title: nameOf(username), text: initials(u ? u.displayName : username) });
   }
   /**
@@ -553,6 +568,29 @@
   /** The label, indented one step for the Operations divisions. */
   function deptOptionLabel(d) {
     return (d.parent ? '\u2001' : '') + (d[S.lang] || d.en);
+  }
+
+  /**
+   * One colour per ฝ่าย, the same everywhere.
+   *
+   * Taken from the name rather than stored, so a ฝ่าย added next week has a
+   * colour without anybody choosing one, and the colour does not move when
+   * the list is reordered. Eight hues, far enough apart to tell apart.
+   */
+  var DEPT_HUES = ['#c8306f', '#5b5bd6', '#0fa5a0', '#f59e0b', '#8b5cf6', '#2f7ff0', '#12a36b', '#e5484d'];
+  function deptHue(key) {
+    var n = 0, str = String(key || '');
+    for (var i = 0; i < str.length; i += 1) n = (n * 31 + str.charCodeAt(i)) % 99991;
+    return DEPT_HUES[n % DEPT_HUES.length];
+  }
+
+  /** A ฝ่าย as a chip in its own colour. */
+  function deptChip(key, extra) {
+    return h('span', {
+      class: 'chip dept tinted' + (extra ? ' ' + extra : ''),
+      style: '--d:' + deptHue(key),
+      text: deptLabel(key),
+    });
   }
 
   function deptLabel(key) {
@@ -1027,26 +1065,74 @@
    * with a code sent to their own email and does it themselves; an admin
    * never sees or types a password.
    */
+  /**
+   * Email, username and password — the three things that are about the
+   * account rather than about the person.
+   *
+   * Each one is a card that opens its own form in place. It used to be three
+   * rows sharing one panel at the bottom, so pressing เปลี่ยน on รหัสผ่าน put
+   * fields under ชื่อผู้ใช้ and the right-hand edge went ragged where the
+   * wide fields ran past the rows above them. One card, one form, one edge.
+   */
   function accountBox() {
     var box = h('div', { class: 'account-box' });
     var msg = h('div', { class: 'notice', hidden: true });
     function say(kind, text) { msg.hidden = !text; msg.className = 'notice ' + kind; msg.textContent = text || ''; }
-    function row(label, value, btnText, onclick) {
-      return h('div', { class: 'field' }, [
-        h('label', { text: label }),
+    function inp(type, ph, extra) {
+      return h('input', Object.assign({ type: type, placeholder: ph || '', autocomplete: 'off' }, extra || {}));
+    }
+    function fail(err) { say('err', errText(err.code)); }
+
+    var cards = [];
+    function closeAll(except) { cards.forEach(function (c) { if (c !== except) c.close(); }); }
+    function done(text) { closeAll(); say('ok', text); renderShell(); }
+
+    /**
+     * One row of the account, with its form folded underneath.
+     *
+     * `build` is handed a `show` it calls with the fields to put in the open
+     * panel, so a two-step flow (send a code, then type it) can replace its
+     * own contents without touching anything else on the page.
+     */
+    function card(key, label, value, hint, build) {
+      var panel = h('div', { class: 'acct-panel', hidden: true });
+      var btn = h('button', { type: 'button', class: 'btn sm acct-change', text: t('acctChange') });
+      function show(kids) {
+        clear(panel);
+        (kids || []).filter(Boolean).forEach(function (k) { panel.appendChild(k); });
+      }
+      var c = {
+        key: key,
+        close: function () {
+          panel.hidden = true; clear(panel);
+          btn.textContent = t('acctChange'); btn.classList.remove('on');
+          btn.setAttribute('aria-expanded', 'false');
+        },
+        open: function () {
+          closeAll(c); say('', '');
+          panel.hidden = false;
+          btn.textContent = t('cancel'); btn.classList.add('on');
+          btn.setAttribute('aria-expanded', 'true');
+          build(show);
+        },
+      };
+      btn.setAttribute('aria-expanded', 'false');
+      btn.addEventListener('click', function () { if (panel.hidden) c.open(); else c.close(); });
+      cards.push(c);
+      return h('div', { class: 'acct-card' }, [
         h('div', { class: 'acct-row' }, [
-          h('input', { type: 'text', value: value, disabled: true }),
-          h('button', { type: 'button', class: 'btn sm', text: btnText, onclick: onclick }),
+          h('span', { class: 'acct-what' }, [
+            h('label', { text: label }),
+            h('b', { class: 'acct-val', text: value }),
+          ]),
+          btn,
         ]),
+        hint ? h('small', { class: 'hint', text: hint }) : null,
+        panel,
       ]);
     }
-    var panel = h('div', { class: 'acct-panel' });
-    function show(kids) { clear(panel); kids.forEach(function (k) { panel.appendChild(k); }); }
-    function inp(type, ph, extra) { return h('input', Object.assign({ type: type, placeholder: ph || '', autocomplete: 'off' }, extra || {})); }
-    function fail(err) { say('err', errText(err.code)); }
-    function done(text) { say('ok', text); show([]); renderShell(); }
 
-    function changeEmail() {
+    function changeEmail(show) {
       var email = inp('email', t('regEmail'), { autocomplete: 'email' });
       var send = h('button', { type: 'button', class: 'btn primary', text: t('emSend') });
       send.addEventListener('click', function () {
@@ -1066,9 +1152,10 @@
         }).catch(function (err) { send.disabled = false; fail(err); });
       });
       show([email, send]);
+      email.focus();
     }
 
-    function changePassword() {
+    function changePassword(show) {
       var cur = inp('password', t('acctCurrent'), { autocomplete: 'current-password' });
       var pw = inp('password', t('acctNewPassword'), { autocomplete: 'new-password' });
       var pw2 = inp('password', t('confirmPassword'), { autocomplete: 'new-password' });
@@ -1081,10 +1168,11 @@
           .catch(function (err) { ok.disabled = false; fail(err); });
       });
       show([cur, pw, pw2, h('small', { class: 'hint', text: t('pwRules') }), ok]);
+      cur.focus();
     }
 
-    function changeUsername() {
-      if (!S.user.emailVerified) { say('warn', t('acctNeedEmail')); return; }
+    function changeUsername(show) {
+      if (!S.user.emailVerified) { say('warn', t('acctNeedEmail')); show([]); return; }
       var send = h('button', { type: 'button', class: 'btn primary', text: t('emSend') });
       send.addEventListener('click', function () {
         send.disabled = true;
@@ -1102,17 +1190,40 @@
           show([name, code, ok]);
         }).catch(function (err) { send.disabled = false; fail(err); });
       });
-      say('', '');
-      show([h('small', { class: 'hint', text: t('acctUsernameWhy') }), send]);
+      show([send]);
     }
 
-    box.appendChild(row(t('regEmail'), S.user.email ? S.user.email + (S.user.emailVerified ? ' ✓' : '') : t('noEmailYet'),
-      t('acctChange'), changeEmail));
-    box.appendChild(row(t('username'), S.user.username, t('acctChange'), changeUsername));
-    box.appendChild(row(t('password'), '••••••••', t('acctChange'), changePassword));
     box.appendChild(msg);
-    box.appendChild(panel);
+    box.appendChild(card('email', t('regEmail'),
+      S.user.email ? S.user.email + (S.user.emailVerified ? ' \u2713' : '') : t('noEmailYet'),
+      t('acctEmailWhy'), changeEmail));
+    box.appendChild(card('username', t('username'), S.user.username, t('acctUsernameWhy'), changeUsername));
+    box.appendChild(card('password', t('password'), '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022',
+      t('acctPasswordWhy'), changePassword));
     return box;
+  }
+
+  /**
+   * The account page.
+   *
+   * Split out of the profile because the two are different errands: the
+   * profile is how the committee sees you, this is how you get in. Mixing
+   * them put a password field three inches under a profile picture, and the
+   * page was the one people were most afraid of pressing the wrong thing on.
+   */
+  function pageAccount(main) {
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navAccount') })]));
+    main.appendChild(h('div', { class: 'modal acct-page', style: 'width:100%;margin:0' }, [
+      h('div', { class: 'body acct-body' }, [
+        h('p', { class: 'acct-intro', text: t('acctIntro') }),
+        accountBox(),
+        h('div', { class: 'acct-foot' }, [
+          h('a', { class: 'btn', href: '#/profile' }, [icon('user'), t('acctBackToProfile')]),
+          h('button', { class: 'btn danger ghost', type: 'button', text: t('signOut'),
+            onclick: function () { $('sign-out').click(); } }),
+        ]),
+      ]),
+    ]));
   }
 
   /** Forgotten password: a code to the verified email, then a new password chosen by the person. */
@@ -1554,6 +1665,11 @@
     chevron: '<path d="M9 6l6 6-6 6"/>',
     board: '<rect x="3.5" y="4" width="5" height="16" rx="1.5"/><rect x="9.5" y="4" width="5" height="11" rx="1.5"/><rect x="15.5" y="4" width="5" height="13" rx="1.5"/>',
     list: '<path d="M8 6.5h12M8 12h12M8 17.5h12"/><circle cx="4.5" cy="6.5" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17.5" r="1"/>',
+    key: '<circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3.5M15.5 12v2.5"/>',
+    book: '<path d="M4 5.5A2 2 0 016 3.5h12v17H6a2 2 0 01-2-2z"/><path d="M8 7.5h7M8 11h7"/>',
+    gauge: '<path d="M4 17a8 8 0 1116 0"/><path d="M12 17l4.5-5"/><circle cx="12" cy="17" r="1.3"/>',
+    shield: '<path d="M12 3.5l7 2.5v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+    pulse: '<path d="M3 12.5h4l2.5-6 4 12 2.5-6H21"/>',
   };
   function icon(name, cls) {
     var span = document.createElement('span');
@@ -1731,7 +1847,8 @@
       home: 'navHome', schedule: 'navSchedule', requests: 'navRequests',
       work: 'navWork', calendar: 'navCalendar', docs: 'navDocs', announce: 'navAnnounce',
       admin: 'navAdmin', profile: 'profile', links: 'navLinks',
-      reports: 'navReports', shelf: 'navShelf', feed: 'navFeed',
+      account: 'navAccount', guide: 'navGuide', control: 'navControl',
+      reports: 'navReports', shelf: 'navShelf',
     }[S.page] || 'navWork');
   }
 
@@ -1861,10 +1978,12 @@
 
     // On a phone, the drawer also carries the pages that have no room in the bar.
     if (isPhone()) {
-      var pages = [['feed', 'navFeed', 'megaphone'], ['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
+      var pages = [['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
         ['announce', 'navAnnounce', 'megaphone', S.canManage],
         ['requests', 'navRequests', 'user', S.canApprove],
+        ['control', 'navControl', 'gauge', S.canManage],
         ['admin', 'navAdmin', 'people', S.canManage], ['profile', 'profile', 'user'],
+        ['account', 'navAccount', 'key'], ['guide', 'navGuide', 'book'],
         ['links', 'navLinks', 'link'], ['reports', 'navReports', 'bug']];
       box.appendChild(h('div', { class: 'sb-drawer-nav' }, pages.filter(function (p) {
         return p[3] === undefined || p[3];
@@ -1979,6 +2098,7 @@
     document.querySelectorAll('#tabs a').forEach(function (a) {
       a.classList.toggle('on', a.dataset.page === S.page);
     });
+    $('tab-control').hidden = !S.canManage;
     $('tab-admin').hidden = !S.canManage;
     $('tab-announce').hidden = !S.canManage;
     $('tab-requests').hidden = !S.canApprove;
@@ -1989,7 +2109,8 @@
     renderSidebar();
 
     var av = clear($('me-avatar'));
-    if (S.user.avatar) av.appendChild(h('img', { src: S.user.avatar, alt: '' }));
+    var meSrc = avatarUrl(S.user);
+    if (meSrc) av.appendChild(h('img', { src: meSrc, alt: '' }));
     else av.textContent = initials(S.user.displayName);
     $('me-name').textContent = S.user.displayName || S.user.username;
     $('me-theme').textContent = t('theme') + ': ' + t('theme' +
@@ -2187,7 +2308,7 @@
     }
     if (page === 'more') page = S.page || 'home';
     if (['home', 'schedule', 'space', 'work', 'calendar', 'docs', 'profile', 'links', 'admin', 'announce',
-      'reports', 'shelf', 'feed', 'requests'].indexOf(page) === -1) page = 'home';
+      'reports', 'shelf', 'requests', 'account', 'guide', 'control'].indexOf(page) === -1) page = 'home';
     if (page === 'requests' && !S.canApprove) page = 'work';
     if ((page === 'admin' || page === 'announce') && !S.canManage) page = 'work';
     // Leaving the admin page drops whatever it was last saying, so coming back
@@ -2198,6 +2319,15 @@
     // has to dismiss before they can read anything.
     ['bell-pop', 'me-pop'].forEach(function (id) { if ($(id)) $(id).hidden = true; });
     S.page = page;
+    /**
+     * The page's own colour, carried on <body>.
+     *
+     * Every page was the same white card on the same lilac grey, so people
+     * could not tell at a glance which one they were looking at — which is
+     * most of what "it looks flat" means. One hue per page, used by the top
+     * bar, the card headings and the empty states; nothing else changes.
+     */
+    try { document.body.dataset.page = page; } catch (e) {}
   }
 
   /**
@@ -3695,10 +3825,36 @@
       bodyBox.appendChild(pane);
 
       /* ---- what this person can do ---- */
+      /**
+       * Pressing a step that belongs to somebody else.
+       *
+       * Anybody named on a letter can move the step in front of it, and an
+       * admin can move any of them — which is what keeps a letter from
+       * stopping dead because one ประธานฝ่าย is on a plane. It is also how
+       * somebody approves in another person's name without noticing they
+       * have. So the name on the step is said out loud first, with who the
+       * system is about to record as having pressed it. Approving your own
+       * step asks nothing, which is almost every press.
+       */
+      var waitingStep = (data.steps || []).filter(function (s) { return s.state === 'waiting'; })[0];
+      var standingIn = Boolean(waitingStep && waitingStep.username !== S.user.username);
+      function okToActFor() {
+        if (!standingIn) return true;
+        return confirm(t('docActForSure')
+          .replace('%s', nameOf(waitingStep.username))
+          .replace('%r', waitingStep.roleLabel || waitingStep.role));
+      }
+
       if (data.myTurn) {
+        if (standingIn) {
+          footer.appendChild(h('div', { class: 'notice warn act-for' }, [
+            icon('alert'),
+            h('span', { text: t('docActForNote').replace('%s', nameOf(waitingStep.username)) }),
+          ]));
+        }
         footer.appendChild(h('button', {
           class: 'btn primary', text: t('docApprove'),
-          onclick: function () { act('approve'); },
+          onclick: function () { if (okToActFor()) act('approve'); },
         }));
 
         /**
@@ -3715,6 +3871,7 @@
           footer.appendChild(h('button', {
             class: 'btn', text: t('docApproveNoSign'),
             onclick: function () {
+              if (!okToActFor()) return;
               if (!confirm(t('docApproveNoSignSure'))) return;
               act('approve', { withoutSignature: true });
             },
@@ -3723,6 +3880,7 @@
         footer.appendChild(h('button', {
           class: 'btn danger', text: t('docReject'),
           onclick: function () {
+            if (!okToActFor()) return;
             var why = prompt(t('docRejectWhy'));
             if (why === null) return;
             if (!why.trim()) { alert(t('docRejectWhy')); return; }
@@ -3752,6 +3910,7 @@
         footer.appendChild(h('button', {
           class: 'btn danger', text: t('docReject'),
           onclick: function () {
+            if (!okToActFor()) return;
             var why = prompt(t('docRejectWhy'));
             if (why === null) return;
             if (!why.trim()) { alert(t('docRejectWhy')); return; }
@@ -4136,10 +4295,12 @@
     if (S.page === 'calendar') return pageCalendar(main);
     if (S.page === 'docs') return pageDocs(main);
     if (S.page === 'profile') return pageProfile(main);
+    if (S.page === 'account') return pageAccount(main);
+    if (S.page === 'guide') return pageGuide(main);
+    if (S.page === 'control') return pageControl(main);
     if (S.page === 'links') return pageLinks(main);
     if (S.page === 'reports') return pageReports(main);
     if (S.page === 'shelf') return pageShelf(main);
-    if (S.page === 'feed') return pageFeed(main);
     if (S.page === 'admin') return pageAdmin(main);
     if (S.page === 'announce') return pageAnnounce(main);
     if (S.page === 'requests') return pageRequests(main);
@@ -5873,7 +6034,7 @@
         : h('div', { class: 'selected' }, [h('span', { class: 'chip', text: t('noOne') })]));
       deptBox.appendChild(h('div', { class: 'selected' }, draft.departments.length
         ? draft.departments.map(function (d) {
-            return h('span', { class: 'chip dept', text: deptLabel(d.key) });
+            return deptChip(d.key);
           })
         : [h('span', { class: 'chip', text: '\u2014' })]));
     }
@@ -6104,7 +6265,7 @@
           : null,
         vRow(t('viewDepartments'), task.departments.length
           ? h('span', { class: 'selected' }, task.departments.map(function (d) {
-              return h('span', { class: 'chip dept', text: deptLabel(d.key) });
+              return deptChip(d.key);
             }))
           : vMuted('—')),
         vRow(t('viewTeamspace'), task.department
@@ -6833,7 +6994,7 @@
             h('td', { dataset: { label: t('startsOn') }, text: (r.startsOn || '\u2014') + (r.startsAt ? ' ' + r.startsAt : '') +
               (r.endsOn && r.endsOn !== r.startsOn ? ' \u2013 ' + r.endsOn : '') }),
             h('td', { dataset: { label: t('place') }, text: r.place || '\u2014' }),
-            h('td', { dataset: { label: t('departments') } }, (r.departments || []).map(function (k) { return h('span', { class: 'chip dept', text: deptLabel(k) }); })),
+            h('td', { dataset: { label: t('departments') } }, (r.departments || []).map(function (k) { return deptChip(k); })),
             h('td', {}, flags),
           ]);
         }
@@ -6845,7 +7006,7 @@
             (r.links || []).length ? h('div', { class: 'imp-sub', text: '\u2197 ' + r.links.length + ' ' + t('tabWork') }) : null,
           ]),
           h('td', { dataset: { label: t('assignTo') } }, [h('span', { class: 'stack' }, (r.assignees || []).map(function (u) { return avatarNode(u, 'sm'); }))]),
-          h('td', { dataset: { label: t('departments') } }, (r.departments || []).map(function (d) { return h('span', { class: 'chip dept', text: deptLabel(d.key) }); })),
+          h('td', { dataset: { label: t('departments') } }, (r.departments || []).map(function (d) { return deptChip(d.key); })),
           h('td', { dataset: { label: t('dueDate') }, text: (r.dueDate || '\u2014') + (r.dueTime ? ' ' + r.dueTime : '') }),
           h('td', {}, flags),
         ]);
@@ -7104,7 +7265,7 @@
             (event.people || []).length ? peopleList(event.people) : null,
             (event.departments || []).length
               ? h('span', { class: 'selected' }, event.departments.map(function (k) {
-                  return h('span', { class: 'chip dept', text: deptLabel(k) });
+                  return deptChip(k);
                 }))
               : null,
           ])
@@ -7693,6 +7854,392 @@
     ]);
   }
 
+  /* ======================================================================
+     How to use this — the page for somebody's first week
+     ====================================================================== */
+
+  /**
+   * Every page of the app, explained once.
+   *
+   * Different from the setup guide in the ••• menu, which is four jobs to do
+   * on your phone and then never again. This is the thing four hundred people
+   * joining in the same fortnight actually ask for: what is this page for,
+   * and what am I supposed to press. Admin-only pages are listed only for
+   * the people who have them, so nobody is taught a door they cannot open.
+   */
+  function pageGuide(main) {
+    main.classList.add('wide');
+
+    var TOUR = [
+      { k: 'home', ic: 'grid', title: t('navHome'), href: '#/home' },
+      { k: 'schedule', ic: 'clock', title: t('navSchedule'), href: '#/schedule' },
+      { k: 'work', ic: 'task', title: t('navWork'), href: '#/work' },
+      { k: 'space', ic: 'board', title: t('spaces'), href: '#/home' },
+      { k: 'calendar', ic: 'event', title: t('navCalendar'), href: '#/calendar' },
+      { k: 'docs', ic: 'doc', title: t('navDocs'), href: '#/docs' },
+      { k: 'shelf', ic: 'folder', title: t('navShelf'), href: '#/shelf' },
+      { k: 'notify', ic: 'bell', title: t('pfAlertsTitle'), href: '#/profile' },
+      { k: 'profile', ic: 'user', title: t('profile'), href: '#/profile' },
+      { k: 'account', ic: 'key', title: t('navAccount'), href: '#/account' },
+      { k: 'links', ic: 'link', title: t('navLinks'), href: '#/links' },
+      { k: 'reports', ic: 'bug', title: t('navReports'), href: '#/reports' },
+      { k: 'requests', ic: 'people', title: t('navRequests'), href: '#/requests', need: 'approve' },
+      { k: 'announce', ic: 'megaphone', title: t('navAnnounce'), href: '#/announce', need: 'manage' },
+      { k: 'admin', ic: 'people', title: t('navAdmin'), href: '#/admin', need: 'manage' },
+      { k: 'control', ic: 'gauge', title: t('navControl'), href: '#/control', need: 'manage' },
+    ].filter(function (x) {
+      if (x.need === 'manage') return S.canManage;
+      if (x.need === 'approve') return S.canApprove;
+      return true;
+    });
+
+    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navGuide') })]));
+
+    main.appendChild(h('section', { class: 'guide-top' }, [
+      h('div', { class: 'guide-top-tx' }, [
+        h('h2', { text: t('guidePageTitle') }),
+        h('p', { text: t('guidePageIntro') }),
+        h('div', { class: 'guide-top-btns' }, [
+          h('button', { class: 'btn primary', type: 'button', text: t('guideSetupBtn'),
+            onclick: function () { guideStatus().then(function (steps) { openGuide(steps, true); }); } }),
+          h('a', { class: 'btn', href: '#/reports' }, [icon('bug'), t('guideAskBtn')]),
+        ]),
+      ]),
+      h('div', { class: 'guide-top-art' }, [icon('book')]),
+    ]));
+
+    var find = h('input', {
+      type: 'search', class: 'guide-find', placeholder: t('guideFind'),
+      'aria-label': t('guideFind'),
+    });
+    main.appendChild(h('div', { class: 'guide-find-wrap' }, [find]));
+
+    var cards = h('div', { class: 'guide-grid' });
+    main.appendChild(cards);
+
+    function draw() {
+      clear(cards);
+      var q = (find.value || '').trim().toLowerCase();
+      var shown = TOUR.filter(function (x) {
+        if (!q) return true;
+        return [x.title, t('gWhat_' + x.k), t('gTip1_' + x.k), t('gTip2_' + x.k)]
+          .join(' ').toLowerCase().indexOf(q) !== -1;
+      });
+      if (!shown.length) {
+        cards.appendChild(h('p', { class: 'muted-line', text: t('guideNoMatch') }));
+        return;
+      }
+      shown.forEach(function (x, i) {
+        cards.appendChild(h('section', { class: 'card guide-card' }, [
+          h('div', { class: 'guide-card-head' }, [
+            h('span', { class: 'guide-ic' }, [icon(x.ic)]),
+            h('div', { class: 'guide-card-tx' }, [
+              h('b', { text: x.title }),
+              h('small', { text: t('guideStepN').replace('%n', String(i + 1)).replace('%t', String(shown.length)) }),
+            ]),
+          ]),
+          h('p', { class: 'guide-what', text: t('gWhat_' + x.k) }),
+          h('ul', { class: 'guide-tips' }, [
+            h('li', { text: t('gTip1_' + x.k) }),
+            h('li', { text: t('gTip2_' + x.k) }),
+          ]),
+          h('a', { class: 'btn sm guide-go', href: x.href }, [t('guideOpenPage'), h('span', { text: '›' })]),
+        ]));
+      });
+    }
+
+    find.addEventListener('input', draw);
+    draw();
+
+    main.appendChild(h('section', { class: 'card guide-foot' }, [
+      h('div', { class: 'card-head' }, [icon('spark'), h('h3', { text: t('guideHabitsTitle') })]),
+      h('ul', { class: 'guide-tips' }, [
+        h('li', { text: t('guideHabit1') }),
+        h('li', { text: t('guideHabit2') }),
+        h('li', { text: t('guideHabit3') }),
+      ]),
+    ]));
+  }
+
+
+  /* ======================================================================
+     The control panel
+     ====================================================================== */
+
+  /**
+   * The whole site on one screen, for the people who answer for it.
+   *
+   * จัดการผู้ใช้ answers "who is this person"; this page answers "what is
+   * the state of the thing" — how much work is late, which ฝ่าย is carrying
+   * it, what is stuck waiting for a signature, and whether the parts nobody
+   * sees (the hourly run, LINE, Drive) are still alive. Everything here is
+   * read-only on purpose: it is where you find out, not where you change.
+   */
+  function pageControl(main) {
+    main.classList.add('wide');
+    if (!S.canManage) { location.hash = '#/home'; return; }
+
+    var today = todayIso();
+    var weekEnd = addDays(today, 6);
+
+    main.appendChild(h('div', { class: 'page-head' }, [
+      h('h1', { text: t('navControl') }),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn sm', type: 'button', text: t('ctlRefresh'),
+        onclick: function () { loadAll(); } }),
+    ]));
+    main.appendChild(h('p', { class: 'ctl-sub', text: t('ctlSub') }));
+
+    var tiles = h('section', { class: 'ctl-tiles' });
+    var grid = h('div', { class: 'ctl-grid' });
+    main.appendChild(tiles);
+    main.appendChild(grid);
+
+    function tile(iconName, hue, value, label, sub, href) {
+      return h(href ? 'a' : 'div', { class: 'ctl-tile', style: '--k:' + hue, href: href || null }, [
+        h('span', { class: 'ctl-tile-ic' }, [icon(iconName)]),
+        h('span', { class: 'ctl-tile-tx' }, [
+          h('b', { text: String(value) }),
+          h('span', { text: label }),
+          sub ? h('small', { text: sub }) : null,
+        ]),
+      ]);
+    }
+
+    function card(iconName, title, kids, foot) {
+      return h('section', { class: 'card ctl-card' }, [
+        h('div', { class: 'card-head' }, [icon(iconName), h('h3', { text: title }),
+          h('span', { class: 'grow' }), foot || null]),
+      ].concat(kids.filter(Boolean)));
+    }
+
+    /** A stacked bar: one segment per part, each carrying its own colour. */
+    function stack(parts) {
+      var total = parts.reduce(function (n, p) { return n + p.n; }, 0) || 1;
+      return h('div', { class: 'ctl-stack-wrap' }, [
+        h('div', { class: 'ctl-stack' }, parts.filter(function (p) { return p.n; }).map(function (p) {
+          return h('i', { style: 'width:' + (p.n / total * 100) + '%;background:' + p.colour, title: p.label + ' · ' + p.n });
+        })),
+        h('ul', { class: 'ctl-legend' }, parts.map(function (p) {
+          return h('li', {}, [
+            h('i', { style: 'background:' + p.colour }),
+            h('span', { text: p.label }),
+            h('b', { text: String(p.n) }),
+          ]);
+        })),
+      ]);
+    }
+
+    function rows(items) {
+      return h('ul', { class: 'ctl-rows' }, items.filter(Boolean).map(function (it) {
+        return h('li', { class: it.bad ? 'bad' : '' }, [
+          h('span', { class: 'ctl-row-k', text: it.k }),
+          h('span', { class: 'ctl-row-v', text: String(it.v) }),
+        ]);
+      }));
+    }
+
+    function loadAll() {
+      clear(tiles); clear(grid);
+      tiles.appendChild(h('div', { class: 'ctl-wait', text: t('loading') }));
+
+      Promise.all([
+        api('/api/users').catch(function () { return null; }),
+        api('/api/tasks').catch(function () { return null; }),
+        api('/api/documents').catch(function () { return null; }),
+        api('/api/events?do=meetings').catch(function () { return null; }),
+        api('/api/events').catch(function () { return null; }),
+        api('/api/users?do=health').catch(function () { return null; }),
+        api('/api/users?do=registrations').catch(function () { return null; }),
+      ]).then(function (res) {
+        if (S.page !== 'control') return;
+        var users = (res[0] && res[0].users) || S.users || [];
+        var tasks = (res[1] && res[1].tasks) || S.tasks || [];
+        var docs = (res[2] && res[2].documents) || S.docs || [];
+        var meetings = (res[3] && res[3].meetings) || S.meetings || [];
+        var events = (res[4] && res[4].events) || S.events || [];
+        var health = res[5] || null;
+        var pending = (res[6] && res[6].requests) || [];
+        draw(users, tasks, docs, meetings, events, health, pending);
+      });
+    }
+
+    function draw(users, tasks, docs, meetings, events, health, pending) {
+      clear(tiles); clear(grid);
+
+      var live = users.filter(function (u) { return u.active && !u.suspended; });
+      var openTasks = tasks.filter(function (x) { return x.status !== 'done'; });
+      var lateTasks = openTasks.filter(isOverdue);
+      var waitingDocs = docs.filter(function (d) { return d.stage === 'approving' || d.stage === 'secretary'; });
+      var weekMeetings = meetings.filter(function (m) {
+        var on = (m.meetsAt || '').slice(0, 10) || m.on || '';
+        return on >= today && on <= weekEnd;
+      });
+
+      /* ---- the six numbers across the top ---- */
+      tiles.appendChild(tile('people', '#5b5bd6', live.length, t('ctlPeople'),
+        t('ctlPeopleSub').replace('%n', String(users.length - live.length)), '#/admin'));
+      tiles.appendChild(tile('task', '#2f7ff0', openTasks.length, t('ctlOpen'),
+        t('ctlOpenSub').replace('%n', String(tasks.length)), '#/work'));
+      tiles.appendChild(tile('alert', '#e5484d', lateTasks.length, t('ctlLate'),
+        lateTasks.length ? t('ctlLateSub') : t('ctlLateNone'), '#/work'));
+      tiles.appendChild(tile('doc', '#f59e0b', waitingDocs.length, t('ctlDocs'),
+        t('ctlDocsSub'), '#/docs'));
+      tiles.appendChild(tile('meeting', '#8b5cf6', weekMeetings.length, t('ctlMeetings'),
+        t('ctlMeetingsSub'), '#/calendar'));
+      tiles.appendChild(tile('board', '#0fa5a0', (S.spaces || []).length, t('ctlSpaces'),
+        t('ctlSpacesSub'), '#/home'));
+
+      /* ---- the people ---- */
+      var byAccess = {};
+      live.forEach(function (u) { byAccess[u.access] = (byAccess[u.access] || 0) + 1; });
+      var accessOrder = ['admin', 'coadmin', 'editor', 'unitlead', 'inner'];
+      grid.appendChild(card('people', t('ctlWhoTitle'), [
+        stack(accessOrder.filter(function (a) { return byAccess[a]; }).map(function (a, i) {
+          return { n: byAccess[a] || 0, colour: ['#c8306f', '#8b5cf6', '#2f7ff0', '#0fa5a0', '#8b8fa0'][i] || '#8b8fa0',
+            label: t('access' + a.charAt(0).toUpperCase() + a.slice(1)) };
+        })),
+        rows([
+          { k: t('ctlPendingReq'), v: pending.length, bad: pending.length > 0 },
+          { k: t('ctlNoEmail'), v: live.filter(function (u) { return !u.email; }).length },
+          { k: t('ctlSuspended'), v: users.filter(function (u) { return u.suspended; }).length },
+          { k: t('ctlNoDept'), v: live.filter(function (u) { return !(u.departments || []).length && !u.allDepartments; }).length },
+        ]),
+      ], h('a', { class: 'card-link', href: '#/admin', text: t('ctlManage') })));
+
+      /* ---- the work ---- */
+      grid.appendChild(card('task', t('ctlWorkTitle'), [
+        stack(STATUS_LIST.map(function (st) {
+          return { n: tasks.filter(function (x) { return x.status === st; }).length,
+            colour: STATUS_HEX[st], label: statusLabel(st) };
+        })),
+        rows([
+          { k: t('ctlUnassigned'), v: openTasks.filter(function (x) { return !(x.assignees || []).length; }).length,
+            bad: openTasks.some(function (x) { return !(x.assignees || []).length; }) },
+          { k: t('ctlNoDue'), v: openTasks.filter(function (x) { return !x.dueDate; }).length },
+          { k: t('ctlDueWeek'), v: openTasks.filter(function (x) { return x.dueDate && x.dueDate >= today && x.dueDate <= weekEnd; }).length },
+        ]),
+      ], h('a', { class: 'card-link', href: '#/work', text: t('seeAll') })));
+
+      /* ---- which ฝ่าย is carrying it ---- */
+      var deptRows = (S.departments || []).map(function (d) {
+        var mine = tasks.filter(function (x) { return x.department === d.key; });
+        var open = mine.filter(function (x) { return x.status !== 'done'; });
+        return {
+          key: d.key,
+          label: deptLabel(d.key),
+          people: live.filter(function (u) { return (u.departments || []).indexOf(d.key) !== -1; }).length,
+          open: open.length,
+          late: open.filter(isOverdue).length,
+          done: mine.length - open.length,
+        };
+      }).filter(function (r) { return r.open || r.done || r.people; })
+        .sort(function (a, b) { return b.late - a.late || b.open - a.open; });
+
+      var deptCard = card('grid', t('ctlDeptTitle'), [
+        deptRows.length ? h('div', { class: 'tablewrap' }, [
+          h('table', { class: 'ctl-table' }, [
+            h('thead', {}, [h('tr', {}, [
+              h('th', { text: t('department') }), h('th', { text: t('ctlColPeople') }),
+              h('th', { text: t('ctlColOpen') }), h('th', { text: t('ctlColLate') }),
+              h('th', { text: t('ctlColDone') }),
+            ])]),
+            h('tbody', {}, deptRows.map(function (r) {
+              return h('tr', {}, [
+                h('td', { text: r.label }),
+                h('td', { text: String(r.people) }),
+                h('td', { text: String(r.open) }),
+                h('td', { class: r.late ? 'late' : '', text: String(r.late) }),
+                h('td', { text: String(r.done) }),
+              ]);
+            })),
+          ]),
+        ]) : h('p', { class: 'muted-line', text: t('ctlNothing') }),
+      ]);
+      deptCard.classList.add('wide');
+      grid.appendChild(deptCard);
+
+      /* ---- the letters ---- */
+      var stageOrder = ['approving', 'secretary', 'done', 'sent', 'rejected'];
+      var stageHue = { approving: '#2f7ff0', secretary: '#f0a020', done: '#12a36b', sent: '#0fa5a0', rejected: '#e5484d' };
+      grid.appendChild(card('doc', t('ctlDocTitle'), [
+        docs.length ? stack(stageOrder.map(function (st) {
+          return { n: docs.filter(function (d) { return d.stage === st; }).length,
+            colour: stageHue[st], label: DOC_STAGE_TH[st] || st };
+        })) : h('p', { class: 'muted-line', text: t('ctlNothing') }),
+        waitingDocs.length ? h('ul', { class: 'ctl-list' }, waitingDocs.slice(0, 6).map(function (d) {
+          return h('li', { onclick: function () { location.hash = '#/docs'; } }, [
+            h('span', { class: 'ctl-li-t', text: d.title }),
+            h('small', { text: (d.waitingRole || '') + (d.waitingOn ? ' · ' + nameOf(d.waitingOn) : '') }),
+          ]);
+        })) : null,
+      ], h('a', { class: 'card-link', href: '#/docs', text: t('seeAll') })));
+
+      /* ---- what is coming ---- */
+      var soon = [];
+      weekMeetings.forEach(function (m) {
+        soon.push({ on: (m.meetsAt || '').slice(0, 10), kind: 'meeting', title: m.title });
+      });
+      (events || []).forEach(function (e) {
+        var on = (e.startsAt || '').slice(0, 10) || e.on || '';
+        if (on >= today && on <= weekEnd) soon.push({ on: on, kind: 'event', title: e.title });
+      });
+      soon.sort(function (a, b) { return a.on < b.on ? -1 : 1; });
+      grid.appendChild(card('event', t('ctlSoonTitle'), [
+        soon.length ? h('ul', { class: 'ctl-list' }, soon.slice(0, 8).map(function (it) {
+          return h('li', {}, [
+            h('span', { class: 'chip k-' + it.kind, text: t('kind_' + it.kind) }),
+            h('span', { class: 'ctl-li-t', text: it.title }),
+            h('small', { text: it.on ? fmtDate(it.on, { day: 'numeric', month: 'short' }) : '' }),
+          ]);
+        })) : h('p', { class: 'muted-line', text: t('ctlNothingSoon') }),
+      ], h('a', { class: 'card-link', href: '#/calendar', text: t('seeAll') })));
+
+      /* ---- the parts nobody sees ---- */
+      grid.appendChild(card('pulse', t('ctlSystemTitle'), health ? [
+        (function () {
+          var last = health.lastCron ? new Date(health.lastCron) : null;
+          var hours = last ? (Date.now() - last.getTime()) / 3600000 : Infinity;
+          return h('div', { class: 'ctl-health ' + (hours > 2 ? 'bad' : 'good') }, [
+            icon(hours > 2 ? 'alert' : 'check'),
+            h('span', { text: t('healthLastRun') + ': ' + (last
+              ? last.toLocaleString(S.lang === 'th' ? 'th-TH' : 'en-GB')
+              : t('healthNeverRun')) }),
+          ]);
+        }()),
+        rows([
+          { k: t('ctlCronSigned'), v: health.cronSecured ? t('ctlYes') : t('ctlNo'), bad: !health.cronSecured },
+          { k: t('ctlPush'), v: health.pushPeople + ' / ' + health.pushSubscriptions,
+            bad: !health.pushPeople },
+          { k: t('ctlLine'), v: health.lineConfigured
+            ? health.lineLinked + ' · ' + health.lineCharged + '/' + health.lineQuota
+            : t('ctlNo'), bad: !health.lineConfigured },
+          { k: t('ctlDrive'), v: health.driveConfigured ? t('ctlYes') : t('ctlNo'), bad: !health.driveConfigured },
+          { k: t('ctlStorage'), v: Math.round((health.pdfBytes + health.paperBytes) / 1048576 * 10) / 10 + ' MB' },
+          { k: t('ctlToArchive'), v: health.docsWaitingToArchive, bad: health.docsWaitingToArchive > 5 },
+        ]),
+      ] : [h('p', { class: 'muted-line', text: t('ctlNoHealth') })],
+      h('a', { class: 'card-link', href: '#/admin', text: t('ctlManage') })));
+
+      /* ---- where to go next ---- */
+      grid.appendChild(card('bolt', t('ctlJumpTitle'), [
+        h('div', { class: 'ctl-jump' }, [
+          ['#/admin', 'people', t('navAdmin')],
+          ['#/requests', 'user', t('navRequests')],
+          ['#/announce', 'megaphone', t('navAnnounce')],
+          ['#/docs', 'doc', t('navDocs')],
+          ['#/reports', 'bug', t('navReports')],
+          ['#/guide', 'book', t('navGuide')],
+        ].map(function (j) {
+          return h('a', { class: 'btn', href: j[0] }, [icon(j[1]), j[2]]);
+        })),
+      ]));
+    }
+
+    loadAll();
+  }
+
+
   function pageProfile(main) {
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('profile') })]));
 
@@ -7710,7 +8257,7 @@
       if (src) avatarPreview.appendChild(h('img', { src: src, alt: '' }));
       else avatarPreview.textContent = initials(S.user.displayName);
     }
-    paintAvatar(S.user.avatar);
+    paintAvatar(avatarUrl(S.user));
 
     var fileInput = h('input', { type: 'file', accept: 'image/*', style: 'display:none' });
     fileInput.addEventListener('change', function () {
@@ -7757,7 +8304,7 @@
             api('/api/users?do=me', { method: 'PATCH', body: body }).then(function (data) {
               S.user.displayName = data.user.displayName;
               S.user.fullName = data.user.fullName;
-              S.user.avatar = data.user.avatar;
+              S.user.avatarV = data.user.avatarV;
               var i = S.users.findIndex(function (u) { return u.username === S.user.username; });
               if (i !== -1) S.users[i] = data.user;
               notice.hidden = false; notice.textContent = t('saved');
@@ -7768,12 +8315,12 @@
       ]),
     ]));
 
-    [
-        h('div', { style: 'display:flex;gap:16px;align-items:center' }, [
+    pfGroup(pfLeft, 'user', t('pfWhoTitle'), [
+        h('div', { class: 'pf-me' }, [
           avatarPreview,
-          h('div', { style: 'display:flex;flex-direction:column;gap:6px' }, [
+          h('div', { class: 'pf-me-btns' }, [
             h('button', { class: 'btn sm', text: t('changePicture'), onclick: function () { fileInput.click(); } }),
-            S.user.avatar || pendingAvatar ? h('button', {
+            S.user.avatarV || pendingAvatar ? h('button', {
               class: 'btn sm ghost', text: t('removePicture'),
               onclick: function () { pendingAvatar = null; paintAvatar(null); },
             }) : null,
@@ -7784,13 +8331,26 @@
         h('div', { class: 'field' }, [
           h('label', { text: t('fullName') }),
           fullNameInput,
-          h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('fullNameWhy') }),
+          h('small', { class: 'hint', text: t('fullNameWhy') }),
         ]),
-        accountBox(),
+    ]);
+
+    pfGroup(pfLeft, 'key', t('pfAccountTitle'), [
+        h('a', { class: 'pf-link', href: '#/account' }, [
+          h('span', { class: 'pf-link-ic' }, [icon('key')]),
+          h('span', { class: 'pf-link-tx' }, [
+            h('b', { text: t('navAccount') }),
+            h('small', { text: t('acctSignpost') }),
+          ]),
+          h('span', { class: 'pf-link-go', text: '\u203a' }),
+        ]),
+    ]);
+
+    pfGroup(pfLeft, 'shield', t('pfPlaceTitle'), [
         h('div', { class: 'two' }, [
           h('div', { class: 'field' }, [
             h('label', { text: t('position') }),
-            h('input', { type: 'text', value: S.user.position || '—', disabled: true }),
+            h('input', { type: 'text', value: S.user.position || '\u2014', disabled: true }),
           ]),
           h('div', { class: 'field' }, [
             h('label', { text: t('accessLevel') }),
@@ -7803,10 +8363,13 @@
             type: 'text', disabled: true,
             value: S.user.allDepartments
               ? t('allDepartments')
-              : ((S.user.departments || []).map(deptLabel).join(', ') || '—'),
+              : ((S.user.departments || []).map(deptLabel).join(', ') || '\u2014'),
           }),
         ]),
+        h('small', { class: 'hint', text: t('pfPlaceWhy') }),
+    ]);
 
+    pfGroup(pfLeft, 'sun', t('pfLookTitle'), [
         h('div', { class: 'field' }, [
           h('label', { text: t('theme') }),
           h('div', { class: 'seg' }, [['system', 'themeSystem'], ['light', 'themeLight'], ['dark', 'themeDark']]
@@ -7817,20 +8380,40 @@
               });
             })),
         ]),
+    ]);
 
-    ].filter(Boolean).forEach(function (el) { pfLeft.appendChild(el); });
-
-    [
+    pfGroup(pfRight, 'bell', t('pfAlertsTitle'), [
         h('div', { class: 'field' }, [h('label', { text: t('phoneAlerts') }), pushBox()]),
         h('div', { class: 'field', id: 'notify-settings' }, [h('label', { text: t('notifySettings') }), notifyBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('lineAlerts') }), lineBox()]),
+    ]);
+
+    pfGroup(pfRight, 'task', t('pfWorkTitle'), [
         h('div', { class: 'field' }, [h('label', { text: t('grpMine') }), myGroupsBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('tagMine') }), myTagsBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('sigTitle') }), signatureBox()]),
         h('div', { class: 'field' }, [h('label', { text: t('freeTitle') }), availabilityBox()]),
+    ]);
+
+    pfGroup(pfRight, 'event', t('pfLinkTitle'), [
         h('div', { class: 'field' }, [h('label', { text: t('calendarFeed') }), calendarBox()]),
         versionBox(),
-    ].filter(Boolean).forEach(function (el) { pfRight.appendChild(el); });
+    ]);
+  }
+
+  /**
+   * One titled group of settings on the profile.
+   *
+   * The page was nine boxes in two stacks with nothing saying where one
+   * subject ended and the next began, and every field stretched to whatever
+   * width the column happened to be — which is what made it read as leaning
+   * to one side. Grouping them under a heading puts a left edge back.
+   */
+  function pfGroup(col, iconName, title, kids) {
+    col.appendChild(h('section', { class: 'pf-group' }, [
+      h('div', { class: 'pf-group-head' }, [icon(iconName), h('h3', { text: title })]),
+      h('div', { class: 'pf-group-body' }, kids.filter(Boolean)),
+    ]));
   }
 
 
@@ -12809,13 +13392,78 @@
       ]),
     ]));
 
-    // Four numbers.
-    main.appendChild(h('section', { class: 'kpis' }, [
-      kpi('task', '#5b5bd6', st.open.length, t('kpiOpen'), t('kpiOpenSub'), function () { S.scope = 'mine'; S.role = ''; S.filter = 'open'; location.hash = '#/work'; }),
-      kpi('clock', '#f59e0b', st.dueSoon.length, t('kpiWeek'), t('kpiWeekSub')),
-      kpi('alert', '#e5484d', st.late.length, t('kpiLate'), st.late.length ? t('kpiLateSub') : t('kpiLateNone')),
-      kpi('trophy', '#12a36b', st.doneMonth.length, t('kpiDone'), t('kpiDoneSub')),
-    ]));
+    /**
+     * Four numbers, each of which opens the work behind it.
+     *
+     * They used to be figures and nothing else: "1 เลยกำหนด" told somebody
+     * there was a problem and then made them go and find it. Pressing one now
+     * drops the actual tasks open underneath, where they can be ticked off
+     * without leaving the page. Pressing it again folds it away.
+     */
+    var KPIS = [
+      { key: 'open', ic: 'task', hue: '#5b5bd6', list: st.open, label: t('kpiOpen'), sub: t('kpiOpenSub'), by: 'due' },
+      { key: 'soon', ic: 'clock', hue: '#f59e0b', list: st.dueSoon, label: t('kpiWeek'), sub: t('kpiWeekSub'), by: 'due' },
+      { key: 'late', ic: 'alert', hue: '#e5484d', list: st.late, label: t('kpiLate'), by: 'due',
+        sub: st.late.length ? t('kpiLateSub') : t('kpiLateNone') },
+      { key: 'done', ic: 'trophy', hue: '#12a36b', list: st.doneMonth, label: t('kpiDone'), sub: t('kpiDoneSub'), by: 'done' },
+    ];
+    var kpiPanel = h('section', { class: 'card kpi-panel', hidden: true });
+    var kpiRow = h('section', { class: 'kpis', title: t('kpiHint') }, KPIS.map(function (k) {
+      var card = kpi(k.ic, k.hue, k.list.length, k.label, k.sub, function () { pressKpi(k.key); });
+      card.dataset.kpi = k.key;
+      card.setAttribute('aria-expanded', 'false');
+      return card;
+    }));
+    main.appendChild(kpiRow);
+    main.appendChild(kpiPanel);
+
+    function pressKpi(key) {
+      S.homeKpi = S.homeKpi === key ? null : key;
+      drawKpi();
+    }
+
+    function drawKpi() {
+      var key = S.homeKpi || null;
+      Array.prototype.forEach.call(kpiRow.children, function (el) {
+        var on = el.dataset.kpi === key;
+        el.classList.toggle('on', on);
+        el.setAttribute('aria-expanded', String(on));
+      });
+      clear(kpiPanel);
+      kpiPanel.hidden = !key;
+      if (!key) return;
+      var def = KPIS.filter(function (k) { return k.key === key; })[0];
+      kpiPanel.style.setProperty('--k', def.hue);
+      var doneDay = function (x) { return localDay(x.doneAt) || localDay(x.updatedAt) || ''; };
+      var list = def.list.slice().sort(function (a, b) {
+        if (def.by === 'done') return doneDay(a) < doneDay(b) ? 1 : -1;
+        return (a.dueDate || '9999') < (b.dueDate || '9999') ? -1 : 1;
+      });
+      kpiPanel.appendChild(h('div', { class: 'card-head' }, [
+        icon(def.ic), h('h3', { text: def.label }),
+        h('small', { text: t('kpiPanelN').replace('%n', String(list.length)) }),
+        h('span', { class: 'grow' }),
+        h('a', { class: 'card-link', href: '#/work', text: t('seeAll'),
+          onclick: function () { S.scope = 'mine'; S.role = ''; S.filter = key === 'done' ? 'all' : 'open'; } }),
+        h('button', { type: 'button', class: 'btn ghost sm', text: t('close'),
+          onclick: function () { pressKpi(key); } }),
+      ]));
+      if (!list.length) {
+        kpiPanel.appendChild(h('p', { class: 'muted-line', text: t('kpiPanelNone') }));
+        return;
+      }
+      kpiPanel.appendChild(h('ul', { class: 'next-list kpi-list' }, list.map(function (x) {
+        return h('li', { dataset: { st: x.status }, onclick: function () { openTask(x); } }, [
+          h('span', { class: 'st-dot', dataset: { st: x.status } }),
+          h('span', { class: 'nx-title', text: x.title }),
+          x.code ? h('small', { class: 'kpi-code', text: x.code }) : null,
+          def.by === 'done'
+            ? h('span', { class: 'chip done-chip', text: fmtDate(doneDay(x), { day: 'numeric', month: 'short' }) })
+            : dueChip(x),
+        ]);
+      })));
+    }
+    drawKpi();
 
     var grid = h('div', { class: 'home-grid' });
     main.appendChild(grid);
@@ -16422,477 +17070,6 @@
       + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-
-  /* ======================================================================
-     The feed
-     ====================================================================== */
-
-  /**
-   * What the committee says to itself.
-   *
-   * Everything else in this app is work with an owner and a deadline. This is
-   * the page where somebody puts up a photo of last night's build, and that
-   * is worth a page of its own — two hundred people were already doing it in
-   * a LINE group where it scrolled away by morning.
-   */
-  function pageFeed(main) {
-    var state = { posts: [], pinned: [], mayPost: false, myDepartments: [], maxImages: 4 };
-    var notice = h('div', { class: 'notice', hidden: true });
-    var stream = h('div', { class: 'feed-stream' });
-    var moreBtn = h('button', { class: 'btn feed-more', text: t('feedMore'), hidden: true });
-    var scopes = h('div', { class: 'seg feed-scopes' });
-
-    function say(kind, text) {
-      notice.hidden = false;
-      notice.className = 'notice ' + kind;
-      notice.textContent = text;
-    }
-
-    main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navFeed') })]));
-    main.appendChild(notice);
-    main.appendChild(scopes);
-
-    var composer = h('div', { class: 'feed-composer' });
-    main.appendChild(composer);
-    main.appendChild(stream);
-    main.appendChild(moreBtn);
-
-    /* ---- which slice of it ---- */
-    /**
-     * Three tabs and a ฝ่าย picker — not a tab per ฝ่าย.
-     *
-     * An admin is in all fourteen, so one tab each produced seventeen
-     * buttons wrapping over three lines, which is not a choice anybody can
-     * make at a glance. The three real modes are tabs; which ฝ่าย is a
-     * separate question and gets a dropdown, which also stays one line on a
-     * phone however many ฝ่าย somebody belongs to.
-     */
-    function drawScopes() {
-      clear(scopes);
-      var at = S.feedScope || 'all';
-      [['all', t('feedScopeAll')], ['main', t('feedWhole')], ['mentions', t('feedMentions')]]
-        .forEach(function (pair) {
-          scopes.appendChild(h('button', {
-            type: 'button', class: at === pair[0] ? 'on' : '', text: pair[1],
-            onclick: function () { S.feedScope = pair[0]; load(); },
-          }));
-        });
-
-      var depts = state.myDepartments || [];
-      if (!depts.length) return;
-
-      var pick = h('select', { class: 'feed-dept-pick' }, [
-        h('option', { value: '', text: t('feedByDept') }),
-      ].concat(depts.map(function (key) {
-        return h('option', {
-          value: 'dept:' + key, text: deptLabel(key),
-          selected: at === 'dept:' + key ? true : null,
-        });
-      })));
-      pick.addEventListener('change', function () {
-        // Back to ทั้งหมด when the blank row is chosen, rather than showing
-        // a feed of nothing with no tab looking selected.
-        S.feedScope = pick.value || 'all';
-        load();
-      });
-      scopes.appendChild(h('div', { class: 'feed-dept-wrap' + (at.indexOf('dept:') === 0 ? ' on' : '') }, [pick]));
-    }
-
-    function scopeQuery() {
-      var at = S.feedScope || 'all';
-      if (at.indexOf('dept:') === 0) {
-        return 'scope=dept&department=' + encodeURIComponent(at.slice(5));
-      }
-      return 'scope=' + encodeURIComponent(at);
-    }
-
-    /* ---- writing one ---- */
-    function drawComposer() {
-      clear(composer);
-      if (!state.mayPost) return;
-
-      var box = h('textarea', { rows: '2', maxlength: '4000', placeholder: t('feedSay') });
-      var shots = [];
-      var strip = h('div', { class: 'feed-shots' });
-      var fileIn = h('input', {
-        type: 'file', accept: 'image/png,image/jpeg,image/webp', multiple: true, id: 'feed-img',
-      });
-
-      /**
-       * Where it goes. Defaults to the whole committee, which is the honest
-       * default for a feed — a post nobody can find is worse than one a few
-       * extra people scroll past.
-       */
-      var where = h('select', { class: 'feed-where' }, [
-        h('option', { value: '', text: t('feedWhole') }),
-      ].concat((state.myDepartments || []).map(function (key) {
-        return h('option', { value: key, text: deptLabel(key) });
-      })));
-      // Posting from inside a ฝ่าย tab starts on that ฝ่าย, which is almost
-      // always what was meant by going there first.
-      if ((S.feedScope || '').indexOf('dept:') === 0) where.value = S.feedScope.slice(5);
-
-      function drawShots() {
-        clear(strip);
-        shots.forEach(function (shot, i) {
-          strip.appendChild(h('div', { class: 'feed-shot' }, [
-            h('img', { src: shot.url, alt: '' }),
-            h('button', {
-              type: 'button', class: 'rep-shot-x', text: '✕', 'aria-label': t('remove'),
-              onclick: function () {
-                URL.revokeObjectURL(shot.url);
-                shots.splice(i, 1);
-                drawShots();
-              },
-            }),
-          ]));
-        });
-        if (shots.length < (state.maxImages || 4)) {
-          strip.appendChild(h('label', { class: 'rep-shot-add', for: 'feed-img' }, [
-            h('span', { text: '+' }), h('small', { text: t('feedAddImage') }),
-          ]));
-        }
-      }
-
-      fileIn.addEventListener('change', function () {
-        var chosen = Array.prototype.slice.call(fileIn.files || []);
-        fileIn.value = '';
-        chosen.forEach(function (file) {
-          if (shots.length >= (state.maxImages || 4)) {
-            say('err', t('feedTooManyImages').replace('%s', state.maxImages || 4));
-            return;
-          }
-          if (file.size > (state.maxImage || 2097152)) {
-            say('err', t('feedImageTooBig').replace('%s', Math.round((state.maxImage || 2097152) / 1048576 * 10) / 10));
-            return;
-          }
-          fileToBase64(file).then(function (b64) {
-            shots.push({ data: b64, url: URL.createObjectURL(file) });
-            drawShots();
-          });
-        });
-      });
-
-      var sendBtn = h('button', {
-        class: 'btn primary', text: t('feedPost'),
-        onclick: function () {
-          if (!box.value.trim() && !shots.length) { say('err', t('feedNeedSomething')); box.focus(); return; }
-          sendBtn.disabled = true;
-          api('/api/notifications?do=feed-post', {
-            method: 'POST',
-            body: {
-              body: box.value,
-              department: where.value || null,
-              images: shots.map(function (s) { return s.data; }),
-            },
-          }).then(function () {
-            shots.forEach(function (s) { URL.revokeObjectURL(s.url); });
-            notice.hidden = true;
-            load();
-          }).catch(function (err) { say('err', errText(err.code)); })
-            .then(function () { sendBtn.disabled = false; });
-        },
-      });
-
-      composer.appendChild(h('div', { class: 'feed-compose-row' }, [
-        avatarNode(S.user.username),
-        h('div', { class: 'grow' }, [
-          box, strip, fileIn,
-          h('div', { class: 'feed-compose-foot' }, [
-            where, h('span', { class: 'grow' }), sendBtn,
-          ]),
-        ]),
-      ]));
-      drawShots();
-    }
-
-    /* ---- one card ---- */
-    function card(post, isPinned) {
-      var head = h('div', { class: 'feed-head' }, [
-        avatarNode(post.createdBy),
-        h('div', { class: 'grow' }, [
-          h('b', { text: nameOf(post.createdBy) }),
-          h('div', { class: 'feed-when' }, [
-            h('span', { text: fmtStamp(post.createdAt) }),
-            post.editedAt ? h('span', { text: ' · ' + t('feedEdited') }) : null,
-            post.department ? h('span', { class: 'chip dept', text: deptLabel(post.department) }) : null,
-            isPinned ? h('span', { class: 'chip pin', text: '📌 ' + t('feedPinned') }) : null,
-          ].filter(Boolean)),
-        ]),
-        postMenu(post, isPinned),
-      ]);
-
-      var body = post.body
-        ? h('div', { class: 'feed-body' }, String(post.body).split('\n').map(function (line) {
-          return line.trim() ? h('p', { text: line }) : h('br', {});
-        }))
-        : null;
-
-      /**
-       * The pictures, laid out by how many there are.
-       *
-       * One photo gets the full width at its own shape; two sit side by side;
-       * three or four become a grid. A fixed grid would letterbox a single
-       * portrait photo into a thin strip, which is what most phone photos are.
-       */
-      var shots = null;
-      if (post.images.length) {
-        shots = h('div', { class: 'feed-images n' + post.images.length });
-        post.images.forEach(function (img, i) {
-          var src = '/api/notifications?do=feed-image&id=' + encodeURIComponent(post.id) + '&i=' + img.idx;
-          var frame = h('a', {
-            class: 'feed-img', href: src, target: '_blank', rel: 'noopener',
-            title: t('feedOpenImage'),
-          }, [h('img', { src: src, alt: '', loading: i ? 'lazy' : 'eager' })]);
-          if (post.images.length === 1 && img.width && img.height) {
-            frame.style.aspectRatio = img.width + ' / ' + img.height;
-          }
-          shots.appendChild(frame);
-        });
-      }
-
-      var links = post.links.length
-        ? h('div', { class: 'feed-links' }, post.links.map(function (l) {
-          return h('a', { class: 'feed-link', href: l.url, target: '_blank', rel: 'noopener noreferrer' }, [
-            h('b', { text: l.title || hostOfUrl(l.url) }),
-            h('small', { text: hostOfUrl(l.url) }),
-          ]);
-        }))
-        : null;
-
-      /* ---- like and reply counts ---- */
-      var likeBtn = h('button', {
-        type: 'button', class: 'feed-act' + (post.liked ? ' on' : ''),
-        onclick: function () {
-          likeBtn.disabled = true;
-          api('/api/notifications?do=feed-like', { method: 'POST', body: { id: post.id } })
-            .then(function (d) {
-              post.liked = d.liked;
-              post.likes = d.likes;
-              likeBtn.classList.toggle('on', d.liked);
-              likeCount.textContent = d.likes ? String(d.likes) : '';
-            })
-            .catch(function (err) { say('err', errText(err.code)); })
-            .then(function () { likeBtn.disabled = false; });
-        },
-      });
-      var likeCount = h('b', { text: post.likes ? String(post.likes) : '' });
-      likeBtn.appendChild(h('span', { text: '❤' }));
-      likeBtn.appendChild(h('span', { text: t('feedLike') }));
-      likeBtn.appendChild(likeCount);
-
-      var replies = h('div', { class: 'feed-replies' });
-      var replyBtn = h('button', {
-        type: 'button', class: 'feed-act',
-        onclick: function () {
-          replies.hidden = !replies.hidden;
-          if (!replies.hidden) {
-            var inp = replies.querySelector('input');
-            if (inp) inp.focus();
-          }
-        },
-      }, [
-        h('span', { text: '💬' }),
-        h('span', { text: t('feedReply') }),
-        h('b', { text: post.comments.length ? String(post.comments.length) : '' }),
-      ]);
-
-      drawReplies(replies, post);
-      // Replies start open when there are a few, because a conversation
-      // hidden behind a button is a conversation nobody joins.
-      replies.hidden = post.comments.length === 0;
-
-      return h('article', { class: 'feed-card' + (isPinned ? ' pinned' : '') }, [
-        head, body, shots, links,
-        h('div', { class: 'feed-acts' }, [likeBtn, replyBtn]),
-        replies,
-      ].filter(Boolean));
-    }
-
-    /* ---- the ••• menu ---- */
-    function postMenu(post, isPinned) {
-      var items = [];
-      if (state.mayModerate) {
-        items.push([isPinned ? t('feedUnpin') : t('feedPin'), function () {
-          api('/api/notifications?do=feed-post', {
-            method: 'PATCH', body: { id: post.id, pinned: !isPinned },
-          }).then(load).catch(function (err) {
-            say('err', err.code === 'TOO_MANY_PINNED'
-              ? t('feedTooManyPinned').replace('%s', (err.data && err.data.limit) || 5)
-              : errText(err.code));
-          });
-        }]);
-      }
-      if (post.mayEdit) {
-        items.push([t('edit'), function () { openPostEditor(post, load); }]);
-      }
-      if (post.mayDelete) {
-        items.push([t('remove'), function () {
-          if (!confirm(t('feedDeleteSure'))) return;
-          api('/api/notifications?do=feed-post&id=' + encodeURIComponent(post.id), { method: 'DELETE' })
-            .then(load).catch(function (err) { say('err', errText(err.code)); });
-        }]);
-      }
-      if (!post.mine) {
-        items.push([t('feedReport'), function () {
-          if (!confirm(t('feedReportSure'))) return;
-          api('/api/notifications?do=feed-report', { method: 'POST', body: { postId: post.id } })
-            .then(function () { say('ok', t('feedReported')); })
-            .catch(function (err) { say('err', errText(err.code)); });
-        }]);
-      }
-      if (!items.length) return null;
-
-      var pop = h('div', { class: 'feed-menu-pop', hidden: true }, items.map(function (it) {
-        return h('button', { type: 'button', text: it[0], onclick: function () { pop.hidden = true; it[1](); } });
-      }));
-      var btn = h('button', {
-        type: 'button', class: 'btn ghost sm feed-menu', text: '⋯', 'aria-label': t('feedMenu'),
-        onclick: function (e) {
-          e.stopPropagation();
-          var was = pop.hidden;
-          // Only ever one open: a second menu over the first is two lists of
-          // actions with no way to tell which post either belongs to.
-          document.querySelectorAll('.feed-menu-pop').forEach(function (x) { x.hidden = true; });
-          pop.hidden = !was;
-        },
-      });
-      return h('div', { class: 'feed-menu-wrap' }, [btn, pop]);
-    }
-
-    /* ---- replies ---- */
-    function drawReplies(into, post) {
-      clear(into);
-      post.comments.forEach(function (c) {
-        into.appendChild(h('div', { class: 'feed-reply' }, [
-          avatarNode(c.createdBy, 'sm'),
-          h('div', { class: 'grow' }, [
-            h('b', { text: nameOf(c.createdBy) }),
-            h('span', { class: 'feed-reply-body', text: c.body }),
-            h('div', { class: 'feed-when', text: fmtStamp(c.createdAt) }),
-          ]),
-          c.mayDelete ? h('button', {
-            type: 'button', class: 'btn ghost sm', text: '✕', 'aria-label': t('remove'),
-            onclick: function () {
-              api('/api/notifications?do=feed-comment&id=' + encodeURIComponent(c.id), { method: 'DELETE' })
-                .then(load).catch(function (err) { say('err', errText(err.code)); });
-            },
-          }) : null,
-        ].filter(Boolean)));
-      });
-
-      var inp = h('input', { type: 'text', maxlength: '1500', placeholder: t('feedReplyPlaceholder') });
-      var send = function () {
-        if (!inp.value.trim()) return;
-        inp.disabled = true;
-        api('/api/notifications?do=feed-comment', {
-          method: 'POST', body: { postId: post.id, body: inp.value.trim() },
-        }).then(load).catch(function (err) {
-          inp.disabled = false;
-          say('err', errText(err.code));
-        });
-      };
-      inp.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); send(); }
-      });
-      into.appendChild(h('div', { class: 'feed-reply-add' }, [
-        avatarNode(S.user.username, 'sm'),
-        inp,
-        h('button', { class: 'btn sm', text: t('feedSend'), onclick: send }),
-      ]));
-    }
-
-    /* ---- drawing it ---- */
-    function draw() {
-      drawScopes();
-      drawComposer();
-      clear(stream);
-
-      (state.pinned || []).forEach(function (p) { stream.appendChild(card(p, true)); });
-
-      if (!state.posts.length && !(state.pinned || []).length) {
-        stream.appendChild(h('div', { class: 'empty' }, [
-          h('strong', { text: t('feedNone') }),
-          h('p', { text: state.mayPost ? t('feedNoneSay') : t('feedNoneWait') }),
-        ]));
-        return;
-      }
-      state.posts.forEach(function (p) { stream.appendChild(card(p, false)); });
-      moreBtn.hidden = !state.more;
-    }
-
-    moreBtn.addEventListener('click', function () {
-      if (!state.next) return;
-      moreBtn.disabled = true;
-      api('/api/notifications?do=feed&' + scopeQuery() + '&before=' + encodeURIComponent(state.next))
-        .then(function (d) {
-          // Appended rather than redrawn, so the page does not jump back to
-          // the top of a feed somebody has been scrolling through.
-          d.posts.forEach(function (p) { stream.appendChild(card(p, false)); });
-          state.posts = state.posts.concat(d.posts);
-          state.more = d.more;
-          state.next = d.next;
-          moreBtn.hidden = !d.more;
-        })
-        .catch(function (err) { say('err', errText(err.code)); })
-        .then(function () { moreBtn.disabled = false; });
-    });
-
-    function load() {
-      return api('/api/notifications?do=feed&' + scopeQuery())
-        .then(function (d) { state = d; draw(); })
-        .catch(function (err) { say('err', errText(err.code)); });
-    }
-
-    if (!S.feedScope) S.feedScope = 'all';
-    load();
-  }
-
-  /** Closing an open ••• menu by clicking anywhere else. */
-  document.addEventListener('click', function () {
-    document.querySelectorAll('.feed-menu-pop').forEach(function (x) { x.hidden = true; });
-  });
-
-  /** Editing the words of a post. The pictures are deliberately not editable. */
-  function openPostEditor(post, onSaved) {
-    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
-    var notice = h('div', { class: 'notice', hidden: true });
-    var box = h('textarea', { rows: '5', maxlength: '4000' });
-    box.value = post.body || '';
-
-    var saveBtn = h('button', {
-      class: 'btn primary', text: t('save'),
-      onclick: function () {
-        saveBtn.disabled = true;
-        api('/api/notifications?do=feed-post', { method: 'PATCH', body: { id: post.id, body: box.value } })
-          .then(function () { veil.remove(); if (onSaved) onSaved(); })
-          .catch(function (err) {
-            notice.hidden = false;
-            notice.className = 'notice err';
-            notice.textContent = errText(err.code);
-            saveBtn.disabled = false;
-          });
-      },
-    });
-
-    veil.appendChild(h('div', { class: 'modal', style: 'width:min(34rem,100%)' }, [
-      h('header', {}, [
-        h('h2', { text: t('feedEdit') }),
-        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
-      ]),
-      h('div', { class: 'body' }, [
-        notice, box,
-        post.images.length ? h('small', { class: 'hint', text: t('feedEditImagesWhy') }) : null,
-      ].filter(Boolean)),
-      h('footer', {}, [
-        h('span', { class: 'grow' }),
-        h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }),
-        saveBtn,
-      ]),
-    ]));
-    $('modal-root').appendChild(veil);
-    box.focus();
-  }
 
   /**
    * A last resort for the splash.

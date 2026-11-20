@@ -71,6 +71,49 @@ const mayReadEmail = (viewer, u, grants) => {
   return theirs.some((d) => mine.has(d));
 };
 
+/**
+ * Every account, as the shared directory sees them.
+ *
+ * One place, because what is left OUT of the SELECT is the point: `avatar` is
+ * 13 KB of base64 per person and `password_hash` has no business on a wire at
+ * all. `avatar_v` is ten characters that change when the picture does, which
+ * is what /api/users?do=avatar is cached against.
+ */
+async function everybody(sql) {
+  const raw = await sql`
+    SELECT to_jsonb(u) - 'avatar' - 'password_hash' AS u,
+           left(md5(u.avatar), 10) AS avatar_v
+    FROM users u ORDER BY u.active DESC, u.display_name`;
+  return raw.map((r) => ({
+    ...(typeof r.u === 'string' ? JSON.parse(r.u) : r.u),
+    avatar_v: r.avatar_v || null,
+  }));
+}
+
+/**
+ * One person's profile picture, cached hard by the browser.
+ *
+ * Served on its own so the directory does not have to carry four hundred of
+ * them. The ten-character version is in the URL and the ETag, and the picture
+ * at a given version never changes, so a browser asks for each face once and
+ * then stops asking.
+ */
+async function avatarImage(sql, username) {
+  const who = String(username || '').slice(0, 64);
+  const [row] = await sql`
+    SELECT avatar, left(md5(avatar), 10) AS v FROM users
+    WHERE username = ${who} AND avatar IS NOT NULL`;
+  const match = /^data:(image\/[a-z.+-]+);base64,(.+)$/i.exec(row?.avatar || '');
+  if (!match) return json({ error: 'NO_AVATAR' }, 404);
+  const tag = `"${row.v}"`;
+  const headers = {
+    'content-type': match[1],
+    'cache-control': 'private, max-age=31536000, immutable',
+    etag: tag,
+  };
+  return new Response(Buffer.from(match[2], 'base64'), { status: 200, headers });
+}
+
 const directoryRow = (u, grants = {}, viewer = null) => ({
   email: mayReadEmail(viewer, u, grants) ? (u.email || null) : undefined,
   username: u.username,
@@ -88,7 +131,9 @@ const directoryRow = (u, grants = {}, viewer = null) => ({
   accessPinned: Boolean(u.access_pinned),
   isHead: u.is_head,
   unit: u.unit || null,
-  avatar: u.avatar || null,
+  // Ten characters that change when the picture does, not the picture — see
+  // avatarImage below and the note in lib/auth.js on why.
+  avatarV: u.avatar_v || null,
   active: u.active,
   suspended: u.suspended,
   hasPassword: Boolean(u.password_hash),
@@ -167,6 +212,10 @@ async function handler(request) {
       if (problem) return json({ error: problem }, 400);
     }
     return json(await prefsOf(sql, me.username));
+  }
+
+  if (request.method === 'GET' && action === 'avatar') {
+    return avatarImage(sql, url.searchParams.get('user'));
   }
 
   if (request.method === 'GET' && action === 'health') {
@@ -314,8 +363,8 @@ async function handler(request) {
   // ---- directory ---------------------------------------------------------
   // `?do=org` is the one other GET on this endpoint, and it is answered
   // further down; without this it would be swallowed by the directory.
-  if (request.method === 'GET' && !['org', 'groups', 'tags', 'registrations'].includes(action)) {
-    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+  if (request.method === 'GET' && !['org', 'groups', 'tags', 'registrations', 'avatar'].includes(action)) {
+    const rows = await everybody(sql);
     const grants = await departmentsByUser(sql);
     return json({
       users: rows.map((u) => directoryRow(u, grants, me)),
@@ -380,7 +429,8 @@ async function handler(request) {
         updated_at   = now()
       WHERE username = ${me.username}`;
 
-    const [fresh] = await sql`SELECT * FROM users WHERE username = ${me.username}`;
+    const [fresh] = await sql`
+      SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE username = ${me.username}`;
     fresh.departments = await departmentsOf(sql, me.username);
     return json({
       user: { ...directoryRow(fresh), theme: fresh.theme, calendarToken: fresh.calendar_token || null },
@@ -672,7 +722,7 @@ async function handler(request) {
     await sql`DELETE FROM notifications WHERE username = ${target.username}`;
     await sql`DELETE FROM users WHERE username = ${target.username}`;
 
-    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const rows = await everybody(sql);
     const grants = await departmentsByUser(sql);
     return json({
       ok: true,
@@ -759,7 +809,7 @@ async function handler(request) {
               ${home}, ${all}, ${unit}, ${Boolean(body.isHead)}, true, true, true, true)`;
     if (!all) await setDepartments(sql, username, departments);
 
-    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const rows = await everybody(sql);
     const grants = await departmentsByUser(sql);
     return json({
       ok: true, username,
@@ -1140,7 +1190,7 @@ async function handler(request) {
 
     const result = await renameUser(sql, from, to);
 
-    const rows = await sql`SELECT * FROM users ORDER BY active DESC, display_name`;
+    const rows = await everybody(sql);
     const grants = await departmentsByUser(sql);
     return json({
       ok: true,

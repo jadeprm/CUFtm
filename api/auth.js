@@ -38,7 +38,8 @@ const publicUser = (u) => ({
   departments: u.departments || [],
   allDepartments: Boolean(u.all_departments),
   isHead: u.is_head,
-  avatar: u.avatar || null,
+  // The version, not the picture — /api/users?do=avatar serves that, cached.
+  avatarV: u.avatar_v || null,
   lang: u.lang || 'th',
   theme: u.theme || 'system',
   // Only ever built for the signed-in person, so this is their own token.
@@ -152,7 +153,7 @@ async function handler(request) {
     const q = String(who ?? '').trim().toLowerCase();
     if (!q) return null;
     const [u] = await sql`
-      SELECT * FROM users
+      SELECT *, left(md5(avatar), 10) AS avatar_v FROM users
       WHERE active = true AND suspended = false AND email_verified_at IS NOT NULL
         AND (lower(username) = ${q} OR lower(email) = ${q})
       LIMIT 1`;
@@ -178,7 +179,7 @@ async function handler(request) {
     await sql`DELETE FROM sessions WHERE username = ${u.username}`;
     const token = newToken();
     await sql`INSERT INTO sessions (token, username, expires_at) VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
-    const [fresh] = await sql`SELECT * FROM users WHERE username = ${u.username}`;
+    const [fresh] = await sql`SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE username = ${u.username}`;
     fresh.departments = await departmentsOf(sql, fresh.username);
     return json({ user: publicUser(fresh) }, 200, { 'set-cookie': sessionCookie(token) });
   }
@@ -191,7 +192,17 @@ async function handler(request) {
     if (action === 'password-change') {
       const problem = passwordProblem(String(body.password ?? ''));
       if (problem) return json({ error: problem }, 400);
-      if (!await verifyPassword(String(body.current ?? ''), me.password_hash, me.password_salt)) {
+      /**
+       * The hash is read here rather than carried on `me`.
+       *
+       * currentUser() runs on every request and deliberately leaves
+       * password_hash in the database — see the note there. This is the one
+       * place that needs it, and one extra read when somebody changes their
+       * password is not a cost worth optimising.
+       */
+      const [secret] = await sql`
+        SELECT password_hash, password_salt FROM users WHERE username = ${me.username}`;
+      if (!await verifyPassword(String(body.current ?? ''), secret?.password_hash, secret?.password_salt)) {
         return json({ error: 'BAD_CREDENTIALS' }, 401);
       }
       const { hash, salt } = await hashPassword(String(body.password));
@@ -218,7 +229,7 @@ async function handler(request) {
     const res = await checkCode(sql, { purpose: 'rename', subject: me.username, email: me.email, code: body.code });
     if (!res.ok) return json({ error: res.error }, 400);
     await renameUser(sql, me.username, to);
-    const [fresh] = await sql`SELECT * FROM users WHERE username = ${to}`;
+    const [fresh] = await sql`SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE username = ${to}`;
     fresh.departments = await departmentsOf(sql, to);
     return json({ user: publicUser(fresh) });
   }
@@ -260,7 +271,7 @@ async function handler(request) {
     if (!res.ok) return json({ error: res.error }, 400);
     const bound = await bindEmail(sql, me.username, email);
     if (!bound.ok) return json({ error: bound.error }, 409);
-    const [fresh] = await sql`SELECT * FROM users WHERE username = ${me.username}`;
+    const [fresh] = await sql`SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE username = ${me.username}`;
     fresh.departments = await departmentsOf(sql, me.username);
     return json({ user: publicUser(fresh) });
   }
@@ -295,7 +306,7 @@ async function handler(request) {
     if (problem) return json({ error: problem }, 400);
 
     const [u] = await sql`
-      SELECT * FROM users WHERE lower(username) = ${username.toLowerCase()}
+      SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE lower(username) = ${username.toLowerCase()}
         AND active = true AND suspended = false`;
     if (!u) return json({ error: 'NO_SUCH_USER' }, 404);
 
@@ -319,7 +330,7 @@ async function handler(request) {
     await sql`INSERT INTO sessions (token, username, expires_at)
               VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
 
-    const [fresh] = await sql`SELECT * FROM users WHERE username = ${u.username}`;
+    const [fresh] = await sql`SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE username = ${u.username}`;
     fresh.departments = await departmentsOf(sql, fresh.username);
     return json({ user: publicUser(fresh) }, 200, { 'set-cookie': sessionCookie(token) });
   }
@@ -327,7 +338,7 @@ async function handler(request) {
   if (action === 'login') {
     const password = String(body.password ?? '');
     const [u] = await sql`
-      SELECT * FROM users WHERE lower(username) = ${username.toLowerCase()}
+      SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE lower(username) = ${username.toLowerCase()}
         AND active = true AND suspended = false`;
 
     if (!u || !u.password_hash) return json({ error: 'BAD_CREDENTIALS' }, 401);

@@ -10143,5 +10143,55 @@ const rmSrc = (await import('node:fs')).readFileSync('README.md', 'utf8');
 ok('the README tells the next person how it is scheduled now',
   /crons.*\/api\/cron/s.test(rmSrc) && !/Create a job that fetches/.test(rmSrc));
 
+
+head('118. The directory stops carrying four hundred photographs');
+
+/*
+ * Neon bills what leaves the database. In November 4.5 GB of a 5 GB monthly
+ * allowance went on one column: users.avatar, a ~13 KB base64 data URL that
+ * currentUser() read on every single request and the directory read four
+ * hundred times on every page load. These checks pin the shape that fixed it.
+ */
+const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+await sql`UPDATE users SET avatar = ${tinyPng} WHERE username = 'Jade_Pres'`;
+
+r = await call(usersApi, '/api/users', { as: 'admin' });
+const meRow = r.data.users.find((u) => u.username === 'Jade_Pres');
+ok('the directory sends a version, not the picture',
+  Boolean(meRow.avatarV) && meRow.avatar === undefined, JSON.stringify(meRow.avatarV));
+ok('...and never the password hash',
+  !('password_hash' in meRow) && !('passwordHash' in meRow));
+ok('somebody with no picture has no version',
+  r.data.users.some((u) => u.avatarV === null));
+
+/** The picture itself, on its own address, cached against that version. */
+let av = await usersApi(makeRequest('/api/users?do=avatar&user=Jade_Pres', { as: 'admin' }));
+ok('the picture is served as an image', av.status === 200 && av.headers.get('content-type') === 'image/png',
+  String(av.status) + ' ' + av.headers.get('content-type'));
+ok('...told to cache it for a year and never re-ask',
+  /max-age=31536000/.test(av.headers.get('cache-control') || '') &&
+  /immutable/.test(av.headers.get('cache-control') || ''), av.headers.get('cache-control'));
+ok('...kept private, since it is behind a sign-in',
+  /private/.test(av.headers.get('cache-control') || ''), av.headers.get('cache-control'));
+ok('...and tagged with the same version the directory gave',
+  av.headers.get('etag') === `"${meRow.avatarV}"`, av.headers.get('etag'));
+ok('...and the bytes really are the picture',
+  (await av.arrayBuffer()).byteLength === Buffer.from(tinyPng.split(',')[1], 'base64').length);
+
+av = await usersApi(makeRequest('/api/users?do=avatar&user=Kungking_HeadCon', { as: 'admin' }));
+ok('asking for a picture nobody set is a plain 404', av.status === 404, String(av.status));
+av = await usersApi(makeRequest('/api/users?do=avatar&user=Jade_Pres'));
+ok('and a stranger gets nothing at all', av.status === 401, String(av.status));
+
+/** The hot path: what every request reads about the signed-in person. */
+const { currentUser: loadMe } = await import('../lib/auth.js');
+const meLoaded = await loadMe(makeRequest('/api/users', { as: 'admin' }), sql);
+ok('the row every request loads carries no picture', meLoaded.avatar === undefined);
+ok('...and no password hash either', meLoaded.password_hash === undefined);
+ok('...but does carry the version, for the page to build a URL from',
+  typeof meLoaded.avatar_v === 'string' && meLoaded.avatar_v.length === 10, String(meLoaded.avatar_v));
+
+await sql`UPDATE users SET avatar = NULL WHERE username = 'Jade_Pres'`;
+
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : `\n${failed} CHECK(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

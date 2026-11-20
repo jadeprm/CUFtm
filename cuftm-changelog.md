@@ -8,8 +8,49 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 
 **Posts are read from the roster's ตำแหน่ง column, not from Access.** ต๊อดติ is a Co-Admin because he manages people, which is not a reason to offer him as ประธานโครงการ. If a post ever stops being offered to the right person, look at that column first.
 
-**Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites expect Chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
+**Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
+
+## 2026-11-20 — the database was being billed for four hundred photographs · version `2026-11-20a`
+
+No schema change. Neon mailed a warning: 4.5 GB of the project's 5 GB monthly public network transfer, with ten days of the month left. On the Free plan that allowance is not billed as an overage — the project's **compute is suspended** until the next billing period, which means the whole site stops — so this was a fortnight away from taking CUFTM down.
+
+**It was one column.** `users.avatar` holds a 192×192 JPEG as a base64 data URL, about 13 KB a head, and two queries were reading it constantly:
+
+* `currentUser()` in `lib/auth.js` runs on **every single request**, and selected `u.*`. A page load makes eight to twelve API calls, so every page load dragged ten-odd copies of the signed-in person's own photograph out of Neon for nobody to look at.
+* The directory selected `SELECT * FROM users` — every account, photographs included — and the page asks for it on every load. At four hundred members that is about 2.6 MB per load, on its own.
+
+Four hundred people, a handful of loads a day each, and the arithmetic lands almost exactly on the 4.5 GB Neon reported.
+
+The fix is the same in both places: `to_jsonb(u) - 'avatar' - 'password_hash'`, which keeps every other column without naming them all, plus `left(md5(u.avatar), 10) AS avatar_v` — ten characters that change when the picture does. Dropping the hash is a second, smaller win: nothing downstream read it off `me`, and a hash that never leaves the database cannot leak from a log. The one place that genuinely needs it, `password-change`, now reads it for itself.
+
+**The picture gets an address of its own.** `GET /api/users?do=avatar&user=…&v=…` serves the bytes with `Cache-Control: private, max-age=31536000, immutable` and an ETag equal to that version. A browser fetches each face once, ever, and the version in the URL is what lets a changed picture through. The avatars are also `loading="lazy"`, so the ones below the fold are not fetched at all.
+
+Expected effect: the per-request cost drops to zero and the per-load cost to a few hundred bytes of version strings, with each avatar paid for once per person per browser instead of on every load.
+
+**What is still worth doing, and is not code.** Documents, meeting papers, bug-report screenshots and pop-up posters are all `BYTEA` in Postgres, so every time one is opened the bytes leave Neon twice (database → function → browser). Drive archiving already moves finished documents out and purges them, but it only runs if Drive is connected and the hourly run is alive — and the hourly run was dead from 20 October to 18 November, so a month of documents are still sitting in the database. `post_files` is the other one: the feed page went on 19 November and its photographs are still there with no reader.
+
+Tests: run.mjs §118 — the directory sends a version and never a picture or a password hash, the endpoint serves the image with a year's cache and the matching ETag, a missing picture is a plain 404, a stranger gets 401, and the row every request loads carries neither the picture nor the hash. Browser-checked end to end: four avatars on the admin page, all four from the endpoint, and no `data:image` anywhere in the directory payload.
+
+## 2026-11-19 — nine changes in one package: a feed removed, three pages added, and colour · version `2026-11-19a`
+
+**ฟีดโครงการ is gone.** The page, its forty-odd strings in both languages, its ninety-eight lines of stylesheet and `dev-tests/feed.mjs` were deleted; `lib/feed.js`, the `?do=feed*` endpoints on `/api/notifications` and the tables underneath were deliberately left in place. Nothing anybody posted was destroyed, and putting back `pageFeed` and its route would turn it on again. Two error codes that only the feed could raise (`NO_SUCH_POST`, `TOO_MANY_PINNED` and their neighbours) came out of `ERROR_KEYS`, because run.mjs §60 checks that every mapped code has a string and they no longer did.
+
+**The four numbers on หน้าแรก open the work behind them.** They used to be figures and nothing else: "1 เลยกำหนด" told somebody there was a problem and then made them go and find it. Pressing one now drops the tasks it counts into a panel under the row, each opening its own dialog; pressing it again folds it away. `S.homeKpi` holds which one is open, so it survives a redraw.
+
+**บัญชีและรหัสผ่าน is its own page** at `#/account`. The profile is how the committee sees you; the account is how you get in, and mixing them put a password field three inches under a profile picture. `accountBox()` was rewritten at the same time: each of the three rows now opens its own form inside its own card. Before, all three shared one panel at the bottom, so pressing เปลี่ยน on รหัสผ่าน put fields under ชื่อผู้ใช้ and the right-hand edge went ragged where the full-width fields ran past the rows above — which is what Jade's screenshot of 19 November was showing.
+
+**หน้าโปรไฟล์ is grouped.** Nine boxes in two stacks with nothing between them became five titled groups (`pfGroup`), every control stopping at the same right edge.
+
+**วิธีใช้งาน** at `#/guide` explains all sixteen pages, two tips each, with a filter box and a link into each one. Different from the setup guide in the ••• menu, which is four jobs you do once on your phone. Admin-only pages are listed only for the people who have them.
+
+**แผงควบคุม** at `#/control`, for admins and co-admins: six numbers, people by access level, work by status, a table of ฝ่าย sorted by how much each is carrying, documents by stage, the week's meetings, and the state of the machinery — the hourly run, push, LINE quota, Drive, storage. Read-only on purpose. Had it existed in October, the month the reminder run spent dead would have shown as a red line the first time anybody opened it.
+
+**Approving somebody else's step now asks first.** `canAct` has always let anybody named on a letter move the step in front of it, and an admin move any of them — which is what keeps a letter from stopping dead because one ประธานฝ่าย is on a plane, and also how somebody approves in another person's name without noticing. The dialog names the person and their role, the footer carries a warning band above อนุมัติ, and the server was already recording the real presser in `acted_by`.
+
+**Colour.** `document.body.dataset.page` carries the page, and `--page` gives each one a hue spent in three places: the hairline under the top bar, the card-heading icons, and the empty states. Separately, each ฝ่าย gets a stable colour hashed from its key (`deptHue`), so the same ฝ่าย is the same colour everywhere without anybody choosing one.
+
+**Also:** the browser suites no longer hard-code `/opt/pw-browsers/chromium-1194/...`, which had stopped existing; `dev-tests/shots.mjs` photographs every page for the handbook. A graphic manual with real screenshots was published as an artifact alongside this release.
 
 ## 2026-11-18 — the hourly run belongs to Vercel now, and the functions moved to Singapore · version `2026-11-18a`
 
