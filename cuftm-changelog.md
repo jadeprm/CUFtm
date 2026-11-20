@@ -11,6 +11,26 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-20 (c) — the short-link domain belongs to another site now · version `2026-11-20c`
+
+Reported: short links do not reach the app. Checked from a browser, and they do not:
+
+* `https://chulafair.com/s/TESTCODE` → redirected to `www.chulafair.com` → **Vercel 404 NOT_FOUND**.
+* `https://task.chulafair.com/s/TESTCODE` → the app's own **ไม่พบลิงก์นี้** page, which is the correct answer for a code that does not exist.
+
+Nothing in CUFTM is broken. When short links moved to the short domain on 22 October, the instruction was to add `chulafair.com` to **this** Vercel project. It has since become the public website's own project instead, so the host that every printed link names has no `/s/` route and no sight of this database. The app kept printing links at a domain that stopped being its own, and could not tell: the domain lives in `SHORTLINK_URL` and in Vercel's settings, neither of which the code can see.
+
+Two ways out, both on Jade's side, neither of them code:
+
+1. **Clear `SHORTLINK_URL`** in the CUFTM project and redeploy. Links fall back to `siteUrl()` — `task.chulafair.com/s/CODE` — which works today. Longer, and already correct.
+2. **Forward the path from the website's project.** In the chulafair.com project's `vercel.json`: `{"redirects":[{"source":"/s/:code","destination":"https://task.chulafair.com/s/:code","permanent":false}]}`. Keeps the short address on posters. Not `permanent`, which browsers cache for good.
+
+Codes already printed keep working either way: they live in the database, not in the domain.
+
+**And the app can now see it.** `/s/__check__` answers a small fixed JSON — `{cuftm:true, what:'shortlink', version}` — without touching the database, and **ลิงก์สั้น → โดเมนลิงก์สั้น → ตรวจสอบโดเมน** (admin and co-admin) makes the server fetch its own configured short domain and report what came back: the version that answered when it reaches this deployment, or the status and the first line of whatever was there instead when it does not, with both fixes spelled out. The same shape as the LINE webhook check from 8 November, for the same reason: a setting outside the code failing silently is the hardest kind of fault to find from inside it.
+
+Tests: run.mjs §119 — the probe answers without a lookup and names its build, a stranger is refused 401 and an editor 403, the check fetches the configured domain rather than the app's own address, a correct domain is reported as reaching this deployment, somebody else's 404 is reported as broken with what it said, and a domain that answers nothing is reported with the reason. Browser-checked on the links page end to end.
+
 ## 2026-11-20 (b) — a half-deployed site now says so · version `2026-11-20b`
 
 The live site was showing `navControl`, `ctlSub`, `ctlWhoTitle` and `ctlPeople` as its labels. Nothing was broken: `public/app.js` had been deployed and `public/i18n.js` had not, so `t()` fell through to returning the key for every string added since the strings file on the server was written. The sidebar's older labels were still Thai, which made it look like a bug in the new pages rather than a missing file.

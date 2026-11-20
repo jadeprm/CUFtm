@@ -1549,3 +1549,18 @@ body[data-page="requests"] { --page: #12a36b; }
            calc(10px + env(safe-area-inset-bottom, 0px)) max(14px, env(safe-area-inset-left, 0px));
   text-align: center; box-shadow: 0 -6px 20px -10px rgba(0,0,0,.5);
 }
+
+/* The short-link domain check on the links page — see shortDomainPanel. */
+.short-check { margin-bottom: 16px; }
+.short-check .hint { margin: 0; }
+.sc-out {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 12px;
+  border-radius: var(--radius-sm); padding: 12px 14px;
+  background: var(--surface-2); border: 1px solid var(--line); font-size: 13px;
+}
+.sc-out.ok { background: var(--done-soft); border-color: var(--done); color: var(--done); }
+.sc-out.bad { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.sc-out code { font-size: 12px; opacity: .85; overflow-wrap: anywhere; }
+.sc-out small { opacity: .9; line-height: 1.55; }
+.sc-fix { margin: 4px 0 0; color: var(--ink-soft); line-height: 1.6; }
+.sc-out.bad .sc-fix { color: var(--ink); }

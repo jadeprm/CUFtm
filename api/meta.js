@@ -76,10 +76,28 @@ async function handler(request) {
   const action = url.searchParams.get('do') || '';
   const go = url.searchParams.get('go');
 
+  /**
+   * Is the short-link domain actually this app?
+   *
+   * `SHORTLINK_URL` can name a host that belongs to somebody else's project
+   * — which is what happened here: chulafair.com became its own Vercel site
+   * for the public page, so every short link the app printed pointed at a
+   * 404 while the app itself was perfectly healthy. Nothing said so, because
+   * nothing on this side was wrong.
+   *
+   * So /s/__check__ answers a small fixed JSON instead of looking anything
+   * up, and ?do=linkcheck below fetches it over the real domain. If the
+   * answer comes back, the domain reaches this deployment; if a 404 or
+   * somebody else's HTML comes back, it does not.
+   */
+  if (go === SHORT_PROBE) {
+    return json({ cuftm: true, what: 'shortlink', version: APP_VERSION });
+  }
   if (hasDatabase && go) return follow(go);
   if (hasDatabase && (action === 'links' || action === 'link')) {
     return links(request, action);
   }
+  if (action === 'linkcheck') return linkCheck(request);
   if (hasDatabase && action === 'share') return share(request);
   if (hasDatabase && action.indexOf('report') === 0) return reports(request, action);
   if (hasDatabase && action.indexOf('shelf') === 0) return shelf(request, action);
@@ -222,6 +240,64 @@ p{color:#6b7280;line-height:1.6}</style></head>
  * browsers forever, so a link retargeted after a poster goes out would keep
  * sending anybody who had used it once to the old address.
  */
+/** The one code that is not a link: see the note where it is answered. */
+const SHORT_PROBE = '__check__';
+
+/**
+ * Fetches this deployment's own short-link domain and says what came back.
+ *
+ * Admins only, because it names the configured domain, and because a button
+ * anybody can press that makes the server fetch a URL is a door worth
+ * keeping shut. The answer is deliberately plain: the address tried, whether
+ * it arrived, and what was there instead when it did not.
+ */
+async function linkCheck(request) {
+  const { sql, ready } = getSql();
+  await ready;
+  const me = await currentUser(request, sql);
+  if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
+  if (!canManageAccounts(me)) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  // SITE_URL may be unset on a preview or in development, and an answer that
+  // tells somebody to go back to "null" is worse than no answer.
+  const own = siteUrl() || requestUrl(request).origin;
+  const base = shortlinkUrl() || own;
+  const probe = `${base}/s/${SHORT_PROBE}`;
+  const sameAsApp = base === own;
+
+  let status = 0;
+  let body = '';
+  let reason = '';
+  try {
+    const res = await fetch(probe, {
+      redirect: 'follow',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(6000),
+    });
+    status = res.status;
+    body = (await res.text()).slice(0, 400);
+  } catch (err) {
+    reason = String(err?.message || err).slice(0, 200);
+  }
+
+  let answered = null;
+  try { answered = JSON.parse(body); } catch { /* not ours, which is the finding */ }
+  const ok = status === 200 && answered?.cuftm === true && answered?.what === 'shortlink';
+
+  return json({
+    shortlinkUrl: base,
+    siteUrl: own,
+    sameAsApp,
+    probe,
+    ok,
+    status,
+    reason: reason || null,
+    // What was there instead, enough to recognise a Vercel 404 or another site.
+    sawVersion: ok ? answered.version : null,
+    saw: ok ? null : (body.replace(/\s+/g, ' ').trim().slice(0, 160) || null),
+  });
+}
+
 async function follow(rawCode) {
   const { sql, ready } = getSql();
   await ready;

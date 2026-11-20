@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-20b';
+  var APP_VERSION = '2026-11-20c';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -9358,6 +9358,60 @@
    * room. This makes cu-ftm.vercel.app/s/CUFAIR instead, with a QR code beside
    * it, and counts how many people followed it.
    */
+  /**
+   * Does the short-link domain reach this app at all?
+   *
+   * A short link is printed on a poster, so the one thing that must be true
+   * of it is that it goes somewhere — and that depends on a domain belonging
+   * to this Vercel project, which is a setting nothing in the app can see.
+   * On 20 November every printed link pointed at chulafair.com, which had by
+   * then become the public website's own project and answered 404. The app
+   * was healthy, the links were dead, and nothing joined the two facts up.
+   *
+   * The button asks the server to fetch its own short domain and say what
+   * came back. Admins only — it names the configured domain.
+   */
+  function shortDomainPanel() {
+    var box = h('div', { class: 'card short-check' });
+    var out = h('div', { class: 'sc-out', hidden: true });
+    var btn = h('button', {
+      class: 'btn sm', type: 'button', text: t('linkCheckBtn'),
+      onclick: function () {
+        btn.disabled = true;
+        out.hidden = false;
+        clear(out);
+        out.className = 'sc-out';
+        out.appendChild(h('span', { text: t('loading') }));
+        api('/api/meta?do=linkcheck').then(function (d) {
+          btn.disabled = false;
+          clear(out);
+          out.className = 'sc-out ' + (d.ok ? 'ok' : 'bad');
+          out.appendChild(h('b', { text: d.ok ? t('linkCheckOk') : t('linkCheckBad') }));
+          out.appendChild(h('code', { text: d.probe }));
+          if (d.ok) {
+            out.appendChild(h('small', { text: t('linkCheckVersion').replace('%s', d.sawVersion || '—') }));
+            return;
+          }
+          out.appendChild(h('small', { text: d.reason
+            ? t('linkCheckNoAnswer').replace('%s', d.reason)
+            : t('linkCheckSaw').replace('%n', String(d.status)).replace('%s', d.saw || '—') }));
+          out.appendChild(h('p', { class: 'sc-fix', text: t('linkCheckFix').replace('%s', d.siteUrl) }));
+        }).catch(function (err) {
+          btn.disabled = false;
+          clear(out);
+          out.className = 'sc-out bad';
+          out.appendChild(h('b', { text: errText(err.code) }));
+        });
+      },
+    });
+    box.appendChild(h('div', { class: 'card-head' }, [
+      icon('link'), h('h3', { text: t('linkCheckTitle') }), h('span', { class: 'grow' }), btn,
+    ]));
+    box.appendChild(h('p', { class: 'hint', text: t('linkCheckWhy') }));
+    box.appendChild(out);
+    return box;
+  }
+
   function pageLinks(main) {
     var state = { links: [], site: '', mayCreate: false, mayManageAll: false, remaining: 0 };
     var notice = h('div', { class: 'notice', hidden: true });
@@ -9371,6 +9425,7 @@
 
     main.appendChild(h('div', { class: 'page-head' }, [h('h1', { text: t('navLinks') })]));
     main.appendChild(h('p', { class: 'hint', text: t('linksIntro') }));
+    if (S.canManage) main.appendChild(shortDomainPanel());
     /**
      * What Google said, for somebody who has just come back from its
      * consent screen. Read once and taken out of the address, so a reload

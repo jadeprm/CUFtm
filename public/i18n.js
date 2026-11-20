@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-20b';
+window.STRINGS_VERSION = '2026-11-20c';
 
 window.STRINGS = {
   th: {
@@ -157,6 +157,15 @@ window.STRINGS = {
     saved: 'บันทึกแล้ว',
     language: 'ภาษา',
     navLinks: 'ลิงก์สั้น',
+    linkCheckTitle: 'โดเมนลิงก์สั้น',
+    linkCheckWhy: 'ลิงก์สั้นจะใช้ได้ก็ต่อเมื่อโดเมนนั้นชี้มาที่โปรเจกต์นี้ ปุ่มนี้ให้เซิร์ฟเวอร์ลองเรียกโดเมนของตัวเองแล้วบอกว่าได้อะไรกลับมา',
+    linkCheckBtn: 'ตรวจสอบโดเมน',
+    linkCheckOk: 'โดเมนนี้ชี้มาที่ระบบถูกต้องแล้ว',
+    linkCheckBad: 'โดเมนนี้ไม่ได้ชี้มาที่ระบบ ลิงก์สั้นที่พิมพ์ไปจะเปิดไม่ได้',
+    linkCheckVersion: 'ตอบกลับจากเวอร์ชัน %s',
+    linkCheckNoAnswer: 'เรียกไม่สำเร็จ: %s',
+    linkCheckSaw: 'ได้รหัส %n กลับมา และเนื้อหาคือ: %s',
+    linkCheckFix: 'แก้ได้สองทาง ทางแรกลบค่า SHORTLINK_URL ใน Vercel ออก แล้วลิงก์จะกลับไปใช้ %s ซึ่งใช้งานได้อยู่แล้ว ทางที่สองไปที่โปรเจกต์ของเว็บโดเมนนั้น แล้วเพิ่ม redirect จาก /s/:code มาที่ระบบนี้',
     navAccount: 'บัญชีและรหัสผ่าน',
     navGuide: 'วิธีใช้งาน',
     navControl: 'แผงควบคุม',

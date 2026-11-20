@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-20b';
+window.STRINGS_EN_VERSION = '2026-11-20c';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -142,6 +142,15 @@ Object.assign(window.STRINGS, {
     saved: 'Saved',
     language: 'Language',
     navLinks: 'Short links',
+    linkCheckTitle: 'Short-link domain',
+    linkCheckWhy: 'A short link only works if its domain points at this project. This asks the server to fetch its own short domain and report what came back.',
+    linkCheckBtn: 'Check the domain',
+    linkCheckOk: 'The domain reaches this app.',
+    linkCheckBad: 'The domain does not reach this app — every short link already printed is dead.',
+    linkCheckVersion: 'answered by version %s',
+    linkCheckNoAnswer: 'The request failed: %s',
+    linkCheckSaw: 'Got %n back, and the page said: %s',
+    linkCheckFix: 'Two ways to fix it. Either clear SHORTLINK_URL in Vercel, and links go back to %s, which works today; or go to the project that serves that domain and add a redirect from /s/:code to this app.',
     navAccount: 'Account and password',
     navGuide: 'How to use this',
     navControl: 'Control panel',
