@@ -8,6 +8,10 @@
     "node": "22.x"
   },
   "scripts": {
+    "dev": "node server/dev-server.mjs",
+    "dev:backend": "MODE=backend PORT=4701 node server/dev-server.mjs",
+    "dev:frontend": "MODE=frontend PORT=4700 API_ORIGIN=http://127.0.0.1:4701 node server/dev-server.mjs",
+    "check:separation": "node scripts/check-separation.mjs",
     "test": "node test/run.mjs"
   },
   "dependencies": {

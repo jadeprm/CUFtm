@@ -1,4 +1,5 @@
 import { APP_VERSION } from '../lib/version.js';
+import { missingShortLinkHtml } from '../lib/templates.js';
 import { json, hasDatabase, getSql, requestUrl, toBuffer } from '../lib/db.js';
 import { DEPARTMENTS } from '../lib/departments.js';
 import { STATUSES, PRIORITIES } from '../lib/scope.js';
@@ -204,33 +205,16 @@ async function handler(request) {
 // Following one
 // ---------------------------------------------------------------------------
 
-const escapeHtml = (value) =>
-  String(value ?? '').replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
 /**
  * A page for a link that goes nowhere.
  *
- * Returned instead of a bare 404 because these addresses are printed on
- * posters and said out loud: somebody standing in front of a banner with a
- * typo needs to be told it is a typo, in a language they read, rather than
- * shown a browser error page.
+ * Rendered via lib/templates.js so API handlers stay free of inline HTML/CSS.
  */
 const missingPage = (code, message) =>
-  new Response(
-    `<!doctype html><html lang="th"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ไม่พบลิงก์นี้</title>
-<style>body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;display:grid;
-place-items:center;min-height:100vh;margin:0;background:#faf7f8;color:#1f2328;text-align:center;padding:24px}
-main{max-width:22rem}code{background:#f0eaec;padding:2px 8px;border-radius:6px;font-size:1.1em}
-p{color:#6b7280;line-height:1.6}</style></head>
-<body><main><h1>ไม่พบลิงก์นี้</h1>
-<p>${escapeHtml(message)}</p>
-<p><code>/s/${escapeHtml(code)}</code></p>
-<p>ลองตรวจตัวอักษรอีกครั้ง หรือถามผู้ที่ให้ลิงก์นี้มา</p></main></body></html>`,
-    { status: 404, headers: { 'content-type': 'text/html; charset=utf-8' } },
-  );
+  new Response(missingShortLinkHtml(code, message), {
+    status: 404,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
 
 /**
  * Sends somebody on their way.
