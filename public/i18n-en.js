@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-20c';
+window.STRINGS_EN_VERSION = '2026-11-25b';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -304,6 +304,11 @@ Object.assign(window.STRINGS, {
     navReports: 'Report a problem',
     navReportsShort: 'Reports',
     navShelf: 'Key information',
+    navGroupCommittee: 'Committee',
+    navGroupAdmin: 'Admin',
+    calAll: 'Committee calendar',
+    homeTabProgress: 'Progress',
+    workMoreCreate: 'More to create',
     navShelfShort: 'Key info',
 
     popTag: 'Committee notice',

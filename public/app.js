@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-20c';
+  var APP_VERSION = '2026-11-25b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -205,34 +205,13 @@
 
   /* ---------- api ------------------------------------------------------- */
   /**
-   * The same write, sent twice while the first is still out, is one write.
-   * People press again when the server is slow, and every press used to be a
-   * separate request — three presses, three meetings. A repeat now joins the
-   * request already under way and gets its answer.
+   * Delegates all backend communication to the dedicated frontend API client
+   * (`public/api-client.js`), keeping HTTP transport, base-URL resolution, and
+   * in-flight write deduplication strictly outside the UI layer.
    */
-  var inFlight = {};
+  var API = window.FairAPI;
   function api(path, options) {
-    options = options || {};
-    var method = options.method || 'GET';
-    var key = method === 'GET' ? null : method + ' ' + path + ' ' + JSON.stringify(options.body || null);
-    if (key && inFlight[key]) return inFlight[key];
-    var p = fetch(path, {
-      method: method,
-      headers: options.body ? { 'content-type': 'application/json' } : undefined,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      credentials: 'same-origin',
-    }).then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (data) {
-        if (!res.ok) { var e = new Error(data.error || 'SERVER'); e.code = data.error; e.data = data; throw e; }
-        return data;
-      });
-    });
-    if (key) {
-      inFlight[key] = p;
-      var done = function () { delete inFlight[key]; };
-      p.then(done, done);
-    }
-    return p;
+    return API.request(path, options);
   }
 
   /**
@@ -491,15 +470,25 @@
    */
   function avatarUrl(u) {
     if (!u || !u.avatarV) return null;
-    return '/api/users?do=avatar&user=' + encodeURIComponent(u.username) + '&v=' + encodeURIComponent(u.avatarV);
+    return API.users.avatarUrl(u.username, u.avatarV);
   }
 
   function avatarNode(username, size) {
     var u = userBy(username);
     var cls = 'avatar' + (size ? ' ' + size : '');
+    var label = initials(u ? u.displayName : username);
     var src = avatarUrl(u);
-    if (src) return h('span', { class: cls, title: nameOf(username) }, [h('img', { src: src, alt: '', loading: 'lazy' })]);
-    return h('span', { class: cls, title: nameOf(username), text: initials(u ? u.displayName : username) });
+    if (src) {
+      var wrap = h('span', { class: cls, title: nameOf(username) });
+      var img = h('img', { src: src, alt: '', loading: 'lazy' });
+      img.addEventListener('error', function () {
+        img.remove();
+        wrap.textContent = label;
+      });
+      wrap.appendChild(img);
+      return wrap;
+    }
+    return h('span', { class: cls, title: nameOf(username), text: label });
   }
   /**
    * Groups a list of people by department, mine first.
@@ -2003,7 +1992,8 @@
 
     // On a phone, the drawer also carries the pages that have no room in the bar.
     if (isPhone()) {
-      var pages = [['calendar', 'navCalendar', 'event'], ['shelf', 'navShelf', 'folder'],
+      // The calendar is in the bar now (it opens my schedule, with the committee calendar a tab away).
+      var pages = [['shelf', 'navShelf', 'folder'],
         ['announce', 'navAnnounce', 'megaphone', S.canManage],
         ['requests', 'navRequests', 'user', S.canApprove],
         ['control', 'navControl', 'gauge', S.canManage],
@@ -2014,7 +2004,7 @@
         return p[3] === undefined || p[3];
       }).map(function (p) {
         return h('a', { class: 'sb-item' + (S.page === p[0] ? ' on' : ''), href: '#/' + p[0] }, [
-          h('span', { class: 'sb-ico', style: 'background:rgba(255,255,255,.1)' }, [icon(p[2])]),
+          h('span', { class: 'sb-ico sb-ico-plain' }, [icon(p[2])]),
           h('span', { class: 'sb-label', text: t(p[1]) }),
         ]);
       })));
@@ -2121,8 +2111,10 @@
       b.classList.toggle('on', b.dataset.lang === S.lang);
     });
     document.querySelectorAll('#tabs a').forEach(function (a) {
-      a.classList.toggle('on', a.dataset.page === S.page);
+      // The calendar entry stands for both my schedule and the committee calendar.
+      a.classList.toggle('on', a.dataset.page === S.page || a.dataset.also === S.page);
     });
+    if ($('nav-grp-admin')) $('nav-grp-admin').hidden = !(S.canManage || S.canApprove);
     $('tab-control').hidden = !S.canManage;
     $('tab-admin').hidden = !S.canManage;
     $('tab-announce').hidden = !S.canManage;
@@ -2135,8 +2127,15 @@
 
     var av = clear($('me-avatar'));
     var meSrc = avatarUrl(S.user);
-    if (meSrc) av.appendChild(h('img', { src: meSrc, alt: '' }));
-    else av.textContent = initials(S.user.displayName);
+    var meInit = initials(S.user.displayName);
+    if (meSrc) {
+      var meImg = h('img', { src: meSrc, alt: '' });
+      meImg.addEventListener('error', function () {
+        meImg.remove();
+        av.textContent = meInit;
+      });
+      av.appendChild(meImg);
+    } else av.textContent = meInit;
     $('me-name').textContent = S.user.displayName || S.user.username;
     $('me-theme').textContent = t('theme') + ': ' + t('theme' +
       (S.theme || 'system').charAt(0).toUpperCase() + (S.theme || 'system').slice(1));
@@ -4833,10 +4832,18 @@
        * server refuses it either way, and offering a button that always ends
        * in an error is worse than not offering it.
        */
-      mayCreate() ? h('button', { class: 'btn', text: '\u2191 ' + t('importTasks'), onclick: openImport }) : null,
-      mayCallMeeting() ? h('button', { class: 'btn', text: t('mtgNew'), onclick: function () { openMeeting(null); } }) : null,
-      mayCreate() ? h('button', { class: 'btn', text: t('newEvent'), onclick: function () { openEvent(null); } }) : null,
-      mayCreate() ? h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }) : null,
+      // Search and the filters live in the toolbar (filled in below); one
+      // button makes a task, and the rarer things to make sit behind ⋯.
+      h('span', { class: 'work-find' }),
+      h('button', {
+        type: 'button', class: 'btn work-filter' + (taskFilterCount() ? ' on' : ''), onclick: openTaskFilterSheet,
+      }, [icon('filter'), h('span', { text: t('phFilters') }),
+        taskFilterCount() ? h('span', { class: 'badge-n', text: String(taskFilterCount()) }) : null]),
+      mayCreate() ? h('span', { class: 'split-btn' }, [
+        h('button', { class: 'btn primary', text: t('newTask'), onclick: function () { openTask(null); } }),
+        h('button', { class: 'btn primary split-more', type: 'button', 'aria-label': t('workMoreCreate'), title: t('workMoreCreate'),
+          onclick: openCreateSheet, text: '\u22ef' }),
+      ]) : (mayCallMeeting() ? h('button', { class: 'btn', text: t('mtgNew'), onclick: function () { openMeeting(null); } }) : null),
     ]));
 
     upcomingList(main, mineOnly);
@@ -4976,10 +4983,22 @@
         })])));
       }
     } else {
+      var find = main.querySelector('.work-find');
+      if (find) find.appendChild(searchBox);
+      // What is narrowing the list, named and clearable, beside the status tabs.
+      var named = [];
+      if (S.prio) named.push(prioLabel(S.prio));
+      if (S.dept) named.push(deptLabel(S.dept));
+      if (S.unit) named.push(S.unit);
+      if (S.who) named.push(nameOf(S.who));
       main.appendChild(h('div', { class: 'filters' }, [
-        board || gantt ? null : seg, board || gantt ? null : h('span', { class: 'grow' }),
-        searchBox,
-        h('div', { class: 'filter-selects' }, [prioSelect, deptSelect, unitSelect, whoSelect]),
+        board || gantt ? null : seg, h('span', { class: 'grow' }),
+        named.length ? h('div', { class: 'ph-active' }, named.map(function (x) {
+          return h('span', { class: 'chip', text: x });
+        }).concat([h('button', {
+          type: 'button', text: t('phClearFilters'),
+          onclick: function () { S.prio = ''; S.dept = ''; S.unit = ''; S.who = ''; renderPage(); },
+        })])) : null,
       ]));
     }
 
@@ -5493,11 +5512,7 @@
        * Once a letter has been archived the file is gone from here; the
        * preview says so rather than spinning.
        */
-      loaded = fetch('/api/documents?id=' + encodeURIComponent(doc.id) + '&file=original', { credentials: 'same-origin' })
-        .then(function (res) {
-          if (!res.ok) throw new Error(String(res.status));
-          return res.arrayBuffer();
-        })
+      loaded = API.documents.fetchFileBytes(doc.id, 'original')
         .then(function (buf) {
           var bytes = new Uint8Array(buf);
           return withPdfJs().then(function (lib) {
@@ -5673,11 +5688,7 @@
     }
 
     /** The unsigned original: it is the sheet the box is measured against. */
-    fetch('/api/documents?id=' + encodeURIComponent(doc.id) + '&file=original', { credentials: 'same-origin' })
-      .then(function (res) {
-        if (!res.ok) throw new Error(String(res.status));
-        return res.arrayBuffer();
-      })
+    API.documents.fetchFileBytes(doc.id, 'original')
       .then(function (buf) { bytes = new Uint8Array(buf); return show(); })
       .catch(function () {
         note.className = 'notice err';
@@ -5735,10 +5746,7 @@
         if (onDone) onDone(null);
       }, 4000);
     };
-    return fetch(url, { credentials: 'same-origin' }).then(function (res) {
-      if (!res.ok) throw new Error(String(res.status));
-      return res.blob();
-    }).then(function (blob) {
+    return API.fetchBlob(url).then(function (blob) {
       give(URL.createObjectURL(blob), true);
     }).catch(function (err) {
       // Nothing saved is better than a zero-byte file with the right name.
@@ -5763,7 +5771,7 @@
    * own viewer.
    */
   function openPdfViewer(doc, kind, label) {
-    var base = '/api/documents?id=' + encodeURIComponent(doc.id) + '&file=' + encodeURIComponent(kind);
+    var base = API.documents.fileUrl(doc.id, kind);
     var fileName = ((doc.docNumber ? doc.docNumber + ' ' : '') + (doc.title || 'document') + '.pdf')
       .replace(/[\\/:*?"<>|]/g, '-');
 
@@ -5851,15 +5859,7 @@
     }
     drawFooter();
 
-    fetch(base, { credentials: 'same-origin' })
-      .then(function (res) {
-        if (res.ok) return res.arrayBuffer();
-        return res.json().catch(function () { return {}; }).then(function (body) {
-          var e = new Error(body.error || String(res.status));
-          e.body = body;
-          throw e;
-        });
-      })
+    API.fetchBytes(base)
       .then(function (buf) { bytes = new Uint8Array(buf); return show(); })
       .catch(function (err) {
         clear(bodyBox);
@@ -7460,7 +7460,26 @@
    * planning a fair needs the second one. Month, week and day share the same
    * cell renderer so a chip means the same thing in all three.
    */
+  /**
+   * My schedule and the committee calendar, one nav entry, two tabs.
+   *
+   * They were two items in the menu that people mixed up ("ตาราง" vs
+   * "ปฏิทิน"). Now the menu has one calendar and this switch says which.
+   */
+  function calSwitch(main) {
+    main.appendChild(h('div', { class: 'seg cal-switch', role: 'tablist' }, [
+      ['schedule', t('navSchedule')], ['calendar', t('calAll')],
+    ].map(function (pair) {
+      var on = S.page === pair[0];
+      return h('button', {
+        type: 'button', role: 'tab', class: on ? 'on' : '', 'aria-selected': String(on), text: pair[1],
+        onclick: function () { if (!on) location.hash = '#/' + pair[0]; },
+      });
+    })));
+  }
+
   function pageCalendar(main) {
+    calSwitch(main);
     if (isPhone()) return phoneCalendar(main);
     var view = S.calView || 'month';
     var anchor = S.calAnchor || todayIso();
@@ -13452,24 +13471,20 @@
     if (st.meetingsToday.length) brief.push(t('briefMeetings').replace('%n', String(st.meetingsToday.length)));
     if (st.dueToday.length) brief.push(t('briefDueToday').replace('%n', String(st.dueToday.length)));
     if (st.late.length) brief.push(t('briefLate').replace('%n', String(st.late.length)));
-    var weekGoal = Math.max(5, st.doneWeek.length);
+    // A line, not a banner: the greeting and the day in one sentence. The
+    // week's ring and the streak moved to the Progress tab with the charts.
+    var tab = S.homeTab === 'progress' ? 'progress' : 'today';
     main.appendChild(h('section', { class: 'hello' }, [
       h('div', { class: 'hello-tx' }, [
-        h('small', { text: fmtDate(today, { weekday: 'long', day: 'numeric', month: 'long' }) }),
         h('h2', { text: greetingWord() + ', ' + firstName() }),
         h('p', { text: brief.length ? brief.join(' · ') : t('briefClear') }),
-        h('div', { class: 'hello-actions' }, [
-          h('a', { class: 'btn hello-btn', href: '#/schedule' }, [icon('clock'), t('navSchedule')]),
-          h('a', { class: 'btn hello-btn ghosty', href: '#/work' }, [icon('task'), t('homeMyWork')]),
-        ]),
       ]),
-      h('div', { class: 'hello-art' }, [
-        h('div', { class: 'hello-ring' }, [donut([
-          { value: st.doneWeek.length, colour: '#ffffff' },
-          { value: Math.max(0, weekGoal - st.doneWeek.length), colour: 'rgba(255,255,255,.22)' },
-        ], { size: phone ? 92 : 124, stroke: phone ? 10 : 13, center: st.doneWeek.length, sub: t('homeThisWeek') })]),
-        st.streak ? h('div', { class: 'hello-streak' }, [icon('flame'), t('homeStreak').replace('%n', String(st.streak))]) : null,
-      ]),
+      h('div', { class: 'seg home-tabs', role: 'tablist' }, [['today', t('homeToday')], ['progress', t('homeTabProgress')]].map(function (pair) {
+        return h('button', {
+          type: 'button', role: 'tab', class: tab === pair[0] ? 'on' : '', 'aria-selected': String(tab === pair[0]), text: pair[1],
+          onclick: function () { S.homeTab = pair[0]; renderPage(); },
+        });
+      })),
     ]));
 
     /**
@@ -13494,8 +13509,6 @@
       card.setAttribute('aria-expanded', 'false');
       return card;
     }));
-    main.appendChild(kpiRow);
-    main.appendChild(kpiPanel);
 
     function pressKpi(key) {
       S.homeKpi = S.homeKpi === key ? null : key;
@@ -13545,8 +13558,9 @@
     }
     drawKpi();
 
-    var grid = h('div', { class: 'home-grid' });
+    var grid = h('div', { class: 'home-grid tab-' + tab });
     main.appendChild(grid);
+    if (tab === 'today') { main.appendChild(kpiRow); main.appendChild(kpiPanel); }
 
     // Today, as a timeline.
     var todayCard = h('section', { class: 'card hc-today' }, [
@@ -13576,17 +13590,19 @@
       });
     }
     drawToday([]);
-    api('/api/calendar?do=schedule&from=' + today + '&to=' + today)
-      .then(function (d) { if (S.page === 'home') drawToday(d.appointments || []); })
-      .catch(function () {});
-    grid.appendChild(todayCard);
+    if (tab === 'today') {
+      api('/api/calendar?do=schedule&from=' + today + '&to=' + today)
+        .then(function (d) { if (S.page === 'home') drawToday(d.appointments || []); })
+        .catch(function () {});
+      grid.appendChild(todayCard);
+    }
 
     /**
      * Somebody with no tasks yet — usually their first day — gets a card that
      * says where work will appear and what to do now, instead of four charts of
      * zeros that fill a phone screen and explain nothing.
      */
-    if (!st.mine.length) {
+    if (!st.mine.length && tab === 'today') {
       // First in the grid, so on a phone it is the first thing under the numbers.
       grid.insertBefore(h('section', { class: 'card hc-start' }, [
         h('div', { class: 'card-head' }, [icon('spark'), h('h3', { text: t('homeStartTitle') })]),
@@ -13600,7 +13616,19 @@
             h('button', { class: 'btn sm primary', type: 'button', text: t('homeStartCreateBtn'), onclick: function () { openCreateSheet(); } })]) : null,
         ]),
       ]), grid.firstChild);
-    } else {
+    } else if (tab === 'progress' && !st.mine.length) {
+      grid.appendChild(h('section', { class: 'card hc-trend' }, [h('p', { class: 'muted-line', text: t('homeNextNone') })]));
+    } else if (tab === 'progress') {
+      // The week so far, as the ring that used to sit in the banner.
+      var weekGoal = Math.max(5, st.doneWeek.length);
+      grid.appendChild(h('section', { class: 'card hc-week' }, [
+        h('div', { class: 'card-head' }, [icon('trophy'), h('h3', { text: t('homeThisWeek') }), h('span', { class: 'grow' }),
+          st.streak ? h('span', { class: 'chip', text: t('homeStreak').replace('%n', String(st.streak)) }) : null]),
+        h('div', { class: 'donut-row' }, [donut([
+          { value: st.doneWeek.length, colour: 'var(--accent)' },
+          { value: Math.max(0, weekGoal - st.doneWeek.length), colour: 'var(--surface-3)' },
+        ], { size: 132, stroke: 14, center: st.doneWeek.length, sub: t('homeThisWeek') })]),
+      ]));
       // Finished per week.
       var wkLabels = st.weeks.map(function (w, i) { return i === st.weeks.length - 1 ? t('thisWeekShort') : fmtDate(w, { day: 'numeric', month: 'short' }); });
       grid.appendChild(h('section', { class: 'card hc-trend' }, [
@@ -13642,11 +13670,12 @@
         h('div', { class: 'card-head' }, [icon('bolt'), h('h3', { text: t('homeBestDay') }), h('span', { class: 'grow' }),
           anyDone ? h('span', { class: 'chip best-day', text: t('wdl_' + WEEK_KEYS[st.bestDay]) }) : null]),
         h('div', { class: 'chart-box' }, [barChart(st.byWeekday, wdLabels, { width: 320, height: 140, highlight: anyDone ? st.bestDay : -1,
-          hiColour: '#8b5cf6', colour: 'color-mix(in srgb, #8b5cf6 30%, transparent)', label: t('homeBestDay') })]),
+          hiColour: 'var(--accent)', colour: 'color-mix(in srgb, var(--accent) 22%, transparent)', label: t('homeBestDay') })]),
       ]));
 
     }
 
+    if (tab === 'today') {
     // Coming up.
     var next = st.open.filter(function (x) { return x.dueDate; }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; }).slice(0, phone ? 4 : 6);
     grid.appendChild(h('section', { class: 'card hc-next' }, [
@@ -13661,6 +13690,9 @@
       })) : h('p', { class: 'muted-line', text: t('homeNextNone') }),
     ]));
 
+    }
+
+    if (tab === 'progress') {
     // Badges.
     var badges = badgesFor(st);
     var earned = badges.filter(function (b) { return b.have >= b.need; }).length;
@@ -13687,6 +13719,9 @@
       })) : h('p', { class: 'muted-line', text: t('homeTeamNone') }),
     ]));
 
+    }
+
+    if (tab === 'today') {
     // Spaces I am in.
     var spaces = (S.spaces || []).filter(function (sp) { return sp.mine; });
     grid.appendChild(h('section', { class: 'card hc-spaces' }, [
@@ -13701,6 +13736,7 @@
         ]);
       })) : h('p', { class: 'muted-line', text: t('spacesNone') }),
     ]));
+    }
   }
 
   /* ---------- my schedule ------------------------------------------------ */
@@ -13809,6 +13845,7 @@
 
   function pageSchedule(main) {
     main.classList.add('wide');
+    calSwitch(main);
     var phone = isPhone();
     var r = schedRange();
     var key = r.from + '|' + r.to;

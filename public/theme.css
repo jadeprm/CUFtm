@@ -19,18 +19,18 @@
   color-scheme: light;
   --font: "Anuphan", "IBM Plex Sans Thai", system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  --bg: #f6f2f8;
+  --bg: #f6f5f3;
   --surface: #ffffff;
-  --surface-2: #faf7fb;
-  --surface-3: #f1ebf4;
-  --ink: #23142a;
-  --ink-soft: #5f4f67;
+  --surface-2: #faf9f8;
+  --surface-3: #f0eeeb;
+  --ink: #1d1a18;
+  --ink-soft: #55504b;
   /* 4.6:1 or better on every surface (was #94849b, 3.5:1 on white). */
-  --ink-faint: #75657d;
-  --line: #ebe2ef;
-  --line-soft: #f3edf6;
+  --ink-faint: #6b655f;
+  --line: #e6e3df;
+  --line-soft: #efedea;
   /* The edge of a control (input, select): 3:1 against its fill, which --line is not. */
-  --line-strong: #948299;
+  --line-strong: #8c867f;
 
   --pink: #e0457b;
   --pink-2: #f472a0;
@@ -75,26 +75,26 @@
   --u-soon: #8a6a00;  --u-soon-soft: #fdf6dd;
   --u-ahead: #1c7048; --u-ahead-soft: #e6f4ec;
 
-  --sb-bg: #2a1530;
-  --sb-bg-2: #351c3d;
-  --sb-ink: #eadcef;
-  --sb-faint: #a68aae;
-  --sb-line: rgba(255, 255, 255, .08);
+  --sb-bg: #fbfaf8;
+  --sb-bg-2: #f3f1ee;
+  --sb-ink: #3b3632;
+  --sb-faint: #6f6963;
+  --sb-line: #e9e6e2;
   --sb-w: 248px;
   --sb-rail: 68px;
 
   --radius: 14px;
   --radius-sm: 10px;
-  --shadow-1: 0 1px 2px rgba(42, 21, 48, .05);
-  --shadow-2: 0 1px 2px rgba(42, 21, 48, .05), 0 8px 24px -14px rgba(42, 21, 48, .22);
-  --shadow-3: 0 24px 60px -20px rgba(42, 21, 48, .45);
-  --grad: linear-gradient(120deg, #e0457b 0%, #c13fa0 48%, #7c4ddb 100%);
+  --shadow-1: 0 1px 2px rgba(29, 26, 24, .05);
+  --shadow-2: 0 1px 2px rgba(29, 26, 24, .04), 0 6px 18px -12px rgba(29, 26, 24, .16);
+  --shadow-3: 0 24px 60px -20px rgba(29, 26, 24, .35);
+  --grad: linear-gradient(var(--accent), var(--accent));
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #130e16; --surface: #1d1621; --surface-2: #231b28; --surface-3: #2c2232;
-    --ink: #f3eaf6; --ink-soft: #c2afca; --ink-faint: #a08ca8; --line: #33283a; --line-soft: #271e2c; --line-strong: #7a6982;
+    --bg: #131211; --surface: #1c1a19; --surface-2: #211f1d; --surface-3: #2a2725;
+    --ink: #f2efec; --ink-soft: #c6c0ba; --ink-faint: #a59f98; --line: #34312e; --line-soft: #272523; --line-strong: #7a746d;
     --accent: #ff6fa3; --accent-ink: #2a0c1a; --accent-soft: #3d1a2d; --teal-ink: #5fd6cf;
     --st-todo-ink: #b6b9c7; --st-todo-soft: #262531;
     --st-doing-ink: #7fb0ff; --st-doing-soft: #182640;
@@ -107,7 +107,7 @@
     --done: #5ad7a3; --done-soft: #13302a; --danger: #ff7d8c; --danger-soft: #3a1c22;
     --u-late: #ff8a7a; --u-late-soft: #3a1f1b; --u-now: #ffb07a; --u-now-soft: #3a2718;
     --u-soon: #f0c05a; --u-soon-soft: #372c14; --u-ahead: #6fd0ab; --u-ahead-soft: #16342a;
-    --sb-bg: #1a0e1f; --sb-bg-2: #24142a;
+    --sb-bg: #171615; --sb-bg-2: #211f1d; --sb-ink: #e4e0dc; --sb-faint: #a59f98; --sb-line: #2c2a27;
     --shadow-1: 0 1px 2px rgba(0,0,0,.5);
     --shadow-2: 0 1px 2px rgba(0,0,0,.5), 0 10px 30px -16px rgba(0,0,0,.9);
     --shadow-3: 0 20px 60px -20px rgba(0,0,0,.9);
@@ -115,8 +115,8 @@
 }
 :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #130e16; --surface: #1d1621; --surface-2: #231b28; --surface-3: #2c2232;
-    --ink: #f3eaf6; --ink-soft: #c2afca; --ink-faint: #a08ca8; --line: #33283a; --line-soft: #271e2c; --line-strong: #7a6982;
+    --bg: #131211; --surface: #1c1a19; --surface-2: #211f1d; --surface-3: #2a2725;
+    --ink: #f2efec; --ink-soft: #c6c0ba; --ink-faint: #a59f98; --line: #34312e; --line-soft: #272523; --line-strong: #7a746d;
     --accent: #ff6fa3; --accent-ink: #2a0c1a; --accent-soft: #3d1a2d; --teal-ink: #5fd6cf;
     --st-todo-ink: #b6b9c7; --st-todo-soft: #262531;
     --st-doing-ink: #7fb0ff; --st-doing-soft: #182640;
@@ -129,7 +129,7 @@
     --done: #5ad7a3; --done-soft: #13302a; --danger: #ff7d8c; --danger-soft: #3a1c22;
     --u-late: #ff8a7a; --u-late-soft: #3a1f1b; --u-now: #ffb07a; --u-now-soft: #3a2718;
     --u-soon: #f0c05a; --u-soon-soft: #372c14; --u-ahead: #6fd0ab; --u-ahead-soft: #16342a;
-    --sb-bg: #1a0e1f; --sb-bg-2: #24142a;
+    --sb-bg: #171615; --sb-bg-2: #211f1d; --sb-ink: #e4e0dc; --sb-faint: #a59f98; --sb-line: #2c2a27;
     --shadow-1: 0 1px 2px rgba(0,0,0,.5);
     --shadow-2: 0 1px 2px rgba(0,0,0,.5), 0 10px 30px -16px rgba(0,0,0,.9);
     --shadow-3: 0 20px 60px -20px rgba(0,0,0,.9);
@@ -1564,3 +1564,405 @@ body[data-page="requests"] { --page: #12a36b; }
 .sc-out small { opacity: .9; line-height: 1.55; }
 .sc-fix { margin: 4px 0 0; color: var(--ink-soft); line-height: 1.6; }
 .sc-out.bad .sc-fix { color: var(--ink); }
+
+/* ==========================================================================
+   The 2026-11 redesign: calmer colour, a light sidebar, grouped navigation,
+   a Today page that leads with the day, one toolbar row on the work page.
+
+   One pink, used for the main action and the page you are on. Everything
+   else is warm grey. Status keeps its five colours, but only on status
+   marks (dots, pills, the edge of a card), never as a band or a header.
+   Last in the file, so it wins over the 2026-10 rules above.
+   ========================================================================== */
+
+/* ---- the sidebar, light -------------------------------------------------- */
+.sidebar { border-right: 1px solid var(--sb-line); scrollbar-color: var(--line) transparent; gap: 2px; }
+.sb-name b { color: var(--ink); }
+.sb-btn:hover, .sidebar nav.tabs a:hover, .sb-item:hover { background: var(--sb-bg-2); color: var(--ink); }
+.sidebar nav.tabs a { color: var(--sb-ink); padding: 7px 10px; }
+.sidebar nav.tabs a .ti { color: var(--sb-faint); }
+.sidebar nav.tabs a.on { background: var(--accent-soft); color: var(--accent); box-shadow: none; font-weight: 600; }
+.sidebar nav.tabs a.on .ti { color: var(--accent); }
+.sb-item.on { background: var(--sb-bg-2); color: var(--ink); font-weight: 600; }
+.sb-add:hover { color: var(--ink); }
+.sb-plus { border-color: var(--line-strong); }
+.sb-item .sb-ico-plain { background: var(--sb-bg-2); color: var(--sb-ink); }
+.sb-item .sb-ico-plain svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.sb-foot .lang-toggle { background: var(--sb-bg-2); }
+.sb-foot .lang-toggle button { color: var(--sb-faint); }
+.sb-foot .lang-toggle button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1); }
+.sb-sec { border-top-color: var(--sb-line); }
+
+/* The group names in the menu. */
+.nav-group {
+  padding: 16px 10px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
+  color: var(--sb-faint); text-transform: uppercase;
+}
+.nav-group[hidden] { display: none; }
+html.sb-rail .nav-group { font-size: 0; padding: 10px 0 4px; border-top: 1px solid var(--sb-line); margin: 6px 8px 0; }
+
+/* ---- the top bar and the building blocks --------------------------------- */
+.topbar { border-bottom: 1px solid var(--line-soft); }
+.btn.primary { box-shadow: none; }
+.btn.grad { box-shadow: none; }
+.btn { box-shadow: none; }
+.avatar { background: var(--accent-soft); color: var(--accent); }
+.card { box-shadow: var(--shadow-1); border-color: var(--line); }
+.card-head .ic { background: var(--surface-3); }
+.card-head .ic svg,
+.hc-today .card-head .ic svg, .hc-next .card-head .ic svg,
+.hc-badges .card-head .ic svg, .hc-team .card-head .ic svg { color: var(--ink-soft); }
+.hc-today .card-head .ic, .hc-next .card-head .ic,
+.hc-badges .card-head .ic, .hc-team .card-head .ic { background: var(--surface-3); }
+.muted-line, .today-empty { background: var(--surface-2); }
+.card-link { color: var(--accent); }
+
+/* ---- Today ------------------------------------------------------------- */
+.hello {
+  background: none; color: var(--ink); box-shadow: none; border-radius: 0;
+  padding: 4px 0 0; margin: 4px 0 18px; align-items: flex-end; flex-wrap: wrap;
+}
+.hello::before, .hello::after { display: none; }
+.hello-tx h2 { font-size: 24px; margin: 0 0 2px; }
+.hello-tx p { color: var(--ink-soft); margin: 0; font-size: 14.5px; opacity: 1; }
+.home-tabs { flex: none; }
+.seg.home-tabs button, .seg.cal-switch button { padding: 6px 14px; }
+.cal-switch { display: inline-flex; margin: 4px 0 14px; }
+
+.home-grid.tab-today .hc-today { grid-column: span 7; }
+.home-grid.tab-today .hc-next { grid-column: span 5; }
+.home-grid.tab-today .hc-start { grid-column: span 12; }
+.home-grid.tab-today .hc-spaces { grid-column: span 12; }
+.home-grid.tab-progress .hc-week { grid-column: span 4; align-self: stretch; }
+.home-grid.tab-progress .hc-trend { grid-column: span 8; }
+.home-grid.tab-progress .hc-status, .home-grid.tab-progress .hc-ontime, .home-grid.tab-progress .hc-days { grid-column: span 4; }
+.home-grid.tab-progress .hc-badges { grid-column: span 7; }
+.home-grid.tab-progress .hc-team { grid-column: span 5; }
+.hc-week .donut-row { justify-content: center; }
+.home-grid + .kpis { margin-top: 14px; }
+
+/* The four numbers, as one quiet strip. */
+.kpi { padding: 10px 14px; gap: 12px; box-shadow: none; border: 1px solid var(--line); }
+.kpi-ic { width: 32px; height: 32px; border-radius: 9px; background: var(--surface-3); color: var(--ink-soft); }
+.kpi-ic .ic svg { width: 17px; height: 17px; }
+.kpi-n { font-size: 20px; }
+.kpi-s { display: none; }
+.kpi[aria-expanded="true"], .kpi.on { border-color: var(--accent); box-shadow: none; }
+.kpi[aria-expanded="true"] .kpi-ic, .kpi.on .kpi-ic { background: var(--accent); color: var(--accent-ink); }
+.kpi[data-kpi="late"] .kpi-n { color: var(--danger); }
+.kpi-panel { border-top: 1px solid var(--line); }
+
+/* ---- Work ---------------------------------------------------------------- */
+.page-head { gap: 8px; }
+.work-find input.search {
+  width: 260px; max-width: 100%; margin: 0; padding: 7px 11px; border-radius: 10px;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); font-size: 14px; font-family: inherit;
+}
+.work-find input.search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+
+/* The segmented control: the chosen part is a raised white tab, not a colour. */
+.seg button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1), 0 0 0 1px var(--line); }
+.seg button.on .n { color: var(--ink-soft); }
+.muted-line, .today-empty { border: 1px dashed var(--line); color: var(--ink-soft); }
+.today-empty .ic svg { color: var(--ink-faint); }
+.work-filter { display: inline-flex; align-items: center; gap: 6px; position: relative; }
+.work-filter .ic svg { width: 16px; height: 16px; }
+.work-filter.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.work-filter .badge-n {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent);
+  color: var(--accent-ink); font-size: 11px; font-weight: 700; display: inline-grid; place-items: center;
+}
+.split-btn { display: inline-flex; }
+.split-btn .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split-btn .split-more {
+  border-top-left-radius: 0; border-bottom-left-radius: 0; padding: 0 11px;
+  border-left: 1px solid color-mix(in srgb, var(--accent-ink) 35%, transparent); font-size: 16px; line-height: 1;
+}
+.filters .ph-active { margin: 0; }
+.filters { margin-bottom: 14px; }
+
+/* Status groups: a plain header with the status pill, not a coloured band. */
+.lg-head { background: var(--surface-2); }
+.lgroup { box-shadow: none; border-color: var(--line); }
+
+/* ---- phone --------------------------------------------------------------- */
+@media (max-width: 720px) {
+  #app-view > nav.tabs .nav-group { display: none !important; }
+  .hello { margin: 0 0 12px; gap: 10px; }
+  .hello-tx h2 { font-size: 20px; }
+  .hello-tx p { font-size: 13.5px; }
+  .home-tabs { width: 100%; display: flex; }
+  .home-tabs button { flex: 1; }
+  .home-grid.tab-today .hc-today, .home-grid.tab-today .hc-next, .home-grid.tab-today .hc-spaces,
+  .home-grid.tab-progress > * { grid-column: 1 / -1 !important; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .kpi { padding: 8px 10px; gap: 8px; }
+  .kpi-ic { width: 28px; height: 28px; }
+  .kpi-n { font-size: 18px; }
+  .kpi-l { font-size: 12px; }
+  .cal-switch { display: flex; margin: 0 0 10px; }
+  .cal-switch button { flex: 1; }
+  .fab:not([hidden]) { width: 52px; height: 52px; border-radius: 16px; box-shadow: 0 6px 16px -6px rgba(29, 26, 24, .45); }
+}
+.tm-bar i { background: var(--accent); }
+
+/* ==========================================================================
+   2026-11b: colour, back where it means something.
+
+   Every page has its own hue from the CUFTM palette (the --page tokens
+   above). The menu entry wears it, and so does the page: its top line, its
+   card icons, its chosen tabs. So the colour tells you where you are, the
+   way a coloured folder does, rather than decorating at random. The pink
+   still owns the main button.
+   ========================================================================== */
+#tabs a[data-page="home"]     { --nh: #c8306f; }
+#tabs a[data-page="work"]     { --nh: #2f7ff0; }
+#tabs a[data-page="schedule"] { --nh: #5b5bd6; }
+#tabs a[data-page="docs"]     { --nh: #f0a020; }
+#tabs a[data-page="shelf"]    { --nh: #12a36b; }
+#tabs a[data-page="reports"]  { --nh: #e5484d; }
+#tabs a[data-page="announce"] { --nh: #f59e0b; }
+#tabs a[data-page="requests"] { --nh: #0fa5a0; }
+#tabs a[data-page="control"]  { --nh: #5b5bd6; }
+#tabs a[data-page="admin"]    { --nh: #8b5cf6; }
+
+.sidebar nav.tabs a .ti { color: var(--nh, var(--sb-faint)); }
+.sidebar nav.tabs a.on {
+  background: color-mix(in srgb, var(--nh, var(--accent)) 13%, transparent);
+  color: color-mix(in srgb, var(--nh, var(--accent)) 78%, var(--ink));
+}
+.sidebar nav.tabs a.on .ti { color: var(--nh, var(--accent)); }
+/* The phone bar: the chosen tab in its own colour. */
+#app-view > nav.tabs a.on { color: var(--nh, var(--accent)); }
+#app-view > nav.tabs a.on .ti { color: var(--nh, var(--accent)); }
+
+/* The page's hue, as a line under the top bar and on its chosen tabs. */
+.topbar { border-bottom: 2px solid color-mix(in srgb, var(--page) 45%, var(--line)); }
+.seg button.on { color: color-mix(in srgb, var(--page) 78%, var(--ink)); box-shadow: var(--shadow-1), 0 0 0 1px color-mix(in srgb, var(--page) 30%, var(--line)); }
+.seg button.on .n { color: color-mix(in srgb, var(--page) 70%, var(--ink-soft)); }
+
+/* Card icons as tinted badges again, each card in the colour of its subject. */
+.card-head .ic { background: color-mix(in srgb, var(--page) 13%, transparent); }
+.card-head .ic svg { color: var(--page); }
+.hc-today  { --page: #f0a020; }
+.hc-next   { --page: #2f7ff0; }
+.hc-spaces { --page: #0fa5a0; }
+.hc-week   { --page: #c8306f; }
+.hc-trend  { --page: #c8306f; }
+.hc-status { --page: #5b5bd6; }
+.hc-ontime { --page: #12a36b; }
+.hc-days   { --page: #8b5cf6; }
+.hc-badges { --page: #f0a020; }
+.hc-team   { --page: #0fa5a0; }
+.hc-today .card-head .ic, .hc-next .card-head .ic, .hc-badges .card-head .ic, .hc-team .card-head .ic,
+.hc-spaces .card-head .ic { background: color-mix(in srgb, var(--page) 14%, transparent); }
+.hc-today .card-head .ic svg, .hc-next .card-head .ic svg, .hc-badges .card-head .ic svg,
+.hc-team .card-head .ic svg, .hc-spaces .card-head .ic svg { color: var(--page); }
+
+/* The four numbers, each in its own colour. */
+.kpi-ic { background: color-mix(in srgb, var(--k) 14%, transparent); color: var(--k); }
+.kpi:hover { border-color: color-mix(in srgb, var(--k) 40%, var(--line)); }
+.kpi[aria-expanded="true"], .kpi.on { border-color: var(--k); }
+.kpi[aria-expanded="true"] .kpi-ic, .kpi.on .kpi-ic { background: var(--k); color: #fff; }
+
+/* The greeting on a soft band of Chula pink warming into gold. */
+.hello {
+  padding: 18px 22px; border-radius: var(--radius);
+  background: linear-gradient(115deg,
+    color-mix(in srgb, #e0457b 14%, var(--surface)) 0%,
+    color-mix(in srgb, #f472a0 9%, var(--surface)) 45%,
+    color-mix(in srgb, #f0a020 13%, var(--surface)) 100%);
+  border: 1px solid color-mix(in srgb, #e0457b 16%, var(--line));
+}
+.hello-tx h2 { color: color-mix(in srgb, var(--accent) 35%, var(--ink)); }
+
+/* Status groups: a light wash of the status colour behind the header. */
+.lg-head { background: linear-gradient(90deg, color-mix(in srgb, var(--st-soft) 85%, transparent), var(--surface-2) 60%); }
+
+/* People in a few colours rather than all pink, picked by the browser from
+   their place in the row so nothing in app.js has to change. */
+.stack .avatar:nth-child(5n+2), .lr-who .avatar:nth-child(5n+2) { background: color-mix(in srgb, #2f7ff0 16%, var(--surface)); color: color-mix(in srgb, #2f7ff0 80%, var(--ink)); }
+.stack .avatar:nth-child(5n+3), .lr-who .avatar:nth-child(5n+3) { background: color-mix(in srgb, #12a36b 16%, var(--surface)); color: color-mix(in srgb, #12a36b 80%, var(--ink)); }
+.stack .avatar:nth-child(5n+4), .lr-who .avatar:nth-child(5n+4) { background: color-mix(in srgb, #f0a020 20%, var(--surface)); color: color-mix(in srgb, #f0a020 60%, var(--ink)); }
+.stack .avatar:nth-child(5n+5), .lr-who .avatar:nth-child(5n+5) { background: color-mix(in srgb, #5b5bd6 16%, var(--surface)); color: color-mix(in srgb, #5b5bd6 80%, var(--ink)); }
+
+/* Spaces in the sidebar keep their own colour; departments get a touch more. */
+.sb-item .sb-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+/* ==========================================================================
+   2026-11c: visual polish, page-hue consistency, balanced grids & micro-motion.
+   ========================================================================== */
+
+/* Smooth, restrained micro-transitions across interactive controls. */
+.btn, .seg button, .sidebar nav.tabs a, .sb-item, .kpi, .card,
+.today-item, .next-list li, ul.list-view li.lrow, .space-tile, .badge-item,
+.ph-chips button, .role-tabs button, .ph-roles button, .fab {
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease,
+              box-shadow .16s ease, transform .14s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn, .seg button, .sidebar nav.tabs a, .sb-item, .kpi, .card,
+  .today-item, .next-list li, ul.list-view li.lrow, .space-tile, .badge-item,
+  .ph-chips button, .role-tabs button, .ph-roles button, .fab {
+    transition: none;
+  }
+}
+
+/* Crisp keyboard focus rings across buttons, links and interactive cards. */
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--page, var(--accent));
+  outline-offset: 2px;
+}
+
+/* Harmonize links, role tabs and filter buttons with the active page hue. */
+.card-link {
+  color: color-mix(in srgb, var(--page, var(--accent)) 84%, var(--ink));
+  padding: 3px 8px;
+  border-radius: 8px;
+}
+.card-link:hover {
+  background: color-mix(in srgb, var(--page, var(--accent)) 10%, transparent);
+}
+.role-tabs button.on, .ph-roles button.on {
+  color: color-mix(in srgb, var(--page, var(--accent)) 84%, var(--ink));
+  border-bottom-color: var(--page, var(--accent));
+}
+.work-filter.on {
+  border-color: color-mix(in srgb, var(--page, var(--accent)) 55%, var(--line));
+  color: color-mix(in srgb, var(--page, var(--accent)) 84%, var(--ink));
+  background: color-mix(in srgb, var(--page, var(--accent)) 11%, var(--surface));
+}
+.work-filter .badge-n {
+  background: var(--page, var(--accent));
+  color: #fff;
+}
+.work-find input.search:focus {
+  border-color: var(--page, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--page, var(--accent)) 16%, transparent);
+}
+.ph-active .chip {
+  background: color-mix(in srgb, var(--page, var(--accent)) 12%, var(--surface));
+  color: color-mix(in srgb, var(--page, var(--accent)) 82%, var(--ink));
+}
+.ph-active button { color: color-mix(in srgb, var(--page, var(--accent)) 82%, var(--ink)); }
+
+/* Home: align Today & Upcoming cards to the same baseline; refine rows & KPIs. */
+.home-grid.tab-today .hc-today,
+.home-grid.tab-today .hc-next {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+.home-grid.tab-today .hc-today .today-list,
+.home-grid.tab-today .hc-next .next-list {
+  flex: 1;
+}
+.next-list li {
+  padding: 9px 8px;
+  border-radius: 10px;
+}
+.next-list li:hover {
+  background: var(--surface-2);
+}
+.today-item {
+  border: 1px solid transparent;
+}
+.today-item:hover {
+  background: var(--surface-2);
+  border-color: var(--line-soft);
+}
+.kpi {
+  padding: 12px 15px;
+  border-radius: var(--radius);
+}
+button.kpi:hover {
+  box-shadow: var(--shadow-2);
+}
+.kpi-n {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+.hello {
+  box-shadow: var(--shadow-1);
+}
+
+/* Home Progress: balanced 4+3 achievements grid (no 6+1 orphan card). */
+.badges {
+  grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+  gap: 10px;
+}
+.badge-item {
+  padding: 12px 8px;
+  gap: 5px;
+}
+.badge-item.got:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-1);
+}
+
+/* Work: cleaner spacing and subtle row focus/hover feel. */
+.role-tabs { margin: 2px 0 10px; }
+.lgroup {
+  border-color: var(--line);
+  box-shadow: var(--shadow-1);
+}
+.lg-head:hover {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--st-soft) 98%, transparent), var(--surface-2) 68%);
+}
+.upcoming .up-row {
+  transition: background-color .14s ease;
+}
+.upcoming .up-row:hover {
+  background: var(--surface-2);
+}
+
+/* Schedule: tighter weekly allocation legend so Thai copy wraps cleanly. */
+.alloc .donut-row { gap: 12px; }
+.alloc .legend { gap: 6px; line-height: 1.35; }
+.alloc .legend li { align-items: baseline; }
+
+/* Dark mode fine-tuning for page-hue tinted labels & controls. */
+:root[data-theme="dark"] .card-link,
+:root[data-theme="dark"] .role-tabs button.on,
+:root[data-theme="dark"] .ph-roles button.on,
+:root[data-theme="dark"] .work-filter.on,
+:root[data-theme="dark"] .ph-active .chip,
+:root[data-theme="dark"] .ph-active button {
+  color: color-mix(in srgb, var(--page, var(--accent)) 80%, #ffffff);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .card-link,
+  :root:not([data-theme="light"]) .role-tabs button.on,
+  :root:not([data-theme="light"]) .ph-roles button.on,
+  :root:not([data-theme="light"]) .work-filter.on,
+  :root:not([data-theme="light"]) .ph-active .chip,
+  :root:not([data-theme="light"]) .ph-active button {
+    color: color-mix(in srgb, var(--page, var(--accent)) 80%, #ffffff);
+  }
+}
+
+/* Phone refinements: softer tinted active status pills & crisp floating FAB halo. */
+@media (max-width: 720px) {
+  .ph-chips button.on {
+    background: color-mix(in srgb, var(--page, var(--accent)) 15%, var(--surface));
+    border-color: color-mix(in srgb, var(--page, var(--accent)) 45%, var(--line));
+    color: color-mix(in srgb, var(--page, var(--accent)) 84%, var(--ink));
+    font-weight: 600;
+  }
+  .ph-chips button.on .n { opacity: .85; }
+  .fab:not([hidden]) {
+    box-shadow: 0 0 0 3px var(--bg), 0 8px 20px -6px color-mix(in srgb, var(--accent) 55%, rgba(0, 0, 0, .35));
+  }
+  .badges {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  :root[data-theme="dark"] .ph-chips button.on {
+    color: color-mix(in srgb, var(--page, var(--accent)) 82%, #ffffff);
+  }
+}
+@media (max-width: 720px) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ph-chips button.on {
+    color: color-mix(in srgb, var(--page, var(--accent)) 82%, #ffffff);
+  }
+}

@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-20c';
+window.STRINGS_VERSION = '2026-11-25b';
 
 window.STRINGS = {
   th: {
@@ -319,6 +319,11 @@ window.STRINGS = {
     navReports: 'แจ้งปัญหา',
     navReportsShort: 'แจ้งปัญหา',
     navShelf: 'รวมข้อมูลสำคัญ',
+    navGroupCommittee: 'คณะกรรมการ',
+    navGroupAdmin: 'ผู้ดูแลระบบ',
+    calAll: 'ปฏิทินรวม',
+    homeTabProgress: 'ความคืบหน้า',
+    workMoreCreate: 'สร้างอย่างอื่น',
     navShelfShort: 'ข้อมูลสำคัญ',
 
     popTag: 'ประกาศจากโครงการ',
