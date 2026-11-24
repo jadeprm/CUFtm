@@ -118,7 +118,8 @@ ok('a สมาชิกฝ่าย with nothing on their plate is offered the 
   await fah.locator('.hc-start .btn.primary').count() === 1);
 const jHome = await as('Jade_Pres', 'fairAdmin1', DESK, { home: true });
 await go(jHome, '#/home', 1600);
-ok('somebody with work still gets the charts', await jHome.locator('.hc-trend').count() === 1 && await jHome.locator('.hc-start').count() === 0);
+await jHome.locator('.home-tabs button').nth(1).click(); await jHome.waitForTimeout(900);
+ok('somebody with work still gets the charts, on the Progress tab', await jHome.locator('.hc-trend').count() === 1 && await jHome.locator('.hc-start').count() === 0);
 
 console.log('\n5. Documents, empty');
 await go(fah, '#/docs', 1600);

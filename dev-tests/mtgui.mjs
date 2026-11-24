@@ -24,10 +24,16 @@ ok('the separate การประชุม tab is gone',
 await expandUpcoming(pg);
 const rail = await pg.locator('.up-row.meeting').count();
 ok('upcoming meetings appear in the strip on the work page', rail >= 1, String(rail));
-ok('...and the work page offers นัดประชุม',
-  (await pg.locator('.page-head button', { hasText: /นัดประชุม/ }).count()) >= 1);
+// 2026-11: นัดประชุม is either its own button or an item behind the ⋯ beside เพิ่มงานใหม่.
+let offersMeeting = (await pg.locator('.page-head button', { hasText: /นัดประชุม/ }).count()) >= 1;
+if (!offersMeeting && await pg.locator('.page-head .split-more').count()) {
+  await pg.click('.page-head .split-more'); await pg.waitForTimeout(400);
+  offersMeeting = (await pg.locator('.act', { hasText: /นัดประชุม/ }).count()) >= 1;
+  await pg.keyboard.press('Escape'); await pg.waitForTimeout(300);
+}
+ok('...and the work page offers นัดประชุม', offersMeeting);
 
-await pg.locator('#tabs a[href="#/calendar"]').first().click(); await pg.waitForTimeout(2000);
+await pg.evaluate(() => { location.hash = '#/calendar'; }); /* 2026-11: the committee calendar is a tab on the ปฏิทิน page, not a menu entry */ await pg.waitForTimeout(2000);
 ok('the calendar has a key for meetings',
   (await pg.locator('.cal-legend .dot.meeting').count()) === 1);
 

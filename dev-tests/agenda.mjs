@@ -19,7 +19,10 @@ if (await pg.locator('#field-confirm:not([hidden])').count()) await pg.fill('#in
 await pg.click('#auth-submit'); await pg.waitForTimeout(2600);
 
 console.log('\nBuilding an agenda on the page');
-await pg.locator('.page-head button', { hasText: 'นัดประชุม' }).first().click();
+{ const direct = pg.locator('.page-head button', { hasText: 'นัดประชุม' });
+  // 2026-11: for anybody who can also make tasks, นัดประชุม sits behind the ⋯ beside เพิ่มงานใหม่.
+  if (await direct.count()) await direct.first().click();
+  else { await pg.click('.page-head .split-more'); await pg.waitForTimeout(400); await pg.locator('.act', { hasText: 'นัดประชุม' }).first().click(); } }
 await pg.waitForTimeout(1000);
 
 const title = pg.locator('.veil .field', { hasText: 'เรื่องที่ประชุม' }).locator('input').first();

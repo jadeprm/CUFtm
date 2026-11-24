@@ -11,6 +11,17 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-25 (a) — the redesign: calmer frame, grouped menu, colour by page · version `2026-11-25a`
+
+Asked for: a redesign of the look and the navigation — the pink-to-violet palette felt dated, pages were cluttered, the menu was one long list, and the phone showed a banner before any work. No routes, API or data changed; old addresses (`#/calendar`, `#/schedule`, `#/mine` …) all still land.
+
+* **Palette.** Warm neutral greys replace the plum tints; the sidebar is light (dark in dark mode). The deep Chula pink owns the main button. Each page keeps its own hue from the existing palette (`--page`), and now the menu entry, the line under the top bar, the chosen tabs and the card icons all wear it, so the colour says where you are. The greeting sits on a soft pink-to-gold band. Status colours are unchanged.
+* **Menu.** Three groups: daily (หน้าแรก, งานและกิจกรรม, ปฏิทิน, ส่งเอกสาร), คณะกรรมการ (รวมข้อมูลสำคัญ, แจ้งปัญหา, ส่งประกาศ) and ผู้ดูแลระบบ (คำขอสมัคร, แผงควบคุม, จัดการผู้ใช้ — the heading shows only to admins and approvers). ตารางของฉัน and ปฏิทิน are one entry, **ปฏิทิน**, opening my schedule with a switch to ปฏิทินรวม at the top of both pages. The phone bar is หน้าแรก · งาน · ปฏิทิน · ส่งเอกสาร · เมนู.
+* **หน้าแรก.** A one-line greeting with two tabs. **วันนี้**: today's agenda and the coming deadlines side by side, then the four numbers as a slim strip (still pressable), then spaces. **ความคืบหน้า**: the week's ring and streak, the per-week chart, status, on-time, best day, achievements and teammates. `S.homeTab` remembers the tab for the session.
+* **งานและกิจกรรม.** One toolbar row on a computer: ของฉัน/ทั้งหมด, the view switch, search, a **ตัวกรอง** button with a count (the same sheet the phone uses) and **เพิ่มงานใหม่** with a ⋯ for activity, meeting and import. The four dropdowns are gone from the page; active filters show as chips with a clear link beside the status tabs. Somebody who can call a meeting but not create work still gets นัดประชุม as its own button.
+* **Files.** `theme.css` (tokens changed in place, both dark blocks kept identical; two new blocks at the end), `index.html` (nav groups), `app.js` (`pageHome`, the work toolbar, `calSwitch`, the nav highlight), five new strings in both languages.
+* **Tests.** `run.mjs`: unchanged and passing except §"finding a time says when all three are free", which failed before this change too. Browser suites updated for the new layout: `redesign.mjs` (charts on the Progress tab, the phone bar's labels, the drawer), `polish.mjs`, `agenda.mjs`, `guests.mjs`, `mtgui.mjs` (นัดประชุม behind ⋯; and, with `papers.mjs`, (reach the calendar by address — there is no menu link to `#/calendar` any more). `phone.mjs`, `join.mjs`, `sharebook.mjs`, `mtgui.mjs` and `papers.mjs` still fail in places they already failed before.
+
 ## 2026-11-20 (c) — the short-link domain belongs to another site now · version `2026-11-20c`
 
 Reported: short links do not reach the app. Checked from a browser, and they do not:

@@ -18,7 +18,10 @@ const tag = 'Guests ' + Date.now().toString(36).slice(-5);
 const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 
 console.log('\nInviting an outside guest');
-await pg.locator('.page-head button', { hasText: 'นัดประชุม' }).first().click();
+{ const direct = pg.locator('.page-head button', { hasText: 'นัดประชุม' });
+  // 2026-11: for anybody who can also make tasks, นัดประชุม sits behind the ⋯ beside เพิ่มงานใหม่.
+  if (await direct.count()) await direct.first().click();
+  else { await pg.click('.page-head .split-more'); await pg.waitForTimeout(400); await pg.locator('.act', { hasText: 'นัดประชุม' }).first().click(); } }
 await pg.waitForTimeout(1000);
 await pg.locator('.veil .field', { hasText: 'เรื่องที่ประชุม' }).locator('input').first().fill(tag);
 await pg.locator('.veil .field', { hasText: 'วันที่' }).locator('input').first().fill(tomorrow);

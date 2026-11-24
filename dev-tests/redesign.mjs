@@ -92,10 +92,14 @@ const kpiOpen = Number(await jade.locator('.kpi').first().locator('.kpi-n').inne
 const realOpen = await jade.evaluate(async () => (await (await fetch('/api/tasks')).json()).tasks
   .filter((t) => t.assignees.includes('Jade_Pres') && t.status !== 'done').length);
 ok('...the first is how many of my tasks are open, counted right', kpiOpen === realOpen, `${kpiOpen} vs ${realOpen}`);
+// The charts live on the Progress tab since the 2026-11 redesign; Today leads with the day.
+ok('today and deadlines come first, with no charts on the Today tab', await jade.locator('.hc-trend, .badge-item').count() === 0);
+await jade.locator('.home-tabs button').nth(1).click(); await jade.waitForTimeout(900);
 ok('a chart of tasks finished per week, eight bars', await jade.locator('.hc-trend svg rect').count() === 8);
 ok('a status ring in the five status colours', await jade.locator('.hc-status svg circle').count() >= 2);
 ok('the on-time ring and the best-day chart', await jade.locator('.hc-ontime svg.donut').count() === 1 && await jade.locator('.hc-days svg rect').count() === 7);
 ok('achievements, some earned', await jade.locator('.badge-item').count() >= 6 && await jade.locator('.badge-item.got').count() >= 1);
+await jade.locator('.home-tabs button').nth(0).click(); await jade.waitForTimeout(900);
 ok('today, as a timeline', await jade.locator('.hc-today .today-item, .hc-today .today-empty').count() >= 1);
 await jade.screenshot({ path: `${SHOTS}/rd-home.png`, fullPage: true });
 
@@ -283,18 +287,19 @@ const tabLabels = (await ph.locator('#tabs a:visible .ts').allInnerTexts()).join
  * Renamed 23 October: the letters tab and the shelf tab were both "เอกสาร",
  * which on a 393px bar is two tabs you have to press to tell apart.
  */
-ok('...with หน้าแรก, ตาราง, งาน, ส่งเอกสาร and เมนู',
-  tabLabels === 'หน้าแรก|ตาราง|งาน|ส่งเอกสาร|เมนู', tabLabels);
+// 2026-11: schedule and calendar are one entry, ปฏิทิน, with a switch on the page.
+ok('...with หน้าแรก, งาน, ปฏิทิน, ส่งเอกสาร and เมนู',
+  tabLabels === 'หน้าแรก|งาน|ปฏิทิน|ส่งเอกสาร|เมนู', tabLabels);
 ok('...and all five fit without the bar scrolling sideways',
   await ph.locator('#tabs').evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
   await ph.locator('#tabs').evaluate((el) => el.scrollWidth + ' vs ' + el.clientWidth));
 await ph.click('#tab-more'); await ph.waitForTimeout(500);
 ok('เมนู opens the drawer', (await ph.locator('#sidebar').boundingBox()).x >= 0);
-ok('...which holds the other pages and the spaces', await ph.locator('#sidebar .sb-drawer-nav a[href="#/calendar"]').count() === 1 &&
+ok('...which holds the other pages and the spaces', await ph.locator('#sidebar .sb-drawer-nav a[href="#/shelf"]').count() === 1 &&
   await ph.locator('#sidebar .sb-item', { hasText: 'RD ทีมเวที' }).count() === 1);
 await ph.screenshot({ path: `${SHOTS}/rd-ph-drawer.png` });
-await ph.locator('#sidebar .sb-drawer-nav a[href="#/calendar"]').click(); await ph.waitForTimeout(900);
-ok('...and closes when a page is picked', (await ph.locator('#sidebar').boundingBox()).x < 0 && await ph.evaluate(() => location.hash) === '#/calendar');
+await ph.locator('#sidebar .sb-drawer-nav a[href="#/shelf"]').click(); await ph.waitForTimeout(900);
+ok('...and closes when a page is picked', (await ph.locator('#sidebar').boundingBox()).x < 0 && await ph.evaluate(() => location.hash) === '#/shelf');
 for (const page of ['#/home', '#/schedule', '#/work', '#/space/' + encodeURIComponent(spaceId)]) {
   await go(ph, page, 1500);
   ok(`${page.split('/')[1]} fits the screen with no sideways scroll`, !(await wide(ph)));

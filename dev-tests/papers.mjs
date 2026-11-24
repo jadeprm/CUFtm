@@ -51,7 +51,7 @@ ok('the three kinds have three different colours',
  * is the only way to know the new variable reaches them — the old rules named
  * --accent and would still have looked fine in the stylesheet.
  */
-await pg.locator('#tabs a[href="#/calendar"]').first().click();
+await pg.evaluate(() => { location.hash = '#/calendar'; }); /* 2026-11: the committee calendar is a tab on the ปฏิทิน page, not a menu entry */
 await pg.waitForTimeout(2200);
 const dots = await pg.evaluate(() => {
   const grab = (sel) => {
