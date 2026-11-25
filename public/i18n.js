@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-25b';
+window.STRINGS_VERSION = '2026-11-26a';
 
 window.STRINGS = {
   th: {
@@ -1841,6 +1841,7 @@ window.STRINGS = {
     soonPoint3: 'เอกสารที่ต้องลงนาม ส่งต่อตามลำดับโดยอัตโนมัติ',
     soonWho: 'สำหรับคณะกรรมการและทีมงานจุฬาฯแฟร์เท่านั้น',
     soonSignIn: 'เป็นทีมงานอยู่แล้ว เข้าสู่ระบบ',
+    errTooManyAttempts: 'ลองเข้าสู่ระบบผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่',
   },
 
 };
@@ -2064,4 +2065,6 @@ window.ERROR_KEYS = {
   ARCHIVED: 'errArchived',
   REASON_REQUIRED: 'errReasonRequired',
   NOTHING_TO_DO: 'errNothingToDo',
+  TOO_MANY_ATTEMPTS: 'errTooManyAttempts',
+  CROSS_SITE_FORBIDDEN: 'errGeneric',
 };

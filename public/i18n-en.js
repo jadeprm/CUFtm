@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-25b';
+window.STRINGS_EN_VERSION = '2026-11-26a';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -1818,5 +1818,6 @@ Object.assign(window.STRINGS, {
     soonPoint3: 'Documents that climb the approval chain on their own',
     soonWho: 'For the Chula Fair committee and its staff only',
     soonSignIn: 'Already on the team? Sign in',
+    errTooManyAttempts: 'Too many failed sign-in attempts. Please wait a few minutes and try again.',
   },
 });

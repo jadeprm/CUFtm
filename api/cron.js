@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, json, noDatabase, hasDatabase, requestUrl, toBuffer } from '../lib/db.js';
 import { sendToUser, unreadCount } from '../lib/push.js';
@@ -111,10 +112,19 @@ async function handler(request) {
    * browser and for anything older still pointed at it.
    */
   const secret = process.env.CRON_SECRET || '';
+  const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
+  if (!secret && isProd) {
+    return json({ error: 'CRON_SECRET_MISSING' }, 503);
+  }
   if (secret) {
     const url = requestUrl(request);
-    const given = url.searchParams.get('key') || request.headers.get('authorization')?.replace(/^Bearer /, '');
-    if (given !== secret) return json({ error: 'BAD_KEY' }, 401);
+    const auth = request.headers.get('authorization') || '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const given = bearer || url.searchParams.get('key') || '';
+    const digest = (s) => createHash('sha256').update(String(s)).digest();
+    if (!given || !timingSafeEqual(digest(given), digest(secret))) {
+      return json({ error: 'BAD_KEY' }, 401);
+    }
   }
 
   const { sql, ready } = getSql();

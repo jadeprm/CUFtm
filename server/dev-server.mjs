@@ -115,7 +115,12 @@ function serveFrontendStatic(req, res) {
   }
 
   const mime = MIME_TYPES[extname(candidate).toLowerCase()] || 'application/octet-stream';
-  res.writeHead(200, { 'content-type': mime });
+  res.writeHead(200, {
+    'content-type': mime,
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+  });
   res.end(readFileSync(candidate));
 }
 

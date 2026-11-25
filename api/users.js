@@ -98,20 +98,48 @@ async function everybody(sql) {
  * at a given version never changes, so a browser asks for each face once and
  * then stops asking.
  */
+/**
+ * Validates and sniffs a base64 raster avatar (`png`, `jpeg`, `webp`, `gif`).
+ *
+ * Explicitly rejects `image/svg+xml` and any non-raster payload by inspecting
+ * binary magic bytes rather than trusting the client-supplied MIME header,
+ * preventing stored same-origin XSS when an avatar URL is opened directly.
+ */
+function parseRasterAvatar(dataUrl) {
+  const match = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(dataUrl || ''));
+  if (!match) return null;
+  const buf = Buffer.from(match[2], 'base64');
+  if (buf.length < 4) return null;
+  const isPng = buf.length >= 8 &&
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a;
+  const isJpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  const isWebp = buf.length >= 12 &&
+    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buf.subarray(8, 12).toString('ascii') === 'WEBP';
+  const isGif = buf.length >= 6 &&
+    (buf.subarray(0, 6).toString('ascii') === 'GIF87a' || buf.subarray(0, 6).toString('ascii') === 'GIF89a');
+  const mime = isPng ? 'image/png' : isJpeg ? 'image/jpeg' : isWebp ? 'image/webp' : isGif ? 'image/gif' : null;
+  if (!mime) return null;
+  return { mime, buffer: buf };
+}
+
 async function avatarImage(sql, username) {
   const who = String(username || '').slice(0, 64);
   const [row] = await sql`
     SELECT avatar, left(md5(avatar), 10) AS v FROM users
     WHERE username = ${who} AND avatar IS NOT NULL`;
-  const match = /^data:(image\/[a-z.+-]+);base64,(.+)$/i.exec(row?.avatar || '');
-  if (!match) return json({ error: 'NO_AVATAR' }, 404);
+  const parsed = parseRasterAvatar(row?.avatar);
+  if (!parsed) return json({ error: 'NO_AVATAR' }, 404);
   const tag = `"${row.v}"`;
   const headers = {
-    'content-type': match[1],
+    'content-type': parsed.mime,
     'cache-control': 'private, max-age=31536000, immutable',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'; sandbox",
     etag: tag,
   };
-  return new Response(Buffer.from(match[2], 'base64'), { status: 200, headers });
+  return new Response(parsed.buffer, { status: 200, headers });
 }
 
 const directoryRow = (u, grants = {}, viewer = null) => ({
@@ -398,8 +426,8 @@ async function handler(request) {
 
     if (body.avatar !== undefined) {
       const avatar = body.avatar === null ? null : String(body.avatar);
-      if (avatar && !avatar.startsWith('data:image/')) return json({ error: 'BAD_IMAGE' }, 400);
       if (avatar && avatar.length > MAX_AVATAR) return json({ error: 'IMAGE_TOO_BIG' }, 400);
+      if (avatar && !parseRasterAvatar(avatar)) return json({ error: 'BAD_IMAGE' }, 400);
       patch.avatar = avatar;
     }
 

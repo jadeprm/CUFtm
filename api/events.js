@@ -259,6 +259,8 @@ async function handler(request) {
             'content-length': String(pdf.length),
             'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(name)}`,
             'cache-control': 'private, no-store',
+            'x-content-type-options': 'nosniff',
+            'content-security-policy': "default-src 'none'; sandbox",
           },
         });
       }

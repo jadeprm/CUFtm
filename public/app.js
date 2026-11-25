@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-25b';
+  var APP_VERSION = '2026-11-26a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];

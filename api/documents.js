@@ -433,6 +433,8 @@ async function downloadFile(sql, me, id, kind, { forceDownload = false } = {}) {
       'content-disposition':
         `${asAttachment ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(name)}`,
       'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
     },
   });
 }
@@ -465,6 +467,8 @@ async function signatureImage(sql, me, username) {
       'content-type': 'image/png',
       'content-length': String(buffer.length),
       'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
     },
   });
 }

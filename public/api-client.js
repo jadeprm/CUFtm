@@ -105,7 +105,7 @@
   /* ---------- domain service clients ------------------------------------- */
 
   var FairAPI = {
-    version: '2026-11-25b',
+    version: '2026-11-26a',
     url: resolveUrl,
     qs: qs,
     request: request,

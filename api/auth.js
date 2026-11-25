@@ -5,6 +5,7 @@ import {
 import {
   currentUser, departmentsOf, hashPassword, verifyPassword, passwordProblem,
   newToken, sessionCookie, sessionExpiry,
+  checkLoginRateLimit, recordFailedLogin, clearFailedLogins,
 } from '../lib/auth.js';
 import { emailEnforced, mailConfigured } from '../lib/mail.js';
 import {
@@ -177,6 +178,7 @@ async function handler(request) {
                 reset_allowed = false, reset_allowed_by = NULL, updated_at = now()
               WHERE username = ${u.username}`;
     await sql`DELETE FROM sessions WHERE username = ${u.username}`;
+    await clearFailedLogins(sql, u.username);
     const token = newToken();
     await sql`INSERT INTO sessions (token, username, expires_at) VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
     const [fresh] = await sql`SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE username = ${u.username}`;
@@ -292,10 +294,12 @@ async function handler(request) {
       return json({ known: false, pending: Boolean(wait) });
     }
 
+    const safeAvatar = u.avatar && /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,/i.test(u.avatar)
+      ? u.avatar : null;
     return json({
       known: true,
       displayName: u.display_name || u.sheet_name,
-      avatar: u.avatar || null,
+      avatar: safeAvatar,
       needsSetup: !u.password_hash || u.reset_allowed,
     });
   }
@@ -336,17 +340,33 @@ async function handler(request) {
   }
 
   if (action === 'login') {
+    const rate = await checkLoginRateLimit(sql, username);
+    if (!rate.allowed) {
+      return json(
+        { error: 'TOO_MANY_ATTEMPTS', retryAfter: rate.retryAfter },
+        429,
+        { 'retry-after': String(rate.retryAfter) },
+      );
+    }
+
     const password = String(body.password ?? '');
     const [u] = await sql`
       SELECT *, left(md5(avatar), 10) AS avatar_v FROM users WHERE lower(username) = ${username.toLowerCase()}
         AND active = true AND suspended = false`;
 
-    if (!u || !u.password_hash) return json({ error: 'BAD_CREDENTIALS' }, 401);
+    if (!u || !u.password_hash) {
+      await recordFailedLogin(sql, username);
+      return json({ error: 'BAD_CREDENTIALS' }, 401);
+    }
     if (u.reset_allowed) return json({ error: 'RESET_PENDING' }, 403);
 
     const ok = await verifyPassword(password, u.password_hash, u.password_salt);
-    if (!ok) return json({ error: 'BAD_CREDENTIALS' }, 401);
+    if (!ok) {
+      await recordFailedLogin(sql, username);
+      return json({ error: 'BAD_CREDENTIALS' }, 401);
+    }
 
+    await clearFailedLogins(sql, username);
     const token = newToken();
     await sql`INSERT INTO sessions (token, username, expires_at)
               VALUES (${token}, ${u.username}, ${sessionExpiry()})`;
