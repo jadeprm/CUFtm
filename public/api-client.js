@@ -105,7 +105,7 @@
   /* ---------- domain service clients ------------------------------------- */
 
   var FairAPI = {
-    version: '2026-11-26a',
+    version: '2026-11-27a',
     url: resolveUrl,
     qs: qs,
     request: request,
@@ -173,6 +173,8 @@
       saveOffice: function (payload) { return request('/api/calendar?do=office', { method: 'PUT', body: payload }); },
       officePublic: function (payload) { return request('/api/calendar?do=office-public', { method: 'POST', body: payload }); },
       google: function () { return request('/api/calendar?do=google'); },
+      syncGoogle: function () { return request('/api/calendar?do=google-sync', { method: 'POST' }); },
+      syncGoogleTasks: function () { return request('/api/calendar?do=google-tasks-sync', { method: 'POST' }); },
       bookingPage: function (token) { return request('/api/calendar' + qs({ book: token })); },
     },
 

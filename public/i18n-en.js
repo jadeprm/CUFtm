@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-26a';
+window.STRINGS_EN_VERSION = '2026-11-27a';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -726,6 +726,9 @@ Object.assign(window.STRINGS, {
     googleBroken: 'The connection expired or was revoked',
     googleReconnect: 'Reconnect',
     googlePushEvents: 'Also send meetings and events to Google (if you have not subscribed to the feed)',
+    googlePushTasks: 'Two-way sync my tasks with Google Tasks (works with Gemini)',
+    googleTasksNeedScope: 'Grant Google Tasks access to sync your CUFTM tasks with Gemini',
+    googleTasksGrant: 'Grant Google Tasks (Gemini) access',
     googleSyncNow: 'Send to Google now',
     googleSyncing: 'Sending…',
     googleSynced: 'Sent %n',

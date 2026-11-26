@@ -9,6 +9,7 @@ import { flex, listBubble } from '../lib/lineflex.js';
 import { sayDate, MARK, PRIORITY_TH, MENU as LINE_MENU } from '../lib/linecmd.js';
 import { driveConfigured, archivePdf, archiveFile, archiveHolds } from '../lib/drive.js';
 import { updateStatus as updateRegisterStatus, REGISTER_STATUS } from '../lib/docregister.js';
+import { syncAllGoogleTasks } from '../lib/googletasks.js';
 
 
 /**
@@ -441,6 +442,13 @@ async function handler(request) {
    * nothing ever calling this endpoint. The admin page reads it and says which
    * it is.
    */
+  let googleTasks = { users: 0, pushed: 0, pulled: 0 };
+  try {
+    googleTasks = await syncAllGoogleTasks(sql);
+  } catch (err) {
+    console.error('[cron] google tasks sync failed:', err?.message || err);
+  }
+
   await sql`
     INSERT INTO meta (key, value) VALUES ('last_cron', ${new Date().toISOString()})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
@@ -457,6 +465,7 @@ async function handler(request) {
     line: digest,
     archive,
     roster,
+    googleTasks,
     secured: Boolean(secret),
     // Which scheduler this run came from, so a glance at the answer says
     // whether Vercel's own cron is the thing calling it.

@@ -13,6 +13,7 @@ import { sortRecipients } from '../lib/notifyprefs.js';
 import { claimOnce } from '../lib/once.js';
 import { withNode } from '../lib/http.js';
 import { handleSpaces, spaceIdsFor, ownedSpaceIdsFor } from '../lib/spaces.js';
+import { syncTaskForLinkedAssignees } from '../lib/googletasks.js';
 
 /**
  * Tasks.
@@ -748,6 +749,8 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
+      const createdTask = all.find((t) => t.id === id);
+      if (createdTask) await syncTaskForLinkedAssignees(sql, createdTask).catch(() => {});
       const tagged = await myTags(sql, me);
       return json({
         task: withTags(withRights(me, all.filter((t) => t.id === id)), tagged)[0],
@@ -944,6 +947,12 @@ async function handler(request) {
       }
 
       const all = await assembled(sql);
+      const updatedTask = all.find((t) => t.id === id);
+      if (updatedTask) {
+        await syncTaskForLinkedAssignees(sql, updatedTask, {
+          previousAssignees: visible?.assignees || [],
+        }).catch(() => {});
+      }
       const tagged = await myTags(sql, me);
       return json({
         task: withTags(withRights(me, all.filter((t) => t.id === id)), tagged)[0],
@@ -960,6 +969,12 @@ async function handler(request) {
       // Deleting is permanent and has no undo, so it follows the same rule as
       // editing rather than the wider "can see it" one.
       if (target && !canDeleteTask(me, target)) return json({ error: 'NOT_TASK_OWNER' }, 403);
+      if (target) {
+        await syncTaskForLinkedAssignees(sql, target, {
+          previousAssignees: target.assignees || [],
+          deleted: true,
+        }).catch(() => {});
+      }
       await sql`DELETE FROM tasks WHERE id = ${id}`;
       await sql`DELETE FROM reminders_sent WHERE task_id = ${id}`;
       return json({ ok: true,

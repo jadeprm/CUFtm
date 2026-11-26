@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-26a';
+  var APP_VERSION = '2026-11-27a';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -14179,9 +14179,9 @@
       ]),
     ]));
 
-    // Google.
+    // Google Calendar & Google Tasks (Gemini).
     var g = (S.sched && S.sched.googleStatus) || null;
-    var gCard = h('section', { class: 'card gcard' }, [h('div', { class: 'card-head' }, [h('span', { class: 'g-logo', text: 'G' }), h('h3', { text: 'Google Calendar' })])]);
+    var gCard = h('section', { class: 'card gcard' }, [h('div', { class: 'card-head' }, [h('span', { class: 'g-logo', text: 'G' }), h('h3', { text: 'Google Calendar & Tasks (Gemini)' })])]);
     if (!g) gCard.appendChild(h('p', { class: 'muted-line', text: t('loading') }));
     else if (!g.configured) gCard.appendChild(h('p', { class: 'muted-line', text: t('googleNotSetUp') }));
     else if (!g.linked) {
@@ -14197,6 +14197,20 @@
           .then(function (d) { S.sched.googleStatus = d; if (d.pushEvents) syncGoogleNow(); }).catch(function () {});
       });
       gCard.appendChild(h('label', { class: 'inline-check g-push' }, [pushBox, t('googlePushEvents')]));
+      if (g.hasTasksScope) {
+        var tasksBox = h('input', { type: 'checkbox', checked: g.pushTasks });
+        tasksBox.addEventListener('change', function () {
+          api('/api/calendar?do=google', { method: 'PATCH', body: { pushTasks: tasksBox.checked } })
+            .then(function (d) {
+              S.sched.googleStatus = d;
+              if (d.pushTasks) api('/api/calendar?do=google-tasks-sync', { method: 'POST' }).catch(function () {});
+            }).catch(function () {});
+        });
+        gCard.appendChild(h('label', { class: 'inline-check g-push' }, [tasksBox, t('googlePushTasks')]));
+      } else {
+        gCard.appendChild(h('p', { class: 'hint', text: t('googleTasksNeedScope') }));
+        gCard.appendChild(h('a', { class: 'btn sm', href: '/api/auth?do=google-start', text: t('googleTasksGrant') }));
+      }
       gCard.appendChild(h('div', { class: 'g-actions' }, [
         h('button', { class: 'btn sm', text: t('googleSyncNow'), onclick: function (e) { syncGoogleNow(e.currentTarget); } }),
         h('button', { class: 'btn sm ghost', text: t('googleDisconnect'), onclick: function () {

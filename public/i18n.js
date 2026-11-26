@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-26a';
+window.STRINGS_VERSION = '2026-11-27a';
 
 window.STRINGS = {
   th: {
@@ -742,6 +742,9 @@ window.STRINGS = {
     googleBroken: 'การเชื่อมหมดอายุหรือถูกยกเลิก',
     googleReconnect: 'เชื่อมใหม่',
     googlePushEvents: 'ส่งประชุมและกิจกรรมเข้า Google ด้วย (ถ้ายังไม่ได้ติดตามฟีดปฏิทิน)',
+    googlePushTasks: 'ซิงก์งานของฉันกับ Google Tasks สองทาง (ใช้สั่งดู/ติ๊กเสร็จผ่าน Gemini ได้)',
+    googleTasksNeedScope: 'เชื่อมสิทธิ์ Google Tasks เพิ่มเพื่อซิงก์งานกับ Gemini',
+    googleTasksGrant: 'เชื่อมสิทธิ์ Google Tasks (Gemini)',
     googleSyncNow: 'ส่งเข้า Google ตอนนี้',
     googleSyncing: 'กำลังส่ง…',
     googleSynced: 'ส่งแล้ว %n รายการ',
