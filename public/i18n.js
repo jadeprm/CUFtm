@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-27e';
+window.STRINGS_VERSION = '2026-11-27f';
 
 window.STRINGS = {
   th: {
@@ -1334,6 +1334,27 @@ window.STRINGS = {
     extErrNotReady: 'ยังไม่ถึงลำดับลงนามของท่าน กรุณารอการแจ้งเตือนทางอีเมล',
     extYourSpots: 'ตำแหน่งที่ระบบจะประทับลายเซ็นของท่าน (%n จุด)',
     extExpiresOn: 'ลิงก์นี้หมดอายุวันที่ %s',
+    docAuditTitle: 'ประวัติการลงนาม',
+    docAuditHashes: 'รหัสตรวจสอบไฟล์ (SHA-256)',
+    docAuditOrigHash: 'ต้นฉบับ',
+    docAuditSignedHash: 'ฉบับลงนามแล้ว',
+    docEvCreated: 'สร้างเอกสาร',
+    docEvSentToStep: 'ส่งต่อขั้นตอน',
+    docEvEmailSent: 'ส่งอีเมลเชิญลงนาม',
+    docEvViewed: 'เปิดดูเอกสาร',
+    docEvSigned: 'ลงนามและอนุมัติ',
+    docEvApproved: 'อนุมัติเอกสาร',
+    docEvApprovedNoSign: 'อนุมัติ (ไม่ลงลายเซ็น)',
+    docEvActedFor: 'ดำเนินการแทน',
+    docEvRejected: 'ตีกลับเอกสาร',
+    docEvResent: 'ส่งลิงก์ลงนามใหม่',
+    docEvExpired: 'ลิงก์หมดอายุ',
+    docEvCompleted: 'ลงนามครบทุกขั้นตอน',
+    docEvMarkMoved: 'ย้ายตำแหน่งลายเซ็น',
+    docEvReplaced: 'อัปโหลดไฟล์แก้แทน',
+    docEvRevived: 'กู้คืนเอกสาร',
+    docEvSent: 'ส่งเอกสารให้ผู้รับแล้ว',
+    docEvSystem: 'ระบบ',
     docReject: 'ตีกลับ',
     docRejectWhy: 'เหตุผลที่ตีกลับ (ผู้ส่งจะเห็นข้อความนี้)',
     docReplace: 'อัปโหลดไฟล์แก้ไขแทน',

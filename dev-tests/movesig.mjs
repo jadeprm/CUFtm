@@ -140,8 +140,10 @@ await boss.screenshot({ path: '/tmp/claude-0/mv-editor.png' });
 
 const sheet = top.locator('.pdf-sheet');
 const sbox = await sheet.boundingBox();
-// Tapping the box that is there takes it away; tapping clear paper adds one.
-await sheet.click({ position: { x: sbox.width * 0.72, y: sbox.height * 0.855 } });
+// Tapping the box selects it (showing the selection bar); clicking ลบ removes it, then tapping clear paper adds one.
+await top.locator('.sig-box').first().click();
+await boss.waitForTimeout(300);
+await top.locator('.pe-selbar .btn.danger').click();
 await boss.waitForTimeout(300);
 await sheet.click({ position: { x: sbox.width * 0.25, y: sbox.height * 0.3 } });
 await boss.waitForTimeout(400);

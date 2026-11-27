@@ -793,10 +793,10 @@ async function sweepExternalSigners(sql) {
   for (const row of overdue) {
     await sql`UPDATE doc_steps SET token_hash = NULL WHERE id = ${row.id}`;
     await sql`
-      INSERT INTO doc_events (id, doc_id, kind, username, detail)
+      INSERT INTO doc_events (id, doc_id, kind, username, detail, actor)
       VALUES (${'ev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)},
               ${row.doc_id}, 'expired', NULL,
-              ${`ลิงก์ลงนามของ ${row.ext_name || row.ext_email} หมดอายุแล้ว`})`;
+              ${`ลิงก์ลงนามของ ${row.ext_name || row.ext_email} หมดอายุแล้ว`}, 'system')`;
     if (row.created_by) {
       await sql`
         INSERT INTO notifications (id, username, kind, title, body, task_id)

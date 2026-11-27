@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-27e';
+window.STRINGS_EN_VERSION = '2026-11-27f';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -1314,6 +1314,27 @@ Object.assign(window.STRINGS, {
     extErrNotReady: 'It is not your turn to sign yet. Please wait for the email notification.',
     extYourSpots: 'Your signature box position(s) on this document (%n)',
     extExpiresOn: 'Link expires on %s',
+    docAuditTitle: 'Signing Audit Trail',
+    docAuditHashes: 'File Integrity (SHA-256)',
+    docAuditOrigHash: 'Original PDF',
+    docAuditSignedHash: 'Signed PDF',
+    docEvCreated: 'Created',
+    docEvSentToStep: 'Routed to step',
+    docEvEmailSent: 'Invite emailed',
+    docEvViewed: 'Viewed',
+    docEvSigned: 'Signed & approved',
+    docEvApproved: 'Approved',
+    docEvApprovedNoSign: 'Approved without signature',
+    docEvActedFor: 'Acted on behalf',
+    docEvRejected: 'Sent back',
+    docEvResent: 'Invite resent',
+    docEvExpired: 'Link expired',
+    docEvCompleted: 'All signatures complete',
+    docEvMarkMoved: 'Signature moved',
+    docEvReplaced: 'File replaced',
+    docEvRevived: 'Revived',
+    docEvSent: 'Sent to recipient',
+    docEvSystem: 'System',
     docReject: 'Send back',
     docRejectWhy: 'Why are you sending it back? (the submitter will see this)',
     docReplace: 'Upload a corrected file instead',

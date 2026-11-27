@@ -1966,3 +1966,6 @@ button.kpi:hover {
     color: color-mix(in srgb, var(--page, var(--accent)) 82%, #ffffff);
   }
 }
+
+/* Spacious card width when standalone external signing renders inside #gate-view. */
+#gate-view .auth:has(.ext-wrap) { max-width: 900px; width: 100%; padding: 14px; }

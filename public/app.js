@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-27e';
+  var APP_VERSION = '2026-11-27f';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -5431,6 +5431,71 @@
         })] : []))),
         vRow(t('notifyThis'), notifyControl('doc', doc.id, 'document')),
       ]));
+
+      /**
+       * Signing audit trail timeline & SHA-256 file hashes (E4).
+       *
+       * Mirrors the appended "ประวัติการลงนาม" page on completed PDFs so
+       * anyone inspecting a document sees every lifecycle step and can verify
+       * both original and signed file hashes directly in the modal.
+       */
+      var auditEvents = (data.events || []).filter(function (e) {
+        return e.kind !== 'number_failed';
+      });
+      var origFile = (data.files || []).filter(function (f) { return f.kind === 'original'; })[0];
+      var signedFile = (data.files || []).filter(function (f) { return f.kind === 'signed'; })[0];
+      var evLabelMap = {
+        created: 'docEvCreated', sent_to_step: 'docEvSentToStep', email_sent: 'docEvEmailSent',
+        viewed: 'docEvViewed', signed: 'docEvSigned', approved: 'docEvApproved',
+        approved_no_sign: 'docEvApprovedNoSign', acted_for: 'docEvActedFor',
+        rejected: 'docEvRejected', resent: 'docEvResent', expired: 'docEvExpired',
+        completed: 'docEvCompleted', mark_moved: 'docEvMarkMoved', replaced: 'docEvReplaced',
+        revived: 'docEvRevived', sent: 'docEvSent',
+      };
+      if (auditEvents.length || (origFile && origFile.sha256) || (signedFile && signedFile.sha256)) {
+        var copyHash = function (val, btn) {
+          var done = function () {
+            btn.textContent = t('copied');
+            setTimeout(function () { btn.textContent = t('copyIt'); }, 1400);
+          };
+          if (navigator.clipboard) navigator.clipboard.writeText(val).then(done, done);
+          else done();
+        };
+        var hashRows = [];
+        if (origFile && origFile.sha256) {
+          hashRows.push(h('div', { class: 'audit-hash-row' }, [
+            h('span', { text: t('docAuditOrigHash') + ':' }),
+            h('code', { title: origFile.sha256, text: origFile.sha256.slice(0, 16) + '…' + origFile.sha256.slice(-8) }),
+            h('button', { type: 'button', class: 'btn ghost sm', text: t('copyIt'), onclick: function (e) { copyHash(origFile.sha256, e.target); } }),
+          ]));
+        }
+        if (signedFile && signedFile.sha256) {
+          hashRows.push(h('div', { class: 'audit-hash-row' }, [
+            h('span', { text: t('docAuditSignedHash') + ':' }),
+            h('code', { title: signedFile.sha256, text: signedFile.sha256.slice(0, 16) + '…' + signedFile.sha256.slice(-8) }),
+            h('button', { type: 'button', class: 'btn ghost sm', text: t('copyIt'), onclick: function (e) { copyHash(signedFile.sha256, e.target); } }),
+          ]));
+        }
+        pane.appendChild(h('div', { class: 'audit-box' }, [
+          h('h4', { text: t('docAuditTitle') }),
+          auditEvents.length ? h('ol', { class: 'audit-list' }, auditEvents.map(function (ev) {
+            var labelKey = evLabelMap[ev.kind];
+            var actorText = ev.username ? nameOf(ev.username)
+              : (ev.actor && ev.actor !== 'system' ? ev.actor : t('docEvSystem'));
+            return h('li', { class: 'audit-item', 'data-kind': ev.kind }, [
+              h('div', { class: 'audit-item-top' }, [
+                h('b', { text: labelKey ? t(labelKey) : ev.kind }),
+                h('span', { text: actorText }),
+                h('small', { text: fmtStamp(ev.at, { day: 'numeric', month: 'short' }) }),
+              ]),
+              ev.detail ? h('div', { class: 'audit-item-detail', text: ev.detail }) : null,
+            ]);
+          })) : null,
+          hashRows.length ? h('div', { class: 'audit-hashes' }, [
+            h('strong', { text: t('docAuditHashes') }),
+          ].concat(hashRows)) : null,
+        ]));
+      }
 
       /**
        * Where my signature will land, and how big.

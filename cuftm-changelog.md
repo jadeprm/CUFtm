@@ -11,6 +11,16 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-27 (f) — signing upgrade phase 5: SHA-256 audit trail, appended Thai history page, openDoc timeline · version `2026-11-27f`
+
+Fifth and final phase of the document-signing upgrade (`E1`–`E4`):
+
+* **PDF SHA-256 integrity hashes (`lib/db.js`, `lib/pdfsign.js`, `api/documents.js`).** Added `doc_files.sha256`, computed and stored on every `original` upload/replace/revive and every `signed` rebuild.
+* **Structured audit-trail events (`lib/db.js`, `api/documents.js`, `api/cron.js`).** Added `doc_events.actor`, `doc_events.ip`, and `doc_events.user_agent`, recording `created`, `sent_to_step`, `email_sent`, `viewed`, `signed`, `approved`, `approved_no_sign`, `acted_for`, `rejected`, `resent`, `expired`, and `completed` throughout the lifecycle (with `actor = 'system'` for automated transitions/cron).
+* **Appended Thai "ประวัติการลงนาม" page on completed PDFs (`lib/pdfsign.js`, `api/documents.js`).** When the final non-sending step is approved, `rebuildSigned()` generates an A4 Thai audit-trail page via `pdfkit` + TH Sarabun New (document title, doc number, original & pre-audit signed SHA-256, chronological event table with auto-pagination) and appends it to the signed PDF via `pdf-lib`. Because `rebuildSigned()` always starts from the untouched original, moving marks or reviving never duplicates the audit page.
+* **Audit timeline & SHA-256 card in `openDoc()` (`public/app.js`, `public/styles.css`, `public/i18n.js`, `public/i18n-en.js`, `public/theme.css`).** Added chronological event timeline and copyable original/signed SHA-256 hashes inside `openDoc()`; widened desktop `#gate-view .auth:has(.ext-wrap)` so `/sign/<token>` uses full card width cleanly.
+* **Tests.** `npm run check:separation` (7/7), `dev-tests/audit-trail.mjs` (11/11 desktop, phone & built-in PDF page viewer), full doc regression suite (`rotate`, `upload-chain`, `editor-fields`, `ext-sign`, `movesig`, `pdfread`), plus `npm test` (zero new failures).
+
 ## 2026-11-27 (e) — signing upgrade phase 4: external email signers, /sign/:token SPA, reusable & inline signature pad · version `2026-11-27e`
 
 Fourth phase of the document-signing upgrade (`D1`–`D5`):

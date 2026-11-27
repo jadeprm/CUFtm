@@ -17,7 +17,8 @@ import {
   canMoveMark, canRevive,
 } from '../lib/approval.js';
 import {
-  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize, BOX_KINDS, formatThaiDate,
+  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize, BOX_KINDS,
+  formatThaiDate, sha256Buffer, appendAuditTrail,
 } from '../lib/pdfsign.js';
 import { sendMail } from '../lib/mail.js';
 import { externalSignEmailHtml } from '../lib/templates.js';
@@ -195,9 +196,9 @@ async function handler(request) {
   switch (action) {
     case 'signature': return saveSignature(sql, me, body);
     case 'propose':   return propose(sql, me, body);
-    case 'create':    return createDocument(sql, me, body);
-    case 'approve':   return approve(sql, me, body);
-    case 'reject':    return reject(sql, me, body);
+    case 'create':    return createDocument(sql, me, body, request);
+    case 'approve':   return approve(sql, me, body, request);
+    case 'reject':    return reject(sql, me, body, request);
     case 'move-mark': return moveMark(sql, me, body);
     case 'revive':    return revive(sql, me, body);
     case 'replace':   return replaceFile(sql, me, body);
@@ -207,8 +208,8 @@ async function handler(request) {
     // A PDF over ~2 MB assembled in pieces before create/replace/revive.
     case 'pdf-part':  return putPdfPart(sql, me, body);
     // Owner / secretary tools for managing waiting external signers.
-    case 'ext-resend': return extResend(sql, me, body);
-    case 'ext-email':  return extUpdateEmail(sql, me, body);
+    case 'ext-resend': return extResend(sql, me, body, request);
+    case 'ext-email':  return extUpdateEmail(sql, me, body, request);
     case 'delegates': return setDelegates(sql, me, body);
     case 'send':      return markSent(sql, me, body);
     case 'secretaries': return changeSecretaries(sql, me, body);
@@ -351,7 +352,7 @@ async function oneDocument(sql, me, id) {
   }
 
   const events = await sql`SELECT * FROM doc_events WHERE doc_id = ${id} ORDER BY at`;
-  const files = await sql`SELECT kind, byte_size, pages, file_name, mime, updated_at FROM doc_files WHERE doc_id = ${id}`;
+  const files = await sql`SELECT kind, byte_size, pages, file_name, mime, sha256, updated_at FROM doc_files WHERE doc_id = ${id}`;
 
   /**
    * Every box, not only the first, and the shape of each signer's signature.
@@ -405,10 +406,13 @@ async function oneDocument(sql, me, id) {
       };
     }),
     mayManageExt: doc.created_by === me.username || isSecretary(me) || me.access === 'admin' || me.access === 'coadmin',
-    events: events.map((e) => ({ id: e.id, at: e.at, kind: e.kind, username: e.username, detail: e.detail })),
+    events: events.map((e) => ({
+      id: e.id, at: e.at, kind: e.kind, username: e.username,
+      actor: e.actor || e.username || null, detail: e.detail, ip: e.ip || null,
+    })),
     files: files.map((f) => ({
       kind: f.kind, size: f.byte_size, pages: f.pages, at: f.updated_at,
-      name: f.file_name || '', mime: f.mime || '',
+      name: f.file_name || '', mime: f.mime || '', sha256: f.sha256 || null,
     })),
     progress: progressOf(doc, steps),
     fraction: progressFraction(doc, steps),
@@ -634,7 +638,7 @@ function pickList(role, { people, department, unit, uploader, parent }) {
   return out;
 }
 
-async function createDocument(sql, me, body) {
+async function createDocument(sql, me, body, request = null) {
   const title = clean(body.title, 200);
   if (!title) return json({ error: 'TITLE_REQUIRED' }, 400);
 
@@ -814,9 +818,10 @@ async function createDocument(sql, me, body) {
             'approving', ${department}, ${unit}, ${me.username},
             ${sendMode}, ${email}, ${internalUnit})`;
 
+  const origSha = sha256Buffer(got.buffer);
   await sql`
-    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages)
-    VALUES (${id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages})`;
+    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, sha256)
+    VALUES (${id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages}, ${origSha})`;
   if (!source.none) await putSource(sql, id, source);
 
   let position = 0;
@@ -860,7 +865,7 @@ async function createDocument(sql, me, body) {
     }
   }
 
-  await note(sql, id, 'created', me.username, title);
+  await note(sql, id, 'created', me.username, title, { request });
 
   /**
    * The เลขรันเอกสาร, taken the moment the letter is submitted.
@@ -896,6 +901,11 @@ async function createDocument(sql, me, body) {
   const firstRow = pendingStep(createdSteps) || createdSteps[0];
   const watchers = await secretaries(sql);
   const numberTag = numbering?.ok ? ` · เลขที่ ${numbering.number}` : '';
+  if (firstRow) {
+    await note(sql, id, 'sent_to_step', null,
+      `${ROLE_TH[firstRow.role] || firstRow.role}: ${firstRow.role === 'external' ? (firstRow.ext_name || firstRow.ext_email) : (firstRow.username || '')}`,
+      { actor: 'system' });
+  }
   if (firstRow && firstRow.role === 'external') {
     const [docRow] = await sql`SELECT * FROM documents WHERE id = ${id}`;
     await issueExternalInvite(sql, docRow, firstRow, me);
@@ -1069,9 +1079,16 @@ const secretaries = async (sql) => {
 const PRIORITY_TH = { highest: 'ด่วนที่สุด', high: 'ด่วน', medium: '', low: '' };
 const urgencyTag = (priority) => (PRIORITY_TH[priority] ? `[${PRIORITY_TH[priority]}] ` : '');
 
-const note = (sql, docId, kind, username, detail = '') => sql`
-  INSERT INTO doc_events (id, doc_id, kind, username, detail)
-  VALUES (${newId('ev')}, ${docId}, ${kind}, ${username}, ${clean(detail, 1000)})`;
+const note = (sql, docId, kind, username, detail = '', meta = {}) => {
+  const actor = meta.actor !== undefined ? meta.actor : (username || null);
+  const ip = meta.ip !== undefined ? meta.ip : (meta.request ? clientIp(meta.request) : null);
+  const ua = meta.userAgent !== undefined
+    ? meta.userAgent
+    : (meta.request ? (clean(meta.request.headers?.get?.('user-agent'), 256) || null) : null);
+  return sql`
+    INSERT INTO doc_events (id, doc_id, kind, username, detail, actor, ip, user_agent)
+    VALUES (${newId('ev')}, ${docId}, ${kind}, ${username}, ${clean(detail, 1000)}, ${actor}, ${ip}, ${ua})`;
+};
 
 // ---------------------------------------------------------------------------
 // Acting on it
@@ -1084,7 +1101,7 @@ async function loadFor(sql, id) {
   return { doc, steps };
 }
 
-async function approve(sql, me, body) {
+async function approve(sql, me, body, request = null) {
   const found = await loadFor(sql, clean(body.id, 64));
   if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const { doc, steps } = found;
@@ -1168,8 +1185,6 @@ async function approve(sql, me, body) {
     WHERE id = ${step.id}`;
 
   const after = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
-  const stamped = await rebuildSigned(sql, doc.id, after);
-
   const next = pendingStep(after);
   const stage = next ? (isSendingRole(next.role) ? 'secretary' : 'approving') : 'done';
   await sql`
@@ -1184,8 +1199,20 @@ async function approve(sql, me, body) {
   const standIn = standingIn
     ? `ดำเนินการแทน ${step.username}${standing ? ' (ได้รับมอบอำนาจไว้ล่วงหน้า)' : ''}`
     : '';
-  await note(sql, doc.id, willSign && signsPdf(step.role) ? 'signed' : 'approved', me.username,
-    [clean(body.comment, 1000), standIn].filter(Boolean).join(' · '));
+  const eventKind = withoutSignature
+    ? 'approved_no_sign'
+    : (willSign && signsPdf(step.role) ? 'signed' : 'approved');
+  await note(sql, doc.id, eventKind, me.username,
+    [clean(body.comment, 1000), standIn].filter(Boolean).join(' · '), { request });
+  if (standingIn) {
+    await note(sql, doc.id, 'acted_for', me.username, standIn, { request });
+  }
+  if (next) {
+    await note(sql, doc.id, 'sent_to_step', null,
+      `${ROLE_TH[next.role] || next.role}: ${next.role === 'external' ? (next.ext_name || next.ext_email) : (next.username || '')}`,
+      { actor: 'system' });
+  }
+  const stamped = await rebuildSigned(sql, doc.id, after);
 
   /**
    * The committee's เลขรันเอกสาร, issued once every signature is in.
@@ -1423,12 +1450,13 @@ async function revive(sql, me, body) {
   );
   if (highest > pages) return json({ error: 'MARK_OFF_PAGE', pages, needs: highest }, 400);
 
+  const origSha = sha256Buffer(got.buffer);
   await sql`
-    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, updated_at)
-    VALUES (${doc.id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages}, now())
+    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, sha256, updated_at)
+    VALUES (${doc.id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages}, ${origSha}, now())
     ON CONFLICT (doc_id, kind) DO UPDATE
       SET bytes = EXCLUDED.bytes, byte_size = EXCLUDED.byte_size,
-          pages = EXCLUDED.pages, updated_at = now()`;
+          pages = EXCLUDED.pages, sha256 = EXCLUDED.sha256, updated_at = now()`;
 
   /**
    * The step that said no goes back to waiting, and nothing before it moves.
@@ -1503,9 +1531,13 @@ async function revive(sql, me, body) {
  * signature behind in the file.
  */
 async function rebuildSigned(sql, docId, steps) {
-  const [orig] = await sql`SELECT bytes FROM doc_files WHERE doc_id = ${docId} AND kind = 'original'`;
+  const [orig] = await sql`SELECT bytes, sha256, pages FROM doc_files WHERE doc_id = ${docId} AND kind = 'original'`;
   const original = toBuffer(orig?.bytes);
   if (!original) return { placed: [], skipped: [{ reason: 'NO_ORIGINAL' }] };
+  const originalSha256 = orig?.sha256 || sha256Buffer(original);
+  if (!orig?.sha256) {
+    await sql`UPDATE doc_files SET sha256 = ${originalSha256} WHERE doc_id = ${docId} AND kind = 'original'`;
+  }
 
   /**
    * Whose signature goes on, and where.
@@ -1553,19 +1585,67 @@ async function rebuildSigned(sql, docId, steps) {
     }
   }
 
-  if (!marks.length) return { placed: [], skipped: [] };
+  const approvalSteps = steps.filter((s) => !isSendingRole(s.role));
+  const chainComplete = approvalSteps.length > 0 && approvalSteps.every((s) => s.state === 'approved');
+  if (!marks.length && !chainComplete) return { placed: [], skipped: [] };
 
-  const out = await stampSignatures(original, marks);
+  const out = marks.length
+    ? await stampSignatures(original, marks)
+    : { bytes: original, placed: [], skipped: [], pages: Number(orig?.pages || 1) };
+
+  let finalBytes = out.bytes;
+  let finalPages = out.pages;
+  const preAuditSha256 = sha256Buffer(out.bytes);
+
+  // Append the Thai "ประวัติการลงนาม" page once all signing/approval steps finish.
+  // Because rebuildSigned always starts from the untouched original, moving a
+  // mark or reviving never duplicates the audit trail page.
+  if (chainComplete) {
+    const [doc] = await sql`SELECT id, title, doc_number, stage FROM documents WHERE id = ${docId}`;
+    if (doc && doc.stage !== 'rejected') {
+      const existingCompleted = await sql`
+        SELECT 1 FROM doc_events WHERE doc_id = ${docId} AND kind = 'completed' LIMIT 1`;
+      if (!existingCompleted.length) {
+        await note(sql, docId, 'completed', null, 'ลงนามครบทุกขั้นตอนแล้ว', { actor: 'system' });
+      }
+      const evRows = await sql`SELECT * FROM doc_events WHERE doc_id = ${docId} ORDER BY at`;
+      const actorUsers = [...new Set(evRows.map((e) => e.username).filter(Boolean))];
+      const profRows = actorUsers.length
+        ? await sql`SELECT username, full_name, display_name FROM users WHERE username = ANY(${actorUsers})`
+        : [];
+      const nameMap = new Map(profRows.map((u) => [u.username, u.full_name || u.display_name || u.username]));
+      const auditEvents = evRows.map((e) => ({
+        at: e.at,
+        kind: e.kind,
+        username: e.username,
+        actor: e.actor || e.username || null,
+        actorLabel: e.username ? (nameMap.get(e.username) || e.username) : (e.actor || 'ระบบ'),
+        detail: e.detail || '',
+        ip: e.ip || '',
+      }));
+      const appended = await appendAuditTrail(out.bytes, {
+        title: doc.title,
+        docNumber: doc.doc_number || '',
+        originalSha256,
+        signedSha256: preAuditSha256,
+        events: auditEvents,
+      });
+      finalBytes = appended.bytes;
+      finalPages = appended.pages;
+    }
+  }
+
+  const finalSha = sha256Buffer(finalBytes);
   await sql`
-    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, updated_at)
-    VALUES (${docId}, 'signed', ${out.bytes}, ${out.bytes.length}, ${out.pages}, now())
+    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, sha256, updated_at)
+    VALUES (${docId}, 'signed', ${finalBytes}, ${finalBytes.length}, ${finalPages}, ${finalSha}, now())
     ON CONFLICT (doc_id, kind) DO UPDATE
       SET bytes = EXCLUDED.bytes, byte_size = EXCLUDED.byte_size,
-          pages = EXCLUDED.pages, updated_at = now()`;
-  return out;
+          pages = EXCLUDED.pages, sha256 = EXCLUDED.sha256, updated_at = now()`;
+  return { ...out, bytes: finalBytes, pages: finalPages, sha256: finalSha };
 }
 
-async function reject(sql, me, body) {
+async function reject(sql, me, body, request = null) {
   const found = await loadFor(sql, clean(body.id, 64));
   if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const { doc, steps } = found;
@@ -1585,7 +1665,7 @@ async function reject(sql, me, body) {
               acted_by = ${step.username === me.username ? null : me.username}
             WHERE id = ${step.id}`;
   await sql`UPDATE documents SET stage = 'rejected', updated_at = now() WHERE id = ${doc.id}`;
-  await note(sql, doc.id, 'rejected', me.username, comment);
+  await note(sql, doc.id, 'rejected', me.username, comment, { request });
 
   /**
    * The file goes, the reason stays.
@@ -1662,12 +1742,13 @@ async function replaceFile(sql, me, body) {
   const offPage = steps.filter((s) => s.x !== null && s.page > pages);
   if (offPage.length) return json({ error: 'MARK_OFF_PAGE', pages }, 400);
 
+  const origSha = sha256Buffer(got.buffer);
   await sql`
-    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, updated_at)
-    VALUES (${doc.id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages}, now())
+    INSERT INTO doc_files (doc_id, kind, bytes, byte_size, pages, sha256, updated_at)
+    VALUES (${doc.id}, 'original', ${got.buffer}, ${got.buffer.length}, ${pages}, ${origSha}, now())
     ON CONFLICT (doc_id, kind) DO UPDATE
       SET bytes = EXCLUDED.bytes, byte_size = EXCLUDED.byte_size,
-          pages = EXCLUDED.pages, updated_at = now()`;
+          pages = EXCLUDED.pages, sha256 = EXCLUDED.sha256, updated_at = now()`;
 
   const stamped = await rebuildSigned(sql, doc.id, steps);
   await sql`UPDATE documents SET updated_at = now() WHERE id = ${doc.id}`;
@@ -2384,7 +2465,10 @@ async function extView(sql, request, rawToken) {
 
   if (!step.viewed_at) {
     await sql`UPDATE doc_steps SET viewed_at = now() WHERE id = ${step.id} AND viewed_at IS NULL`;
-    await note(sql, doc.id, 'viewed', null, `${step.ext_name || ''} <${step.ext_email}> เปิดดูเอกสาร`);
+    await note(sql, doc.id, 'viewed', null, `${step.ext_name || ''} <${step.ext_email}> เปิดดูเอกสาร`, {
+      actor: `${step.ext_name || 'external'} <${step.ext_email || ''}>`,
+      request,
+    });
   }
 
   const boxes = await sql`SELECT page, x, y, w, h, kind FROM doc_boxes WHERE step_id = ${step.id}`;
@@ -2464,7 +2548,7 @@ async function extAct(sql, request, body) {
          SET state = 'rejected', acted_at = now(), comment = ${comment}, token_hash = NULL
        WHERE id = ${step.id}`;
     await sql`UPDATE documents SET stage = 'rejected', updated_at = now() WHERE id = ${doc.id}`;
-    await note(sql, doc.id, 'rejected', null, `${extLabel}: ${comment}`);
+    await note(sql, doc.id, 'rejected', null, `${extLabel}: ${comment}`, { actor: extLabel, request });
 
     await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind <> 'source'`;
     const [keptSource] = await sql`SELECT file_name FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source'`;
@@ -2505,8 +2589,6 @@ async function extAct(sql, request, body) {
      WHERE id = ${step.id}`;
 
   const after = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
-  const stamped = await rebuildSigned(sql, doc.id, after);
-
   const next = pendingStep(after);
   const stage = next ? (isSendingRole(next.role) ? 'secretary' : 'approving') : 'done';
   await sql`
@@ -2515,7 +2597,13 @@ async function extAct(sql, request, body) {
     WHERE id = ${doc.id}`;
 
   await note(sql, doc.id, willSign ? 'signed' : 'approved', null,
-    [extLabel, comment].filter(Boolean).join(' · '));
+    [extLabel, comment].filter(Boolean).join(' · '), { actor: extLabel, request });
+  if (next) {
+    await note(sql, doc.id, 'sent_to_step', null,
+      `${ROLE_TH[next.role] || next.role}: ${next.role === 'external' ? (next.ext_name || next.ext_email) : (next.username || '')}`,
+      { actor: 'system' });
+  }
+  const stamped = await rebuildSigned(sql, doc.id, after);
 
   let numbering = null;
   if (next && isSendingRole(next.role)) {
@@ -2565,7 +2653,7 @@ function canManageExternal(me, doc) {
   return doc.created_by === me.username || isSecretary(me) || me.access === 'admin' || me.access === 'coadmin';
 }
 
-async function extResend(sql, me, body) {
+async function extResend(sql, me, body, request = null) {
   const found = await loadFor(sql, clean(body.id, 64));
   if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const { doc, steps } = found;
@@ -2579,11 +2667,11 @@ async function extResend(sql, me, body) {
 
   const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
   const sent = await issueExternalInvite(sql, doc, step, uploader || me);
-  await note(sql, doc.id, 'resent', me.username, `ส่งลิงก์ใหม่ให้ ${step.ext_name} <${step.ext_email}>`);
+  await note(sql, doc.id, 'resent', me.username, `ส่งลิงก์ใหม่ให้ ${step.ext_name} <${step.ext_email}>`, { request });
   return json({ ok: true, emailSent: sent.ok, mailError: sent.error, expiresAt: sent.expiresAt });
 }
 
-async function extUpdateEmail(sql, me, body) {
+async function extUpdateEmail(sql, me, body, request = null) {
   const found = await loadFor(sql, clean(body.id, 64));
   if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
   const { doc, steps } = found;
@@ -2606,7 +2694,7 @@ async function extUpdateEmail(sql, me, body) {
     const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
     sent = await issueExternalInvite(sql, doc, step, uploader || me);
   }
-  await note(sql, doc.id, 'resent', me.username, `แก้อีเมล ${step.ext_name}: ${oldEmail} → ${nextEmail}`);
+  await note(sql, doc.id, 'resent', me.username, `แก้อีเมล ${step.ext_name}: ${oldEmail} → ${nextEmail}`, { request });
   return json({ ok: true, email: nextEmail, emailSent: sent.ok, expiresAt: sent.expiresAt });
 }
 
