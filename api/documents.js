@@ -16,7 +16,7 @@ import {
   canMoveMark, canRevive,
 } from '../lib/approval.js';
 import {
-  stampSignatures, pageCount, looksLikePdf, looksLikePng, pngSize,
+  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize,
 } from '../lib/pdfsign.js';
 import { sendToMany, unreadCount } from '../lib/push.js';
 import { lineConfigured, push as linePush, pageLink } from '../lib/line.js';
@@ -46,18 +46,14 @@ const json = (body, status = 200) =>
   });
 
 /**
- * Three megabytes for the PDF, five for the editable original.
+ * Ten megabytes for the PDF, five for the editable original.
  *
- * The request carries the file base64-encoded, which inflates it by a third,
- * and the platform refuses a body over about 4.5 MB. Refusing a large file
- * here with a clear message beats a request that dies halfway with none.
- *
- * That is also why the Word file can be bigger than the PDF: a letter with
- * photographs in it goes past three megabytes easily, so anything over
- * INLINE_SOURCE arrives in pieces instead (see ?do=source-part), and the
- * five-megabyte ceiling is on the file rather than on one request.
+ * The platform refuses a request body over about 4.5 MB, and base64 inflates
+ * bytes by a third, so any PDF over ~2 MB travels in pieces via ?do=pdf-part
+ * and is referenced by uploadId on create/replace/revive. Small PDFs still go
+ * inline in one request so every existing caller keeps working unchanged.
  */
-const MAX_PDF = 3 * 1024 * 1024;
+const MAX_PDF = 10 * 1024 * 1024;
 const MAX_PNG = 512 * 1024;
 const MAX_SOURCE = 5 * 1024 * 1024;
 /** The biggest source file still worth sending in one request. */
@@ -119,14 +115,27 @@ const clean = (v, max = 400) => String(v ?? '').trim().slice(0, max);
  * The addresses เลขานุการ will forward to.
  *
  * Several are allowed and usual — a letter to a faculty goes to the office
- * and to the person who asked for it. Split on anything people actually type
- * between addresses, kept only if they look like addresses at all, and
- * returned as one comma-separated string, which is what a mail client wants.
+ * and to the person who asked for it. Every token is validated so a typo in
+ * the second or third address is caught and named rather than silently dropped.
  */
-function cleanEmails(value) {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function parseEmails(value) {
   const parts = String(value ?? '').split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
-  const ok = parts.filter((x) => /^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(x));
-  return [...new Set(ok)].slice(0, 10).join(', ').slice(0, 400);
+  const ok = [];
+  const invalid = [];
+  for (const part of parts) {
+    if (EMAIL_RE.test(part)) ok.push(part);
+    else invalid.push(part);
+  }
+  return {
+    valid: [...new Set(ok)].slice(0, 10).join(', ').slice(0, 400),
+    invalid,
+  };
+}
+
+function cleanEmails(value) {
+  return parseEmails(value).valid;
 }
 
 function fromBase64(value, limit) {
@@ -179,6 +188,8 @@ async function handler(request) {
     case 'source':    return putSourceFile(sql, me, body);
     // A Word file too big for one request — see putSourcePart.
     case 'source-part': return putSourcePart(sql, me, body);
+    // A PDF over ~2 MB assembled in pieces before create/replace/revive.
+    case 'pdf-part':  return putPdfPart(sql, me, body);
     case 'delegates': return setDelegates(sql, me, body);
     case 'send':      return markSent(sql, me, body);
     case 'secretaries': return changeSecretaries(sql, me, body);
@@ -603,12 +614,9 @@ async function createDocument(sql, me, body) {
   }
   if (!me.full_name) return json({ error: 'FULL_NAME_REQUIRED' }, 400);
 
-  const got = fromBase64(body.pdf, MAX_PDF);
-  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, 400);
-  if (!looksLikePdf(got.buffer)) return json({ error: 'NOT_A_PDF' }, 400);
-
-  const pages = await pageCount(got.buffer);
-  if (!pages) return json({ error: 'UNREADABLE_PDF' }, 400);
+  const got = await resolvePdfInput(sql, me, body);
+  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, got.status || 400);
+  const pages = got.pages;
 
   /**
    * The Word original, if one was attached. Optional: plenty of letters
@@ -656,10 +664,16 @@ async function createDocument(sql, me, body) {
    * exist.
    */
   const internalUnit = body.internalUnit === true;
-  const email = cleanEmails(body.recipientEmail);
-  if (sendMode === 'secretary' && !internalUnit && !email) {
-    return json({ error: 'EMAIL_REQUIRED' }, 400);
+  const parsedMail = parseEmails(body.recipientEmail);
+  if (sendMode === 'secretary' && !internalUnit) {
+    if (body.strictEmails === true && parsedMail.invalid.length) {
+      return json({ error: 'BAD_EMAIL', bad: parsedMail.invalid[0], invalid: parsedMail.invalid }, 400);
+    }
+    if (!parsedMail.valid) {
+      return json({ error: 'EMAIL_REQUIRED' }, 400);
+    }
   }
+  const email = parsedMail.valid;
 
   // Everyone named must exist and be active — a chain pointing at a departed
   // member would stall silently and nobody would know why.
@@ -1300,11 +1314,9 @@ async function revive(sql, me, body) {
   const { doc, steps } = found;
   if (!canRevive(me, doc, steps)) return json({ error: 'NOT_ALLOWED' }, 403);
 
-  const got = fromBase64(body.pdf, MAX_PDF);
-  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, 400);
-  if (!looksLikePdf(got.buffer)) return json({ error: 'NOT_A_PDF' }, 400);
-  const pages = await pageCount(got.buffer);
-  if (!pages) return json({ error: 'UNREADABLE_PDF' }, 400);
+  const got = await resolvePdfInput(sql, me, body);
+  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, got.status || 400);
+  const pages = got.pages;
 
   /**
    * The corrected letter has to be at least as long as the old one where
@@ -1537,11 +1549,9 @@ async function replaceFile(sql, me, body) {
   const { doc, steps } = found;
   if (!canReplaceFile(me, doc, steps)) return json({ error: 'NOT_ALLOWED' }, 403);
 
-  const got = fromBase64(body.pdf, MAX_PDF);
-  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, 400);
-  if (!looksLikePdf(got.buffer)) return json({ error: 'NOT_A_PDF' }, 400);
-  const pages = await pageCount(got.buffer);
-  if (!pages) return json({ error: 'UNREADABLE_PDF' }, 400);
+  const got = await resolvePdfInput(sql, me, body);
+  if (got.error) return json({ error: got.error, limit: got.limit, size: got.size }, got.status || 400);
+  const pages = got.pages;
 
   const offPage = steps.filter((s) => s.x !== null && s.page > pages);
   if (offPage.length) return json({ error: 'MARK_OFF_PAGE', pages }, 400);
@@ -1679,6 +1689,91 @@ async function putSourcePart(sql, me, body) {
   await sql`UPDATE documents SET updated_at = now() WHERE id = ${doc.id}`;
   await note(sql, doc.id, 'source_added', me.username, name);
   return json({ ok: true, done: true, source: { name, size: Number(whole?.byte_size || 0) } });
+}
+
+/**
+ * Receives one slice of a large PDF (up to 10 MB total) and appends it in
+ * Postgres so the upload survives stateless serverless hops without exceeding
+ * Vercel's 4.5 MB request body ceiling.
+ */
+async function putPdfPart(sql, me, body) {
+  const uploadId = clean(body.uploadId, 80);
+  if (!/^[A-Za-z0-9_-]{6,80}$/.test(uploadId)) return json({ error: 'BAD_PART' }, 400);
+
+  const part = Number(body.part);
+  const parts = Number(body.parts);
+  if (!Number.isInteger(part) || !Number.isInteger(parts) ||
+      part < 0 || parts < 1 || part >= parts || parts > 16) {
+    return json({ error: 'BAD_PART' }, 400);
+  }
+
+  const totalSize = Number(body.totalSize || 0);
+  if (totalSize > MAX_PDF) return json({ error: 'FILE_TOO_BIG', size: totalSize, limit: MAX_PDF }, 400);
+
+  const piece = fromBase64(body.data, MAX_PART);
+  if (piece.error) {
+    return json({ error: piece.error === 'FILE_TOO_BIG' ? 'PART_TOO_BIG' : piece.error }, 400);
+  }
+
+  if (part === 0) {
+    if (!looksLikePdf(piece.buffer)) return json({ error: 'NOT_A_PDF' }, 400);
+    const [existing] = await sql`SELECT username FROM doc_upload_parts WHERE upload_id = ${uploadId}`;
+    if (existing && existing.username !== me.username) return json({ error: 'NOT_ALLOWED' }, 403);
+    await sql`
+      INSERT INTO doc_upload_parts (upload_id, username, bytes, byte_size, total_size, created_at)
+      VALUES (${uploadId}, ${me.username}, ${piece.buffer}, ${piece.buffer.length}, ${Math.max(piece.buffer.length, Math.round(totalSize))}, now())
+      ON CONFLICT (upload_id) DO UPDATE SET
+        bytes = EXCLUDED.bytes, byte_size = EXCLUDED.byte_size,
+        total_size = EXCLUDED.total_size, created_at = now()`;
+    return json({ ok: true, uploadId, part, parts, size: piece.buffer.length, done: part === parts - 1 });
+  }
+
+  const [stub] = await sql`
+    SELECT username, byte_size FROM doc_upload_parts WHERE upload_id = ${uploadId}`;
+  if (!stub) return json({ error: 'UPLOAD_LOST' }, 409);
+  if (stub.username !== me.username) return json({ error: 'NOT_ALLOWED' }, 403);
+
+  const nextSize = Number(stub.byte_size) + piece.buffer.length;
+  if (nextSize > MAX_PDF) {
+    await sql`DELETE FROM doc_upload_parts WHERE upload_id = ${uploadId}`;
+    return json({ error: 'FILE_TOO_BIG', size: nextSize, limit: MAX_PDF }, 400);
+  }
+
+  await sql`
+    UPDATE doc_upload_parts
+       SET bytes = bytes || ${piece.buffer}::bytea,
+           byte_size = byte_size + ${piece.buffer.length}
+     WHERE upload_id = ${uploadId}`;
+  return json({ ok: true, uploadId, part, parts, size: nextSize, done: part === parts - 1 });
+}
+
+/**
+ * Resolves a PDF from either an inline base64 payload or a staged chunked
+ * upload (`uploadId`), always re-verifying size, %PDF- magic bytes, and
+ * pdf-lib readability (explicitly rejecting password-encrypted PDFs).
+ */
+async function resolvePdfInput(sql, me, body) {
+  let buffer = null;
+  const uploadId = clean(body.uploadId, 80);
+  if (uploadId) {
+    const [row] = await sql`
+      SELECT username, bytes, byte_size FROM doc_upload_parts WHERE upload_id = ${uploadId}`;
+    if (!row) return { error: 'UPLOAD_LOST', status: 409 };
+    if (row.username !== me.username) return { error: 'NOT_ALLOWED', status: 403 };
+    buffer = toBuffer(row.bytes);
+    await sql`DELETE FROM doc_upload_parts WHERE upload_id = ${uploadId}`;
+    if (!buffer || !buffer.length) return { error: 'EMPTY_FILE', status: 400 };
+    if (buffer.length > MAX_PDF) return { error: 'FILE_TOO_BIG', size: buffer.length, limit: MAX_PDF, status: 400 };
+  } else {
+    const got = fromBase64(body.pdf, MAX_PDF);
+    if (got.error) return { error: got.error, limit: got.limit, size: got.size, status: 400 };
+    buffer = got.buffer;
+  }
+
+  if (!looksLikePdf(buffer)) return { error: 'NOT_A_PDF', status: 400 };
+  const inspected = await inspectPdf(buffer);
+  if (!inspected.ok) return { error: inspected.error, status: 400 };
+  return { buffer, pages: inspected.pages };
 }
 
 /**

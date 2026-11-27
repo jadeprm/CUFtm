@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-27b';
+window.STRINGS_EN_VERSION = '2026-11-27c';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -1176,7 +1176,17 @@ Object.assign(window.STRINGS, {
     docRecipient: 'Send to (outside body)',
     docRecipientPlaceholder: 'e.g. Office of Physical Resources Management',
     docPdf: 'PDF file',
-    docPdfHelp: 'A PDF, up to 3 MB',
+    docPdfHelp: 'A PDF, up to 10 MB',
+    docDropPrompt: 'Drop a PDF here, or click to choose a file',
+    docChangeFile: 'Change file',
+    docNotPdf: 'This file is not a valid PDF. Please choose a .pdf file.',
+    docPdfEncrypted: 'This PDF is password-protected. Please remove the password before uploading.',
+    docUploadingPart: 'Uploading file (%n%)…',
+    docBadEmail: 'Invalid email address: %s',
+    docUseLastChain: 'Use previous chain',
+    docSearchPerson: 'Search name, nickname, or position…',
+    docNoMatch: 'No matching person found',
+    docDragHint: 'Drag to reorder',
     sigDelegTitle: 'Let someone sign as me',
     sigDelegHow: 'The signature on a letter is always the one belonging to the printed name, whoever presses. This list is you saying in advance who may act for you — the history records who pressed and whether they were authorised.',
     sigDelegNone: 'Nobody yet',
@@ -1190,7 +1200,7 @@ Object.assign(window.STRINGS, {
     docSourceAdd: 'Attach Word file',
     docSourceReplace: 'Replace Word file',
     optional: 'optional',
-    docTooBig: 'That file is too big — a PDF may be 3 MB, a Word file 5 MB.',
+    docTooBig: 'That file is too big — a PDF may be 10 MB, a Word file 5 MB.',
     docNeedTitle: 'Please give the document a title',
     docNeedPdf: 'Please choose a PDF',
     docNext: 'Next',

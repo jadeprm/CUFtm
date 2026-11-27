@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-27b';
+  var APP_VERSION = '2026-11-27c';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -2664,6 +2664,107 @@
    */
   var MAX_SOURCE_BYTES = 5 * 1024 * 1024;
   var SOURCE_PART_BYTES = 1400 * 1024;
+  var MAX_PDF_BYTES = 10 * 1024 * 1024;
+  var INLINE_PDF_BYTES = 2 * 1024 * 1024;
+  var PDF_PART_BYTES = 1400 * 1024;
+  var DOC_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  /** Converts a Uint8Array to base64 in slices so large PDFs never hit stack limits. */
+  function bytesToBase64(u8) {
+    var chunks = [];
+    for (var i = 0; i < u8.length; i += 0x8000) {
+      chunks.push(String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)));
+    }
+    return btoa(chunks.join(''));
+  }
+
+  function formatFileSize(n) {
+    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+
+  function looksLikePdfBytes(u8) {
+    return Boolean(u8 && u8.length >= 5 &&
+      u8[0] === 0x25 && u8[1] === 0x50 && u8[2] === 0x44 && u8[3] === 0x46 && u8[4] === 0x2d);
+  }
+
+  function titleFromFilename(name) {
+    return String(name || '')
+      .replace(/\.pdf$/i, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200);
+  }
+
+  /** Checks every address in a comma/semicolon/space-separated email field. */
+  function validateRecipientEmails(raw) {
+    var parts = String(raw || '').split(/[\s,;]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (!parts.length) return { ok: false, empty: true, bad: null, valid: [] };
+    for (var i = 0; i < parts.length; i++) {
+      if (!DOC_EMAIL_RE.test(parts[i])) return { ok: false, empty: false, bad: parts[i], valid: [] };
+    }
+    return { ok: true, empty: false, bad: null, valid: parts };
+  }
+
+  /**
+   * Uploads a PDF over 2 MB in 1.4 MB pieces so the server assembles it in
+   * Postgres without ever hitting Vercel's ~4.5 MB request body ceiling.
+   */
+  function sendPdfInParts(bytes, onProgress) {
+    var uploadId = 'up_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    var parts = Math.max(1, Math.ceil(bytes.length / PDF_PART_BYTES));
+    var index = 0;
+    function next() {
+      if (index >= parts) return Promise.resolve(uploadId);
+      var slice = bytes.subarray(index * PDF_PART_BYTES, (index + 1) * PDF_PART_BYTES);
+      return API.documents.uploadPdfPart({
+        uploadId: uploadId,
+        part: index,
+        parts: parts,
+        totalSize: bytes.length,
+        data: bytesToBase64(slice),
+      }).then(function () {
+        index += 1;
+        if (onProgress) onProgress(index, parts);
+        return next();
+      });
+    }
+    return next();
+  }
+
+  /** Returns either inline `{ pdf }` (<= 2 MB) or staged `{ uploadId }` (> 2 MB). */
+  function preparePdfPayload(bytes, onProgress) {
+    if (bytes.length <= INLINE_PDF_BYTES) {
+      return Promise.resolve({ pdf: bytesToBase64(bytes) });
+    }
+    return sendPdfInParts(bytes, onProgress).then(function (uploadId) {
+      return { uploadId: uploadId };
+    });
+  }
+
+  function lastChainStorageKey(dept, unit) {
+    return 'cuftm:lastChain:' + (S.user && S.user.username ? S.user.username : '') +
+      ':' + (dept || '') + ':' + (unit || '');
+  }
+
+  function loadSavedChain(dept, unit) {
+    try {
+      var raw = localStorage.getItem(lastChainStorageKey(dept, unit));
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  function saveLastChain(dept, unit, sendMode, steps) {
+    try {
+      localStorage.setItem(lastChainStorageKey(dept, unit), JSON.stringify({
+        sendMode: sendMode,
+        steps: steps.map(function (s) {
+          return { role: s.role, username: s.username, signs: s.signs !== false };
+        }),
+      }));
+    } catch (e) {}
+  }
 
   function sendSourceInParts(docId, source, onProgress) {
     var file = source.file;
@@ -2974,6 +3075,8 @@
                   sendMode: 'secretary', recipientEmail: '', internalUnit: false };
     var pdfBase64 = null;
     var pdfBytes = null;
+    var pdfMeta = null;          // { name, size, pages }
+    var editingFullName = !(S.user && S.user.fullName);
     // The optional Word original, kept out here beside the PDF because
     // submit() is a sibling of the form that collects it.
     var sourceFile = null;
@@ -3122,8 +3225,97 @@
         ]));
       }
 
-      var fileInput = h('input', { type: 'file', id: 'doc-pdf', accept: 'application/pdf,.pdf' });
-      var fileNote = h('p', { class: 'hint', text: t('docPdfHelp') });
+      var fileInput = h('input', { type: 'file', id: 'doc-pdf', accept: 'application/pdf,.pdf', style: 'display:none' });
+      var pdfZoneWrap = h('div', {});
+
+      /**
+       * Validates magic %PDF- bytes, prefills an empty title from the file
+       * name, and shows a compact thumbnail card with page count.
+       */
+      function acceptPdfFile(file) {
+        if (!file) return;
+        if (file.size > MAX_PDF_BYTES) {
+          fail(t('docTooBig'));
+          fileInput.value = '';
+          return;
+        }
+        notice.hidden = true;
+        file.arrayBuffer().then(function (buf) {
+          var u8 = new Uint8Array(buf);
+          if (!looksLikePdfBytes(u8)) {
+            fail(t('docNotPdf'));
+            fileInput.value = '';
+            return;
+          }
+          destroyPdfDoc(pdfBytes);
+          pdfBytes = u8;
+          pdfBase64 = u8.length <= INLINE_PDF_BYTES ? bytesToBase64(u8) : null;
+          pdfMeta = { name: file.name, size: file.size, pages: 0 };
+          if (!(draft.title || '').trim()) {
+            var guessed = titleFromFilename(file.name);
+            if (guessed) { draft.title = guessed; title.value = guessed; }
+          }
+          drawPdfZone();
+        }).catch(function () { fail(t('errGeneric')); });
+      }
+
+      fileInput.addEventListener('change', function () {
+        acceptPdfFile(fileInput.files && fileInput.files[0]);
+      });
+
+      function drawPdfZone() {
+        clear(pdfZoneWrap);
+        if (!pdfBytes || !pdfMeta) {
+          var drop = h('div', {
+            class: 'pdf-drop',
+            role: 'button',
+            tabindex: '0',
+            onclick: function () { fileInput.click(); },
+            onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } },
+          }, [
+            h('strong', { text: t('docDropPrompt') }),
+            h('small', { text: t('docPdfHelp') }),
+          ]);
+          var depth = 0;
+          drop.addEventListener('dragenter', function (e) { e.preventDefault(); depth++; drop.classList.add('over'); });
+          drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('over'); });
+          drop.addEventListener('dragleave', function (e) { e.preventDefault(); depth = Math.max(0, depth - 1); if (!depth) drop.classList.remove('over'); });
+          drop.addEventListener('drop', function (e) {
+            e.preventDefault(); depth = 0; drop.classList.remove('over');
+            var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            acceptPdfFile(f);
+          });
+          pdfZoneWrap.appendChild(drop);
+          return;
+        }
+
+        var thumb = h('canvas', {});
+        var metaLine = h('small', {
+          text: formatFileSize(pdfMeta.size) + (pdfMeta.pages ? ' · ' + pdfMeta.pages + ' ' + t('docPage') : ''),
+        });
+        var card = h('div', { class: 'pdf-card' }, [
+          h('div', { class: 'pdf-card-thumb' }, [thumb]),
+          h('div', { class: 'pdf-card-meta' }, [
+            h('b', { text: pdfMeta.name }),
+            metaLine,
+          ]),
+          h('button', {
+            type: 'button', class: 'btn sm', text: t('docChangeFile'),
+            onclick: function () { fileInput.value = ''; fileInput.click(); },
+          }),
+        ]);
+        pdfZoneWrap.appendChild(card);
+
+        var bytesSnap = pdfBytes;
+        withPdfJs().then(function (lib) {
+          return renderPdfPage(lib, bytesSnap, 1, thumb, 120);
+        }).then(function (info) {
+          if (info.cancelled || pdfBytes !== bytesSnap) return;
+          pdfMeta.pages = info.pages;
+          pages = info.pages;
+          metaLine.textContent = formatFileSize(pdfMeta.size) + ' · ' + info.pages + ' ' + t('docPage');
+        }).catch(function () {});
+      }
 
       /**
        * The Word original, alongside the PDF.
@@ -3173,45 +3365,42 @@
           srcClear.hidden = false;
         }).catch(function () { fail(t('errGeneric')); });
       });
-      fileInput.addEventListener('change', function () {
-        var file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        if (file.size > 3 * 1024 * 1024) {
-          fail(t('docTooBig'));
-          fileInput.value = '';
-          return;
-        }
-        notice.hidden = true;
-        fileToBase64(file).then(function (b64) {
-          destroyPdfDoc(pdfBytes);
-          pdfBase64 = b64;
-          pdfBytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
-          fileNote.textContent = file.name + ' · ' + Math.round(file.size / 1024) + ' KB';
-        }).catch(function () { fail(t('errGeneric')); });
-      });
 
       /**
        * The uploader's own name, asked for once.
        *
-       * It goes in the ผู้รับผิดชอบ column of the committee's register, where
-       * a username or "Kungking - Head Content" would be no use to whoever
-       * reads the book of letters later. Asked here because this is where it
-       * is needed, shown as already answered once it has been given, and kept
-       * on the profile afterwards.
+       * Shown as a single read-only line with an edit link once known so
+       * repeat uploaders skip straight to the document details.
        */
       var fullName = h('input', {
-        type: 'text', maxlength: '120', value: S.user.fullName || '',
+        type: 'text', maxlength: '120', value: draft.fullName || S.user.fullName || '',
         placeholder: t('fullNamePlaceholder'),
       });
+      fullName.addEventListener('input', function () { draft.fullName = fullName.value; });
+      var fullNameBox = h('div', { class: 'field' });
+      function drawFullName() {
+        clear(fullNameBox);
+        if (!editingFullName && fullName.value.trim()) {
+          fullNameBox.appendChild(h('div', { class: 'sender-inline' }, [
+            h('span', { text: t('docResponsible') + ':' }),
+            h('b', { text: fullName.value.trim() }),
+            h('button', {
+              type: 'button', class: 'link', text: t('edit'),
+              onclick: function () { editingFullName = true; drawFullName(); fullName.focus(); },
+            }),
+          ]));
+        } else {
+          fullNameBox.appendChild(h('label', { text: t('docResponsible') }));
+          fullNameBox.appendChild(fullName);
+          fullNameBox.appendChild(h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('fullNameWhy') }));
+        }
+      }
 
       bodyBox.appendChild(h('div', { class: 'pane' }, [
         notice,
-        h('div', { class: 'field' }, [
-          h('label', { text: t('docResponsible') }),
-          fullName,
-          h('small', { style: 'color:var(--ink-faint);font-size:12px', text: t('fullNameWhy') }),
-        ]),
+        h('div', { class: 'field' }, [h('label', { for: 'doc-pdf', text: t('docPdf') }), fileInput, pdfZoneWrap]),
         h('div', { class: 'field' }, [h('label', { text: t('docTitle') }), title]),
+        fullNameBox,
         h('div', { class: 'field' }, [h('label', { text: t('docNote') }), note]),
         h('div', { class: 'field' }, [h('label', { text: t('docRecipient') }), recipient]),
         h('div', { class: 'two' }, [
@@ -3224,12 +3413,13 @@
         ]),
         h('div', { class: 'field' }, [h('label', { text: t('priority') }), prio]),
         sendBox,
-        h('div', { class: 'field' }, [h('label', { for: 'doc-pdf', text: t('docPdf') }), fileInput, fileNote]),
         h('div', { class: 'field' }, [
           h('label', { for: 'doc-source' }, [t('docSource'), h('small', { class: 'opt-tag', text: t('optional') })]),
           srcInput, srcNote, srcClear,
         ]),
       ]));
+      drawPdfZone();
+      drawFullName();
       fillUnits();
       drawSend();
 
@@ -3240,12 +3430,15 @@
           draft.note = note.value.trim();
           draft.recipient = recipient.value.trim();
           draft.fullName = fullName.value.trim();
-          if (!draft.fullName) { fail(t('docNeedFullName')); fullName.focus(); return; }
-          if (!draft.title) { fail(t('docNeedTitle')); return; }
-          if (!pdfBase64) { fail(t('docNeedPdf')); return; }
-          if (draft.sendMode === 'secretary' && !draft.internalUnit &&
-              !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(draft.recipientEmail.split(/[\s,;]+/)[0] || '')) {
-            fail(t('docNeedEmail')); return;
+          if (!pdfBytes) { fail(t('docNeedPdf')); return; }
+          if (!draft.fullName) { editingFullName = true; drawFullName(); fail(t('docNeedFullName')); fullName.focus(); return; }
+          if (!draft.title) { fail(t('docNeedTitle')); title.focus(); return; }
+          if (draft.sendMode === 'secretary' && !draft.internalUnit) {
+            var checked = validateRecipientEmails(draft.recipientEmail);
+            if (!checked.ok) {
+              fail(checked.bad ? t('docBadEmail').replace('%s', checked.bad) : t('docNeedEmail'));
+              return;
+            }
           }
           // Remembered locally as well, so the field is pre-filled next time
           // even before the page has been reloaded.
@@ -3254,7 +3447,7 @@
           loadChain();
         },
       }));
-      footer.appendChild(h('button', { class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); } }));
+      footer.appendChild(h('button', { class: 'btn', text: t('cancel'), onclick: function () { closeUpload(false); } }));
     }
 
     function loadChain() {
@@ -3298,49 +3491,196 @@
     }
 
     /**
-     * The people offered for one row.
+     * Searchable person picker for one chain row.
      *
-     * Whoever holds that post first, under the role's own name — a row that
-     * says ประธานโครงการ should offer the three people who are, not a hundred
-     * names in roster order. Everybody else is still there underneath, by
-     * ฝ่าย, because the roster is never quite right and the form must never
-     * be the reason a letter cannot be sent.
+     * Keeps the same grouping as the old <select> — holders of this role first,
+     * then everybody else by ฝ่าย — while letting uploaders type a name,
+     * nickname, username, or position instead of scrolling a hundred rows.
      */
-    function personOptions(step) {
+    function personCombobox(step, disabled) {
       var find = function (u) {
-        return people.filter(function (p) { return p.username === u; })[0] || { username: u };
+        return people.filter(function (p) { return p.username === u; })[0] || (u ? { username: u } : null);
       };
-      var label = function (p) {
+      var labelOf = function (p) {
+        if (!p) return t('docPickPerson');
         return (p.displayName || p.username) + (p.position ? ' \u00b7 ' + p.position : '');
       };
-      var option = function (p) {
-        return h('option', { value: p.username, text: label(p), selected: step.username === p.username });
+      var haystack = function (p) {
+        return [p.displayName, p.fullName, p.nickname, p.username, p.position]
+          .filter(Boolean).join(' ').toLowerCase();
       };
 
-      var best = (step.options || []).slice();
-      var taken = {};
-      best.forEach(function (u) { taken[u] = true; });
+      var wrap = h('div', { class: 'pcombo', 'data-value': step.username || '' });
+      var labelSpan = h('span', { class: 'pcombo-label', text: labelOf(find(step.username)) });
+      var btn = h('button', {
+        type: 'button', class: 'pcombo-btn', disabled: disabled,
+        role: 'combobox', 'aria-expanded': 'false',
+      }, [labelSpan, disabled ? null : h('span', { class: 'pcombo-caret', text: '\u25be' })]);
+      wrap.appendChild(btn);
 
-      var groups = [];
-      if (best.length) {
-        groups.push(h('optgroup', { label: step.roleLabel || '' }, best.map(function (u) { return option(find(u)); })));
+      if (disabled) return wrap;
+
+      var pop = null;
+      var activeIdx = -1;
+      var flatOpts = [];
+
+      function closePop() {
+        if (!pop) return;
+        pop.remove();
+        pop = null;
+        btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('pointerdown', onOutside, true);
       }
-      var byDept = {};
-      people.forEach(function (p) {
-        if (taken[p.username]) return;
-        (byDept[p.department || ''] = byDept[p.department || ''] || []).push(p);
-      });
-      Object.keys(byDept).sort().forEach(function (key) {
-        groups.push(h('optgroup', {
-          label: (best.length ? t('docAnyoneElse') + ' \u00b7 ' : '') + (key ? deptLabel(key) : '\u2014'),
-        }, byDept[key].map(option)));
-      });
-      return groups;
+
+      function onOutside(e) {
+        if (pop && !wrap.contains(e.target)) closePop();
+      }
+
+      function choose(p) {
+        step.username = p ? p.username : null;
+        wrap.setAttribute('data-value', step.username || '');
+        labelSpan.textContent = labelOf(p);
+        closePop();
+        btn.focus();
+      }
+
+      function buildGroups(query) {
+        var q = String(query || '').trim().toLowerCase();
+        var best = (step.options || []).slice();
+        var taken = {};
+        best.forEach(function (u) { taken[u] = true; });
+        var groups = [];
+        var bestItems = best.map(find).filter(function (p) {
+          return p && (!q || haystack(p).indexOf(q) !== -1);
+        });
+        if (bestItems.length) groups.push({ label: step.roleLabel || '', items: bestItems });
+
+        var byDept = {};
+        people.forEach(function (p) {
+          if (taken[p.username]) return;
+          if (q && haystack(p).indexOf(q) === -1) return;
+          (byDept[p.department || ''] = byDept[p.department || ''] || []).push(p);
+        });
+        Object.keys(byDept).sort().forEach(function (key) {
+          groups.push({
+            label: (best.length ? t('docAnyoneElse') + ' \u00b7 ' : '') + (key ? deptLabel(key) : '\u2014'),
+            items: byDept[key],
+          });
+        });
+        return groups;
+      }
+
+      function openPop() {
+        if (pop) { closePop(); return; }
+        var search = h('input', {
+          type: 'search', class: 'pcombo-search', placeholder: t('docSearchPerson'),
+          autocomplete: 'off', spellcheck: 'false',
+        });
+        var list = h('div', { class: 'pcombo-list', role: 'listbox' });
+
+        function paintList() {
+          clear(list);
+          flatOpts = [];
+          activeIdx = -1;
+          var groups = buildGroups(search.value);
+          if (!groups.length) {
+            list.appendChild(h('div', { class: 'pcombo-empty', text: t('docNoMatch') }));
+            return;
+          }
+          groups.forEach(function (g) {
+            list.appendChild(h('div', { class: 'pcombo-grp', text: g.label }));
+            g.items.forEach(function (p) {
+              var idx = flatOpts.length;
+              var opt = h('button', {
+                type: 'button',
+                class: 'pcombo-opt' + (step.username === p.username ? ' sel' : ''),
+                role: 'option',
+                'data-username': p.username,
+                onclick: function () { choose(p); },
+              }, [
+                h('span', { text: p.displayName || p.username }),
+                p.position ? h('small', { text: p.position }) : null,
+              ]);
+              flatOpts.push({ el: opt, person: p });
+              if (step.username === p.username) activeIdx = idx;
+              list.appendChild(opt);
+            });
+          });
+          if (activeIdx < 0 && flatOpts.length) activeIdx = 0;
+          highlight(activeIdx);
+        }
+
+        function highlight(next) {
+          if (!flatOpts.length) { activeIdx = -1; return; }
+          activeIdx = Math.max(0, Math.min(flatOpts.length - 1, next));
+          flatOpts.forEach(function (item, i) {
+            item.el.classList.toggle('hi', i === activeIdx);
+          });
+          if (flatOpts[activeIdx]) flatOpts[activeIdx].el.scrollIntoView({ block: 'nearest' });
+        }
+
+        search.addEventListener('input', paintList);
+        search.addEventListener('keydown', function (e) {
+          if (e.key === 'ArrowDown') { e.preventDefault(); highlight(activeIdx + 1); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(activeIdx - 1); }
+          else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (activeIdx >= 0 && flatOpts[activeIdx]) choose(flatOpts[activeIdx].person);
+          } else if (e.key === 'Escape') {
+            e.preventDefault(); e.stopPropagation(); closePop(); btn.focus();
+          }
+        });
+
+        pop = h('div', { class: 'pcombo-pop' }, [search, list]);
+        wrap.appendChild(pop);
+        btn.setAttribute('aria-expanded', 'true');
+        paintList();
+        document.addEventListener('pointerdown', onOutside, true);
+        setTimeout(function () { search.focus(); }, 10);
+      }
+
+      btn.addEventListener('click', openPop);
+      return wrap;
     }
 
     function drawWho() {
       clear(bodyBox); clear(footer);
       var sendStep = sendingStep();
+      var chainBox = h('div', { class: 'chain' });
+
+      /**
+       * Saved chain for this department + unit, offered when every previously
+       * chosen person is still active in the roster.
+       */
+      var saved = loadSavedChain(draft.department, draft.unit);
+      var rosterSet = {};
+      people.forEach(function (p) { rosterSet[p.username] = true; });
+      var savedUsable = saved && saved.sendMode === draft.sendMode &&
+        Array.isArray(saved.steps) && saved.steps.length > 0 &&
+        saved.steps.every(function (s) { return s.username && rosterSet[s.username]; });
+
+      function applySavedChain() {
+        if (!savedUsable) return;
+        chain = saved.steps.map(function (s) {
+          var rc = roleChoices.filter(function (r) { return r.role === s.role; })[0];
+          return {
+            role: s.role,
+            roleLabel: (rc && rc.label) || s.role,
+            username: s.username,
+            options: candidatesFor(s.role),
+            signs: s.role === 'secretary' || s.role === 'sender' || s.role === 'secretaryCheck'
+              ? false : (s.signs !== false),
+            marks: [],
+          };
+        });
+        drawWho();
+      }
+
+      var isLockedIndex = function (idx) {
+        var st = chain[idx];
+        if (!st) return true;
+        return st === sendStep || st.role === 'secretaryCheck' || st.role === 'author';
+      };
 
       var rows = chain.map(function (step, i) {
         var isSending = step === sendStep;
@@ -3352,24 +3692,14 @@
         var isCheck = step.role === 'secretaryCheck';
         var locked = isSending || isCheck || step.role === 'author';
 
-        var person = h('select', {
-          onchange: function (e) { step.username = e.target.value || null; },
-        }, [h('option', { value: '', text: t('docPickPerson') })].concat(personOptions(step)));
-        // The writer signs their own letter and nobody else can; so does the
-        // person who said they would post it themselves.
-        person.disabled = step.role === 'author' || step.role === 'sender';
+        var personDisabled = step.role === 'author' || step.role === 'sender';
+        var person = personCombobox(step, personDisabled);
 
         var roleSelect = h('select', {
           class: 'chain-role',
           onchange: function (e) {
             step.role = e.target.value;
             step.roleLabel = (roleChoices.filter(function (r) { return r.role === step.role; })[0] || {}).label || step.role;
-            /**
-             * A different role is a different question, so the row takes that
-             * role's own people — and the person on it, unless they hold the
-             * new post too. Keeping the old name was how a row could end up
-             * saying ประธานโครงการ above somebody who is not one.
-             */
             step.options = candidatesFor(step.role);
             if (step.options.length && step.options.indexOf(step.username) === -1) {
               step.username = step.options[0];
@@ -3400,7 +3730,16 @@
           });
         };
 
-        return h('div', { class: 'chain-row' + (isSending ? ' sending' : '') }, [
+        var dragHandle = locked ? null : h('button', {
+          type: 'button', class: 'chain-drag', text: '\u22ee\u22ee',
+          title: t('docDragHint'), 'aria-label': t('docDragHint'),
+        });
+
+        var rowEl = h('div', {
+          class: 'chain-row' + (isSending ? ' sending' : ''),
+          'data-index': String(i),
+        }, [
+          dragHandle,
           h('span', { class: 'chain-n', text: String(i + 1) }),
           h('div', { class: 'chain-main' }, [
             h('div', { class: 'chain-head' }, [
@@ -3424,12 +3763,70 @@
             isCheck ? h('small', { class: 'field-hint', text: t('docSecretaryChecks') }) : null,
           ]),
         ]);
+
+        if (dragHandle) {
+          dragHandle.addEventListener('pointerdown', function (e) {
+            e.preventDefault();
+            dragHandle.setPointerCapture(e.pointerId);
+            rowEl.classList.add('dragging');
+            var dropTo = i;
+
+            function clearHints() {
+              chainBox.querySelectorAll('.chain-row').forEach(function (el) {
+                el.classList.remove('drop-before', 'drop-after');
+              });
+            }
+
+            function onMove(ev) {
+              clearHints();
+              var all = Array.prototype.slice.call(chainBox.querySelectorAll('.chain-row'));
+              var best = i;
+              all.forEach(function (el, idx) {
+                if (isLockedIndex(idx)) return;
+                var rect = el.getBoundingClientRect();
+                if (ev.clientY >= rect.top && ev.clientY <= rect.bottom) {
+                  best = idx;
+                }
+              });
+              dropTo = best;
+              if (dropTo !== i && all[dropTo]) {
+                all[dropTo].classList.add(dropTo < i ? 'drop-before' : 'drop-after');
+              }
+            }
+
+            function finish() {
+              dragHandle.removeEventListener('pointermove', onMove);
+              dragHandle.removeEventListener('pointerup', finish);
+              dragHandle.removeEventListener('pointercancel', finish);
+              rowEl.classList.remove('dragging');
+              clearHints();
+              if (dropTo !== i && !isLockedIndex(dropTo)) {
+                var moved = chain.splice(i, 1)[0];
+                chain.splice(dropTo, 0, moved);
+                drawWho();
+              }
+            }
+
+            dragHandle.addEventListener('pointermove', onMove);
+            dragHandle.addEventListener('pointerup', finish);
+            dragHandle.addEventListener('pointercancel', finish);
+          });
+        }
+
+        return rowEl;
       });
+      rows.forEach(function (r) { chainBox.appendChild(r); });
 
       bodyBox.appendChild(h('div', { class: 'pane' }, [
         notice,
-        h('p', { class: 'hint', text: t('docChainHelp') }),
-        h('div', { class: 'chain' }, rows),
+        h('div', { class: 'chain-top' }, [
+          h('p', { class: 'hint', style: 'margin:0', text: t('docChainHelp') }),
+          savedUsable ? h('button', {
+            type: 'button', class: 'btn sm', text: t('docUseLastChain'),
+            onclick: applySavedChain,
+          }) : null,
+        ]),
+        chainBox,
         h('button', {
           type: 'button', class: 'btn add-signer', text: '+ ' + t('docAddSigner'),
           onclick: function () {
@@ -3658,25 +4055,44 @@
 
     function submit() {
       clear(footer);
-      footer.appendChild(h('span', { class: 'hint', text: t('docSending') }));
-      api('/api/documents?do=create', {
-        method: 'POST',
-        body: {
-          title: draft.title, note: draft.note, recipient: draft.recipient,
-          fullName: draft.fullName,
-          priority: draft.priority, department: draft.department, unit: draft.unit,
-          sendMode: draft.sendMode,
-          recipientEmail: draft.sendMode === 'secretary' && !draft.internalUnit ? draft.recipientEmail : '',
-          internalUnit: draft.sendMode === 'secretary' && draft.internalUnit,
-          pdf: pdfBase64,
-          source: sourceFile && !sourceFile.big ? sourceFile : null,
-          steps: chain.map(function (s) {
-            // `signs` goes with it: a step the sender unticked must not have a
-            // box demanded of it at the far end.
-            return { role: s.role, username: s.username, signs: s.signs !== false, marks: s.marks };
-          }),
-        },
+      var statusText = h('span', { class: 'hint', text: t('docSending') });
+      var progFill = h('i', { style: 'width:0%' });
+      var progBar = h('div', { class: 'upload-prog', hidden: !(pdfBytes && pdfBytes.length > INLINE_PDF_BYTES) }, [
+        h('div', { class: 'upload-prog-bar' }, [progFill]),
+      ]);
+      footer.appendChild(statusText);
+      footer.appendChild(progBar);
+
+      var prep = pdfBytes && pdfBytes.length > INLINE_PDF_BYTES
+        ? sendPdfInParts(pdfBytes, function (done, total) {
+          var pct = Math.round((done / total) * 100);
+          progFill.style.width = pct + '%';
+          statusText.textContent = t('docUploadingPart').replace('%n', String(pct));
+        }).then(function (uploadId) { return { uploadId: uploadId }; })
+        : Promise.resolve({ pdf: pdfBase64 || bytesToBase64(pdfBytes) });
+
+      prep.then(function (pdfPayload) {
+        statusText.textContent = t('docSending');
+        return api('/api/documents?do=create', {
+          method: 'POST',
+          body: Object.assign({
+            title: draft.title, note: draft.note, recipient: draft.recipient,
+            fullName: draft.fullName,
+            priority: draft.priority, department: draft.department, unit: draft.unit,
+            sendMode: draft.sendMode,
+            recipientEmail: draft.sendMode === 'secretary' && !draft.internalUnit ? draft.recipientEmail : '',
+            strictEmails: true,
+            internalUnit: draft.sendMode === 'secretary' && draft.internalUnit,
+            source: sourceFile && !sourceFile.big ? sourceFile : null,
+            steps: chain.map(function (s) {
+              // `signs` goes with it: a step the sender unticked must not have a
+              // box demanded of it at the far end.
+              return { role: s.role, username: s.username, signs: s.signs !== false, marks: s.marks };
+            }),
+          }, pdfPayload),
+        });
       }).then(function (data) {
+        saveLastChain(draft.department, draft.unit, draft.sendMode, chain);
         // The big editable original follows the letter, in pieces.
         var after = (sourceFile && sourceFile.big && data && data.id)
           ? sendSourceInParts(data.id, sourceFile).catch(function () {
@@ -3691,28 +4107,17 @@
             renderPage();
           });
         });
-        /**
-         * The เลขรันเอกสาร, said once and clearly.
-         *
-         * It is taken from the committee's own sheet the moment the letter is
-         * submitted, and it has to be written onto the letter — so it gets a
-         * panel of its own rather than being a line in a document view the
-         * person has to go and find.
-         */
         showNumber(data);
       }).catch(function (err) {
         var code = err.data && err.data.error;
-        /**
-         * Say WHOSE box is missing. "At least one spot is needed" sent people
-         * back to a page where everybody visible already had one.
-         */
         var who = (err.data && err.data.who) || [];
         fail(code === 'FILE_TOO_BIG' || code === 'SOURCE_TOO_BIG'
           ? t('docTooBig')
-          : (code === 'MARK_REQUIRED' && who.length
-            ? t('docMarkMissingFor').replace('%s', who.map(function (u) { return nameOf(u); }).join(', '))
-            : errText(err.code)));
-        // Back to whoever is missing one, rather than whoever was last picked.
+          : code === 'BAD_EMAIL' && err.data && err.data.bad
+            ? t('docBadEmail').replace('%s', err.data.bad)
+            : (code === 'MARK_REQUIRED' && who.length
+              ? t('docMarkMissingFor').replace('%s', who.map(function (u) { return nameOf(u); }).join(', '))
+              : errText(err.code)));
         var blame = chain.filter(function (s) { return who.indexOf(s.username) !== -1; })[0];
         if (blame) { blame.signs = true; marking = blame; }
         drawMarks();
@@ -4047,12 +4452,16 @@
         replaceInput.addEventListener('change', function () {
           var file = replaceInput.files && replaceInput.files[0];
           if (!file) return;
-          if (file.size > 3 * 1024 * 1024) { alert(t('docTooBig')); return; }
-          fileToBase64(file).then(function (b64) {
-            return api('/api/documents?do=replace', {
-              method: 'POST', body: { id: doc.id, pdf: b64 },
-            });
-          }).then(load).catch(function (err) { alert(errText(err.code)); });
+          if (file.size > MAX_PDF_BYTES) { alert(t('docTooBig')); return; }
+          file.arrayBuffer().then(function (buf) {
+            var u8 = new Uint8Array(buf);
+            if (!looksLikePdfBytes(u8)) { alert(t('docNotPdf')); return; }
+            return preparePdfPayload(u8).then(function (payload) {
+              return api('/api/documents?do=replace', {
+                method: 'POST', body: Object.assign({ id: doc.id }, payload),
+              });
+            }).then(load);
+          }).catch(function (err) { alert(errText(err.code)); });
         });
         footer.appendChild(replaceInput);
         footer.appendChild(h('button', {
@@ -4078,17 +4487,26 @@
         revivePick.addEventListener('change', function () {
           var file = revivePick.files && revivePick.files[0];
           if (!file) return;
-          if (file.size > 3 * 1024 * 1024) { alert(t('docTooBig')); return; }
+          if (file.size > MAX_PDF_BYTES) { alert(t('docTooBig')); return; }
           reviveBtn.disabled = true;
           reviveBtn.textContent = t('docSending');
-          fileToBase64(file).then(function (b64) {
-            return api('/api/documents?do=revive', { method: 'POST', body: { id: doc.id, pdf: b64 } });
-          }).then(function (res) {
-            // Said out loud: the whole point is that the signatures came back.
-            if (res && res.signaturesRestored) {
-              alert(t('docReviveDone').replace('%n', String(res.signaturesRestored)));
+          file.arrayBuffer().then(function (buf) {
+            var u8 = new Uint8Array(buf);
+            if (!looksLikePdfBytes(u8)) {
+              reviveBtn.disabled = false; reviveBtn.textContent = t('docRevive');
+              alert(t('docNotPdf'));
+              return;
             }
-            load();
+            return preparePdfPayload(u8, function (done, total) {
+              reviveBtn.textContent = t('docUploadingPart').replace('%n', String(Math.round((done / total) * 100)));
+            }).then(function (payload) {
+              return api('/api/documents?do=revive', { method: 'POST', body: Object.assign({ id: doc.id }, payload) });
+            }).then(function (res) {
+              if (res && res.signaturesRestored) {
+                alert(t('docReviveDone').replace('%n', String(res.signaturesRestored)));
+              }
+              load();
+            });
           }).catch(function (err) {
             reviveBtn.disabled = false;
             reviveBtn.textContent = t('docRevive');

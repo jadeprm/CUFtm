@@ -777,3 +777,6 @@ li.task:has(.role-watch) { border-style: solid; }
 .users-table .access-cell .from-sheet { flex-basis: 100%; margin-top: -2px; font-size: 11px; }
 .users-table .btn.sm { font-size: 12px; padding: 5px 9px; min-height: 0; }
 .user-find { max-width: none; font-size: 15px; }
+.pcombo-btn, .pcombo-search { font-size: 16px; min-height: 44px; }
+.pcombo-opt { min-height: 44px; justify-content: center; padding: 8px 12px; }
+.chain-drag { width: 30px; height: 36px; font-size: 17px; }

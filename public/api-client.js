@@ -105,7 +105,7 @@
   /* ---------- domain service clients ------------------------------------- */
 
   var FairAPI = {
-    version: '2026-11-27b',
+    version: '2026-11-27c',
     url: resolveUrl,
     qs: qs,
     request: request,
@@ -183,6 +183,7 @@
       get: function (id) { return request('/api/documents' + qs({ id: id })); },
       propose: function (payload) { return request('/api/documents?do=propose', { method: 'POST', body: payload }); },
       create: function (payload) { return request('/api/documents?do=create', { method: 'POST', body: payload }); },
+      uploadPdfPart: function (payload) { return request('/api/documents?do=pdf-part', { method: 'POST', body: payload }); },
       approve: function (payload) { return request('/api/documents?do=approve', { method: 'POST', body: payload }); },
       reject: function (payload) { return request('/api/documents?do=reject', { method: 'POST', body: payload }); },
       moveMark: function (payload) { return request('/api/documents?do=move-mark', { method: 'POST', body: payload }); },

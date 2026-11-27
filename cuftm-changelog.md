@@ -11,6 +11,15 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-27 (c) — signing upgrade phase 2: drop zone, 10 MB chunked PDF, searchable combobox, drag reorder · version `2026-11-27c`
+
+Second phase of the document-signing upgrade (`B1`–`B8`):
+
+* **Stage 1 upload UX (`public/app.js`, `public/styles.css`, `public/phone.css`).** PDF is now the first field as a drag-and-drop / click drop zone with client-side `%PDF-` magic-byte check, compact first-page thumbnail card (filename · size · page count + เปลี่ยนไฟล์), automatic title prefill from filename when empty, compact one-line read-only sender full name with `แก้ไข` toggle, and strict per-address validation across comma/space/semicolon recipient email lists naming the exact invalid address.
+* **10 MB PDFs & encrypted PDF rejection (`lib/db.js`, `lib/pdfsign.js`, `api/documents.js`, `api/cron.js`, `public/api-client.js`).** Raised PDF limit from 3 MB to 10 MB; PDFs over 2 MB upload in 1.4 MB chunks via `POST /api/documents?do=pdf-part` (staged in `doc_upload_parts`, cleaned up on commit and >24h in cron) with progress bar, then create/replace/revive by `uploadId`. Server re-checks size, `%PDF-`, and `pdf-lib` readability, rejecting password-protected PDFs with `PDF_ENCRYPTED`.
+* **Stage 2 chain upgrades (`public/app.js`, `public/styles.css`, `public/phone.css`).** Replaced person `<select>` with a searchable keyboard- and touch-friendly combobox (`personCombobox`) preserving role-holder + ฝ่าย grouping; added "ใช้ลำดับเดิม" per-department+unit chain recall in `localStorage`; added pointer-events drag-to-reorder handles (`⋮⋮`) alongside ↑↓ while keeping `author`, `secretaryCheck`, and sending rows locked.
+* **Tests.** `npm run check:separation` (7/7), `dev-tests/upload-chain.mjs` (16/16 desktop & phone), `dev-tests/rotate.mjs` (13/13), plus `npm test` (zero new failures).
+
 ## 2026-11-27 (b) — signing upgrade phase 1: rotated/CropBox PDF stamping, discard guard, pdf.js cache · version `2026-11-27b`
 
 First phase of the document-signing upgrade:

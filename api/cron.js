@@ -449,6 +449,9 @@ async function handler(request) {
     console.error('[cron] google tasks sync failed:', err?.message || err);
   }
 
+  // Clean up any abandoned chunked PDF uploads older than 24 hours.
+  await sql`DELETE FROM doc_upload_parts WHERE created_at < now() - interval '24 hours'`.catch(() => {});
+
   await sql`
     INSERT INTO meta (key, value) VALUES ('last_cron', ${new Date().toISOString()})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;

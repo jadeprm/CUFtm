@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-27b';
+window.STRINGS_VERSION = '2026-11-27c';
 
 window.STRINGS = {
   th: {
@@ -1196,7 +1196,17 @@ window.STRINGS = {
     docRecipient: 'ส่งถึง (หน่วยงานภายนอก)',
     docRecipientPlaceholder: 'เช่น สำนักบริหารระบบกายภาพ',
     docPdf: 'ไฟล์ PDF',
-    docPdfHelp: 'ไฟล์ PDF ขนาดไม่เกิน 3 MB',
+    docPdfHelp: 'ไฟล์ PDF ขนาดไม่เกิน 10 MB',
+    docDropPrompt: 'ลากไฟล์ PDF มาวางที่นี่ หรือแตะเพื่อเลือกไฟล์',
+    docChangeFile: 'เปลี่ยนไฟล์',
+    docNotPdf: 'ไฟล์นี้ไม่ใช่ PDF กรุณาเลือกไฟล์ .pdf ที่ถูกต้อง',
+    docPdfEncrypted: 'ไฟล์ PDF นี้ติดรหัสผ่าน กรุณาปลดล็อกรหัสผ่านก่อนอัปโหลด',
+    docUploadingPart: 'กำลังอัปโหลดไฟล์ (%n%)…',
+    docBadEmail: 'อีเมลไม่ถูกต้อง: %s',
+    docUseLastChain: 'ใช้ลำดับเดิม',
+    docSearchPerson: 'ค้นหาชื่อ ชื่อเล่น หรือตำแหน่ง…',
+    docNoMatch: 'ไม่พบรายชื่อที่ตรงกัน',
+    docDragHint: 'ลากเพื่อสลับลำดับ',
     sigDelegTitle: 'มอบอำนาจให้เซ็นแทน',
     sigDelegHow: 'ลายเซ็นบนหนังสือเป็นของเจ้าของชื่อที่พิมพ์ไว้เสมอ ไม่ว่าใครจะเป็นคนกด รายชื่อนี้คือการอนุญาตล่วงหน้าว่าใครกดแทนคุณได้ — ประวัติจะบันทึกทั้งคนกดและว่ามีการมอบอำนาจไว้หรือไม่',
     sigDelegNone: 'ยังไม่ได้มอบอำนาจให้ใคร',
@@ -1210,7 +1220,7 @@ window.STRINGS = {
     docSourceAdd: 'แนบไฟล์ Word',
     docSourceReplace: 'เปลี่ยนไฟล์ Word',
     optional: 'ไม่บังคับ',
-    docTooBig: 'ไฟล์ใหญ่เกินกำหนด — PDF ไม่เกิน 3 MB, ไฟล์ Word ไม่เกิน 5 MB',
+    docTooBig: 'ไฟล์ใหญ่เกินกำหนด — PDF ไม่เกิน 10 MB, ไฟล์ Word ไม่เกิน 5 MB',
     docNeedTitle: 'กรุณาใส่ชื่อเอกสาร',
     docNeedPdf: 'กรุณาเลือกไฟล์ PDF',
     docNext: 'ถัดไป',
@@ -1902,6 +1912,9 @@ window.ERROR_KEYS = {
   NO_SIGNATURE: 'docNoSignatureYet',
   NOT_A_DOC: 'errNotADoc',
   SOURCE_TOO_BIG: 'docTooBig',
+  PDF_ENCRYPTED: 'docPdfEncrypted',
+  NOT_A_PDF: 'docNotPdf',
+  BAD_EMAIL: 'docNeedEmail',
 
   NAME_REQUIRED: 'errSpaceName',
   NOT_SPACE_OWNER: 'errSpaceOwner',
