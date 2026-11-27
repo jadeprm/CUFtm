@@ -2091,3 +2091,28 @@ button.pressed { opacity: .6; cursor: progress; }
   transition: opacity .12s; z-index: 2; pointer-events: auto; }
 .sig-ghost:hover { opacity: .95; }
 .sig-size-row { flex-wrap: wrap; }
+
+/* ---- Phase 4: External signers, reusable signature pad & /sign/:token ---- */
+.chain-add-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.ext-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+.ext-fields input { font-size: 13px; padding: 7px 9px; }
+.ext-fields .ext-pos { grid-column: 1 / -1; }
+.spad { display: flex; flex-direction: column; gap: 8px; }
+.spad-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.spad-ink { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+.spad-ink.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.spad-canvas { width: 100%; height: 150px; border: 1.5px dashed var(--line-strong); border-radius: 10px;
+  background: var(--surface); touch-action: none; cursor: crosshair; display: block; }
+.inline-pad-box { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface-2); display: flex; flex-direction: column; gap: 10px; }
+.inline-pad-box h4 { margin: 0; font-size: 13.5px; color: var(--ink); }
+.ds-ext-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.ext-wrap { width: 100%; max-width: 920px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.auth:has(.ext-wrap) { max-width: 920px; padding: 16px; }
+.ext-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.ext-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--ink-soft); }
+.ext-pdf-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; }
+.ext-pdf-grid.single { grid-template-columns: minmax(0, 1fr); }
+.ext-consent { display: flex; align-items: flex-start; gap: 8px; font-size: 13.5px; font-weight: 500; color: var(--ink); cursor: pointer; }
+.ext-consent input { margin-top: 3px; flex: none; }
+.ext-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

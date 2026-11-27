@@ -11,6 +11,16 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-27 (e) — signing upgrade phase 4: external email signers, /sign/:token SPA, reusable & inline signature pad · version `2026-11-27e`
+
+Fourth phase of the document-signing upgrade (`D1`–`D5`):
+
+* **External signers in approval chain (`lib/db.js`, `lib/approval.js`, `api/documents.js`, `public/app.js`).** Stage 2 adds "+ เพิ่มผู้ลงนามภายนอก" (`role: 'external'`, name, email, optional position, `signs` checkbox) anywhere before the sending step. Added nullable `doc_steps.username`, `ext_name`, `ext_email`, `ext_position`, `token_hash`, `token_expires_at`, `viewed_at`, `ext_sig_png`, `ext_reminded_at`, and `ext_rate_limits`.
+* **One-time token & bilingual HTML email (`lib/mail.js`, `lib/templates.js`, `api/documents.js`, `README.md`).** Extended `sendMail` with optional `html`. Reaching an external step generates a 32-byte base64url token, stores only `sha256(token)` with a 14-day expiry, and sends a Thai + English HTML/text invitation pointing to `${APP_ORIGIN}/sign/<token>`.
+* **Public `/sign/<token>` standalone page & signature pad (`vercel.json`, `server/dev-server.mjs`, `dev-tests/srv2.mjs`, `public/index.html`, `public/app.js`, `public/api-client.js`).** Added `/sign/:token -> /index.html` rewrite + `<base href="/">` so static assets load cleanly at nested paths; added IP-rate-limited unauthenticated `do=ext-view`, `do=ext-file`, and `do=ext-act` routes; built reusable `createSignaturePad()` (black/blue ink, undo, clear, image upload with near-white removal + trim, 3× transparent PNG) with mandatory electronic-signature consent checkbox; invalidates token immediately on submit and stores external PNG only on `doc_steps.ext_sig_png`.
+* **Inline pad & owner controls (`public/app.js`, `api/documents.js`, `api/cron.js`).** Internal approvers without a saved signature get the same signature pad inline in `openDoc()` with "บันทึกไว้ใช้ครั้งหน้า". Owners/secretaries see external status badges (`ส่งอีเมลแล้ว` / `เปิดดูแล้ว` / `ลงนามแล้ว` / `ลิงก์หมดอายุ`) plus `ส่งอีเมลอีกครั้ง` and `แก้อีเมล` (rotating/invalidating old tokens). Hourly cron sends 1 reminder after 3 days and expires tokens past 14 days.
+* **Tests.** `npm run check:separation` (7/7), `dev-tests/ext-sign.mjs` (16/16 desktop, phone & public `/sign/<token>`), plus `npm test` (zero new failures).
+
 ## 2026-11-27 (d) — signing upgrade phase 3: iLovePDF placement editor, ghost suggestions, Thai date & name/title fields · version `2026-11-27d`
 
 Third phase of the document-signing upgrade (`C1`–`C6`):

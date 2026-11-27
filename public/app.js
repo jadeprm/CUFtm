@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-27d';
+  var APP_VERSION = '2026-11-27e';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -1539,7 +1539,419 @@
    * changes the hash without loading anything. Without this they would land
    * on an app that wants them to sign in.
    */
+  /**
+   * Reusable transparent-PNG signature pad used on both the public external
+   * signing page (/sign/<token>) and the inline approval pad for internal
+   * members who have not saved a signature yet.
+   *
+   * Supports black/blue ink, stroke-by-stroke undo, clear, and image upload
+   * with automatic near-white background removal and tight bounding-box trim,
+   * exporting a crisp 3x transparent PNG.
+   */
+  function createSignaturePad() {
+    var strokes = [];      // [{ color, points: [{x,y}] }]
+    var uploadedImg = null; // ImageData-trimmed canvas when user uploads an image
+    var ink = '#14121a';
+
+    var cv = h('canvas', { class: 'spad-canvas', width: '900', height: '300' });
+    var ctx = cv.getContext('2d');
+    var fileIn = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: 'display:none' });
+
+    function redraw() {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      if (uploadedImg) {
+        var scale = Math.min((cv.width - 24) / uploadedImg.width, (cv.height - 24) / uploadedImg.height);
+        var dw = uploadedImg.width * scale;
+        var dh = uploadedImg.height * scale;
+        ctx.drawImage(uploadedImg, (cv.width - dw) / 2, (cv.height - dh) / 2, dw, dh);
+        return;
+      }
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      strokes.forEach(function (st) {
+        if (!st.points.length) return;
+        ctx.strokeStyle = st.color;
+        ctx.fillStyle = st.color;
+        ctx.lineWidth = 6;
+        if (st.points.length === 1) {
+          ctx.beginPath();
+          ctx.arc(st.points[0].x, st.points[0].y, 3, 0, Math.PI * 2);
+          ctx.fill();
+          return;
+        }
+        ctx.beginPath();
+        ctx.moveTo(st.points[0].x, st.points[0].y);
+        for (var i = 1; i < st.points.length; i++) {
+          ctx.lineTo(st.points[i].x, st.points[i].y);
+        }
+        ctx.stroke();
+      });
+    }
+
+    function ptOf(e) {
+      var r = cv.getBoundingClientRect();
+      return {
+        x: ((e.clientX - r.left) / (r.width || 1)) * cv.width,
+        y: ((e.clientY - r.top) / (r.height || 1)) * cv.height,
+      };
+    }
+
+    var drawing = null;
+    cv.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      cv.setPointerCapture(e.pointerId);
+      uploadedImg = null;
+      drawing = { color: ink, points: [ptOf(e)] };
+      strokes.push(drawing);
+      redraw();
+    });
+    cv.addEventListener('pointermove', function (e) {
+      if (!drawing) return;
+      e.preventDefault();
+      drawing.points.push(ptOf(e));
+      redraw();
+    });
+    var endDraw = function () { drawing = null; };
+    cv.addEventListener('pointerup', endDraw);
+    cv.addEventListener('pointercancel', endDraw);
+
+    /** Strips near-white background from an uploaded photo/scan and trims transparent margins. */
+    function processUploadedImage(img) {
+      var maxW = 900;
+      var sc = img.width > maxW ? maxW / img.width : 1;
+      var w = Math.max(1, Math.round(img.width * sc));
+      var hgt = Math.max(1, Math.round(img.height * sc));
+      var tmp = document.createElement('canvas');
+      tmp.width = w; tmp.height = hgt;
+      var tctx = tmp.getContext('2d', { willReadFrequently: true });
+      tctx.drawImage(img, 0, 0, w, hgt);
+      var idata = tctx.getImageData(0, 0, w, hgt);
+      var d = idata.data;
+      var minX = w, minY = hgt, maxX = -1, maxY = -1;
+      for (var y = 0; y < hgt; y++) {
+        for (var x = 0; x < w; x++) {
+          var k = (y * w + x) * 4;
+          var r = d[k], g = d[k + 1], b = d[k + 2], a = d[k + 3];
+          if (a < 20 || (r > 228 && g > 228 && b > 228)) {
+            d[k + 3] = 0;
+          } else {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      tctx.putImageData(idata, 0, 0);
+      if (maxX < minX || maxY < minY) return null;
+      var pad = 8;
+      var x0 = Math.max(0, minX - pad), y0 = Math.max(0, minY - pad);
+      var tw = Math.min(w - x0, (maxX - minX + 1) + pad * 2);
+      var th = Math.min(hgt - y0, (maxY - minY + 1) + pad * 2);
+      var out = document.createElement('canvas');
+      out.width = tw; out.height = th;
+      out.getContext('2d').drawImage(tmp, x0, y0, tw, th, 0, 0, tw, th);
+      return out;
+    }
+
+    fileIn.addEventListener('change', function () {
+      var f = fileIn.files && fileIn.files[0];
+      if (!f) return;
+      var url = URL.createObjectURL(f);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var cleaned = processUploadedImage(img);
+        if (!cleaned) { alert(t('sigDrawFirst')); return; }
+        strokes = [];
+        uploadedImg = cleaned;
+        redraw();
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); alert(t('errGeneric')); };
+      img.src = url;
+    });
+
+    function isEmpty() {
+      return !uploadedImg && strokes.length === 0;
+    }
+
+    /** Exports tightly trimmed 3x transparent PNG base64 (without data: prefix). */
+    function toPngBase64() {
+      if (isEmpty()) return null;
+      if (uploadedImg) {
+        return uploadedImg.toDataURL('image/png').split(',')[1];
+      }
+      var minX = cv.width, minY = cv.height, maxX = -1, maxY = -1;
+      strokes.forEach(function (st) {
+        st.points.forEach(function (p) {
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        });
+      });
+      if (maxX < minX || maxY < minY) return null;
+      var pad = 16;
+      var x0 = Math.max(0, Math.floor(minX - pad));
+      var y0 = Math.max(0, Math.floor(minY - pad));
+      var w = Math.min(cv.width - x0, Math.ceil(maxX - minX + pad * 2));
+      var hgt = Math.min(cv.height - y0, Math.ceil(maxY - minY + pad * 2));
+      var out = document.createElement('canvas');
+      out.width = Math.max(60, w);
+      out.height = Math.max(30, hgt);
+      out.getContext('2d').drawImage(cv, x0, y0, w, hgt, 0, 0, out.width, out.height);
+      return out.toDataURL('image/png').split(',')[1];
+    }
+
+    var blackBtn = h('button', {
+      type: 'button', class: 'spad-ink on', style: 'background:#14121a', title: t('sigInkBlack'),
+      'aria-label': t('sigInkBlack'),
+      onclick: function () { ink = '#14121a'; blackBtn.classList.add('on'); blueBtn.classList.remove('on'); },
+    });
+    var blueBtn = h('button', {
+      type: 'button', class: 'spad-ink', style: 'background:#163b96', title: t('sigInkBlue'),
+      'aria-label': t('sigInkBlue'),
+      onclick: function () { ink = '#163b96'; blueBtn.classList.add('on'); blackBtn.classList.remove('on'); },
+    });
+
+    var bar = h('div', { class: 'spad-bar' }, [
+      blackBtn, blueBtn,
+      h('button', {
+        type: 'button', class: 'btn sm ghost', text: t('sigUndo'),
+        onclick: function () { if (uploadedImg) uploadedImg = null; else strokes.pop(); redraw(); },
+      }),
+      h('button', {
+        type: 'button', class: 'btn sm ghost', text: t('sigClear'),
+        onclick: function () { strokes = []; uploadedImg = null; fileIn.value = ''; redraw(); },
+      }),
+      h('span', { class: 'grow' }),
+      h('button', {
+        type: 'button', class: 'btn sm', text: t('sigUpload'),
+        onclick: function () { fileIn.value = ''; fileIn.click(); },
+      }),
+      fileIn,
+    ]);
+
+    return {
+      el: h('div', { class: 'spad' }, [bar, cv]),
+      isEmpty: isEmpty,
+      toPngBase64: toPngBase64,
+    };
+  }
+
+  /**
+   * Public standalone signing page for external signers (/sign/<token>).
+   *
+   * Authorised exclusively by the one-time token in the URL — requires no
+   * CUFTM account, renders the document with highlighted signature boxes,
+   * captures a drawn or uploaded transparent PNG signature plus explicit
+   * consent, and invalidates the token on submit.
+   */
+  function renderExternalSign(token) {
+    var wrap = h('div', { class: 'ext-wrap' });
+    showGate([wrap]);
+    document.documentElement.lang = S.lang;
+
+    var pdfBytes = null;
+    function showBrand() {
+      return h('div', { class: 'pb-brand' }, [
+        h('img', { src: './icon-192.png', alt: '', class: 'pb-mark' }),
+        h('div', {}, [h('b', { text: t('appName') }), h('span', { text: t('extPageTitle') })]),
+      ]);
+    }
+
+    function showCard(children) {
+      clear(wrap);
+      wrap.appendChild(showBrand());
+      wrap.appendChild(h('div', { class: 'ext-card' }, children));
+    }
+
+    showCard([h('p', { class: 'hint', text: t('loading') })]);
+
+    API.documents.extView(token).then(function (data) {
+      var doc = data.document;
+      var step = data.step;
+      var marks = step.marks || [];
+      var shownPage = marks[0] ? marks[0].page : (doc.pages || 1);
+      var totalPages = doc.pages || 1;
+
+      var canvas = h('canvas', { class: 'pdf-canvas' });
+      var overlay = h('div', { class: 'pdf-overlay' });
+      var sheet = h('div', { class: 'pdf-sheet plain' }, [canvas, overlay]);
+      var pager = h('div', { class: 'pdf-pager' });
+      var rail = h('div', { class: 'pe-rail', hidden: totalPages <= 1 });
+      var pdfGrid = h('div', { class: 'ext-pdf-grid' + (totalPages <= 1 ? ' single' : '') }, [
+        rail,
+        h('div', { class: 'pe-stage-wrap' }, [pager, sheet]),
+      ]);
+      var pdfHint = h('p', { class: 'hint', text: t('loading') });
+
+      function paintMarks() {
+        clear(overlay);
+        marks.forEach(function (m) {
+          if (m.page !== shownPage) return;
+          var kind = m.kind || 'signature';
+          overlay.appendChild(h('div', {
+            class: 'sig-box on kind-' + kind,
+            style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%;pointer-events:none',
+          }, [
+            h('span', { class: 'sig-name', text: kind === 'date' ? thaiShortDateNow() : (step.extName || t('docExtRole')) }),
+          ]));
+        });
+      }
+
+      function paintPager() {
+        clear(pager);
+        if (totalPages < 2) return;
+        pager.appendChild(h('button', {
+          type: 'button', class: 'btn sm', text: '‹', disabled: shownPage <= 1,
+          onclick: function () { shownPage -= 1; showPage(); },
+        }));
+        pager.appendChild(h('span', { text: t('docPage') + ' ' + shownPage + ' / ' + totalPages }));
+        pager.appendChild(h('button', {
+          type: 'button', class: 'btn sm', text: '›', disabled: shownPage >= totalPages,
+          onclick: function () { shownPage += 1; showPage(); },
+        }));
+      }
+
+      function showPage() {
+        if (!pdfBytes) return Promise.resolve();
+        return withPdfJs().then(function (lib) {
+          return renderPdfPage(lib, pdfBytes, shownPage, canvas, 900);
+        }).then(function (info) {
+          if (info.cancelled) return;
+          totalPages = info.pages;
+          pdfHint.hidden = true;
+          paintPager();
+          paintMarks();
+          rail.querySelectorAll('.pe-thumb').forEach(function (b) {
+            b.classList.toggle('on', Number(b.getAttribute('data-page')) === shownPage);
+          });
+        });
+      }
+
+      var pad = step.signs ? createSignaturePad() : null;
+      var consentChk = h('input', { type: 'checkbox' });
+      var notice = h('div', { class: 'notice err', hidden: true });
+      var actErr = function (msg) { notice.hidden = false; notice.textContent = msg; };
+
+      var signBtn = h('button', {
+        type: 'button', class: 'btn primary',
+        text: step.signs ? t('extSignNow') : t('extApproveOnly'),
+        onclick: function () {
+          notice.hidden = true;
+          if (!consentChk.checked) { actErr(t('extConsentNeed')); return; }
+          var png = null;
+          if (pad) {
+            if (pad.isEmpty()) { actErr(t('sigDrawFirst')); return; }
+            png = pad.toPngBase64();
+          }
+          signBtn.disabled = true; rejectBtn.disabled = true;
+          API.documents.extAct({
+            token: token, decision: 'approve', signaturePng: png, consent: true,
+          }).then(function () {
+            destroyPdfDoc(pdfBytes);
+            showCard([
+              h('div', { class: 'notice ok', text: t('extSignedDone') }),
+              h('p', { class: 'hint', text: doc.title + (doc.docNumber ? ' · ' + doc.docNumber : '') }),
+            ]);
+          }).catch(function (err) {
+            signBtn.disabled = false; rejectBtn.disabled = false;
+            actErr(errText(err.code));
+          });
+        },
+      });
+
+      var rejectBtn = h('button', {
+        type: 'button', class: 'btn danger', text: t('extRejectBtn'),
+        onclick: function () {
+          var why = prompt(t('docRejectWhy'));
+          if (why === null) return;
+          if (!why.trim()) { actErr(t('docRejectWhy')); return; }
+          signBtn.disabled = true; rejectBtn.disabled = true;
+          API.documents.extAct({
+            token: token, decision: 'reject', comment: why.trim(),
+          }).then(function () {
+            destroyPdfDoc(pdfBytes);
+            showCard([h('div', { class: 'notice warn', text: t('extRejectedDone') })]);
+          }).catch(function (err) {
+            signBtn.disabled = false; rejectBtn.disabled = false;
+            actErr(errText(err.code));
+          });
+        },
+      });
+
+      showCard([
+        h('h1', { style: 'margin:0;font-size:20px', text: doc.title }),
+        h('div', { class: 'ext-meta' }, [
+          doc.docNumber ? h('span', { text: t('docNumber') + ': ' + doc.docNumber }) : null,
+          doc.uploaderName ? h('span', { text: t('docUploader') + ': ' + doc.uploaderName + (doc.department ? ' (' + doc.department + ')' : '') }) : null,
+          h('span', { text: (step.extName || '') + (step.extPosition ? ' · ' + step.extPosition : '') }),
+        ]),
+        doc.note ? h('p', { class: 'view-desc', style: 'margin:0', text: doc.note }) : null,
+        marks.length ? h('p', { class: 'hint', style: 'margin:0', text: t('extYourSpots').replace('%n', String(marks.length)) }) : null,
+        pdfHint,
+        pdfGrid,
+        notice,
+        pad ? h('div', { class: 'inline-pad-box' }, [
+          h('h4', { text: t('docInlinePadTitle') }),
+          pad.el,
+        ]) : null,
+        h('label', { class: 'ext-consent' }, [consentChk, h('span', { text: t('extConsent') })]),
+        h('div', { class: 'ext-acts' }, [signBtn, rejectBtn]),
+        step.expiresAt ? h('small', { class: 'hint', text: t('extExpiresOn').replace('%s', stampDate(step.expiresAt, { day: 'numeric', month: 'long', year: 'numeric' })) }) : null,
+      ]);
+
+      API.documents.extFileBytes(token).then(function (buf) {
+        pdfBytes = new Uint8Array(buf);
+        return withPdfJs().then(function (lib) {
+          return getPdfDoc(lib, pdfBytes).then(function (pdf) {
+            totalPages = pdf.numPages;
+            if (totalPages > 1) {
+              rail.hidden = false;
+              pdfGrid.classList.remove('single');
+              clear(rail);
+              for (var p = 1; p <= totalPages; p++) {
+                (function (pn) {
+                  var cv = h('canvas', {});
+                  var hasMark = marks.some(function (m) { return m.page === pn; });
+                  var b = h('button', {
+                    type: 'button', class: 'pe-thumb' + (pn === shownPage ? ' on' : ''),
+                    'data-page': String(pn),
+                    onclick: function () { shownPage = pn; showPage(); },
+                  }, [
+                    cv,
+                    h('span', { class: 'pe-thumb-foot' }, [
+                      h('span', { text: String(pn) }),
+                      hasMark ? h('span', { class: 'pe-dots' }, [h('span', { class: 'pe-dot', style: 'background:var(--accent)' })]) : null,
+                    ]),
+                  ]);
+                  rail.appendChild(b);
+                  pdf.getPage(pn).then(function (page) {
+                    var vp = page.getViewport({ scale: 110 / page.getViewport({ scale: 1 }).width });
+                    cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+                    return page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+                  }).catch(function () {});
+                }(p));
+              }
+            }
+            return showPage();
+          });
+        });
+      }).catch(function () {
+        pdfHint.className = 'notice err';
+        pdfHint.textContent = t('docPdfViewFailed');
+      });
+    }).catch(function (err) {
+      showCard([
+        h('div', { class: 'notice err', text: errText(err.code) }),
+      ]);
+    });
+  }
+
   function publicRouteNow() {
+    var signMatch = (location.pathname || '').match(/^\/sign\/([A-Za-z0-9_-]{16,128})\/?$/);
+    if (signMatch) return ['', 'sign', signMatch[1]];
     return (location.hash || '').match(/^#\/(book|unbook)\/([A-Za-z0-9_-]{16,64})$/);
   }
 
@@ -1547,7 +1959,8 @@
     var route = publicRouteNow();
     if (!route) return false;
     ensureLang(S.lang, function () {
-      if (route[1] === 'book') renderPublicBooking(route[2]);
+      if (route[1] === 'sign') renderExternalSign(route[2]);
+      else if (route[1] === 'book') renderPublicBooking(route[2]);
       else renderGuestCancel(route[2]);
     });
     return true;
@@ -4403,10 +4816,29 @@
          * is the committee's rule rather than a choice per letter.
          */
         var isCheck = step.role === 'secretaryCheck';
+        var isExt = step.role === 'external';
         var locked = isSending || isCheck || step.role === 'author';
 
         var personDisabled = step.role === 'author' || step.role === 'sender';
-        var person = personCombobox(step, personDisabled);
+        var person = isExt
+          ? h('div', { class: 'ext-fields' }, [
+            (function () {
+              var n = h('input', { type: 'text', maxlength: '120', value: step.extName || '', placeholder: t('docExtName') });
+              n.addEventListener('input', function () { step.extName = n.value; step.displayName = n.value; });
+              return n;
+            }()),
+            (function () {
+              var em = h('input', { type: 'email', maxlength: '200', value: step.extEmail || '', placeholder: t('docExtEmail') });
+              em.addEventListener('input', function () { step.extEmail = em.value; });
+              return em;
+            }()),
+            (function () {
+              var pos = h('input', { type: 'text', class: 'ext-pos', maxlength: '120', value: step.extPosition || '', placeholder: t('docExtPosition') });
+              pos.addEventListener('input', function () { step.extPosition = pos.value; });
+              return pos;
+            }()),
+          ])
+          : personCombobox(step, personDisabled);
 
         var roleSelect = h('select', {
           class: 'chain-role',
@@ -4456,8 +4888,8 @@
           h('span', { class: 'chain-n', text: String(i + 1) }),
           h('div', { class: 'chain-main' }, [
             h('div', { class: 'chain-head' }, [
-              locked
-                ? h('label', { text: step.roleLabel || step.role })
+              (locked || isExt)
+                ? h('label', { text: isExt ? t('docExtRole') : (step.roleLabel || step.role) })
                 : roleSelect,
               h('span', { class: 'grow' }),
               (isSending || isCheck) ? null : h('label', { class: 'inline-check sm' }, [signBox, t('docSigns')]),
@@ -4540,26 +4972,53 @@
           }) : null,
         ]),
         chainBox,
-        h('button', {
-          type: 'button', class: 'btn add-signer', text: '+ ' + t('docAddSigner'),
-          onclick: function () {
-            var at = chain.indexOf(sendingStep());
-            var picks = candidatesFor('deptHead');
-            var step = { role: 'deptHead', roleLabel: (roleChoices.filter(function (r) { return r.role === 'deptHead'; })[0] || {}).label || 'deptHead',
-                         username: picks[0] || null, options: picks, signs: true, marks: [] };
-            chain.splice(at < 0 ? chain.length : at, 0, step);
-            drawWho();
-          },
-        }),
+        h('div', { class: 'chain-add-row' }, [
+          h('button', {
+            type: 'button', class: 'btn add-signer', text: '+ ' + t('docAddSigner'),
+            onclick: function () {
+              var at = chain.indexOf(sendingStep());
+              var picks = candidatesFor('deptHead');
+              var step = { role: 'deptHead', roleLabel: (roleChoices.filter(function (r) { return r.role === 'deptHead'; })[0] || {}).label || 'deptHead',
+                           username: picks[0] || null, options: picks, signs: true, marks: [] };
+              chain.splice(at < 0 ? chain.length : at, 0, step);
+              drawWho();
+            },
+          }),
+          h('button', {
+            type: 'button', class: 'btn add-ext-signer', text: '+ ' + t('docAddExternal'),
+            onclick: function () {
+              var at = chain.indexOf(sendingStep());
+              var step = {
+                role: 'external', roleLabel: t('docExtRole'), username: null,
+                extName: '', extEmail: '', extPosition: '', displayName: '',
+                options: [], signs: true, marks: [],
+              };
+              chain.splice(at < 0 ? chain.length : at, 0, step);
+              drawWho();
+            },
+          }),
+        ]),
       ]));
 
       footer.appendChild(h('button', {
         class: 'btn primary', text: t('docNext'),
         onclick: function () {
-          var blank = chain.filter(function (s) { return !s.username; });
+          for (var j = 0; j < chain.length; j++) {
+            var st = chain[j];
+            if (st.role === 'external') {
+              st.extName = String(st.extName || '').trim();
+              st.extEmail = String(st.extEmail || '').trim();
+              st.extPosition = String(st.extPosition || '').trim();
+              st.displayName = st.extName;
+              if (!st.extName) { fail(t('docExtNeedName')); return; }
+              if (!DOC_EMAIL_RE.test(st.extEmail)) { fail(t('docBadEmail').replace('%s', st.extEmail || t('docExtEmail'))); return; }
+            }
+          }
+          var blank = chain.filter(function (s) { return s.role !== 'external' && !s.username; });
           if (blank.length) { fail(t('docPickEveryone')); return; }
           var twice = chain.filter(function (s, i) {
-            return chain.findIndex(function (x) { return x.username === s.username; }) !== i &&
+            if (s.role === 'external') return false;
+            return chain.findIndex(function (x) { return x.role !== 'external' && x.username === s.username; }) !== i &&
               s.role !== 'sender' && s.role !== 'secretary';
           });
           if (twice.length) { fail(t('docSamePersonTwice').replace('%n', nameOf(twice[0].username))); return; }
@@ -4581,10 +5040,18 @@
       if (needMarks.indexOf(marking) === -1) marking = needMarks[0];
 
       var sigOf = function (step) {
+        if (step.role === 'external') return null;
         var p = people.filter(function (x) { return x.username === step.username; })[0];
         return p && p.hasSignature ? p : null;
       };
       var profileOf = function (step) {
+        if (step.role === 'external') {
+          return {
+            fullName: step.extName || step.extEmail || t('docExtRole'),
+            displayName: step.extName || step.extEmail || t('docExtRole'),
+            position: step.extPosition || '',
+          };
+        }
         var p = people.filter(function (x) { return x.username === step.username; })[0] || {};
         return {
           fullName: p.fullName || p.displayName || nameOf(step.username),
@@ -4668,6 +5135,13 @@
             steps: chain.map(function (s) {
               // `signs` goes with it: a step the sender unticked must not have a
               // box demanded of it at the far end.
+              if (s.role === 'external') {
+                return {
+                  role: 'external', username: null,
+                  extName: s.extName, extEmail: s.extEmail, extPosition: s.extPosition || '',
+                  signs: s.signs !== false, marks: s.marks,
+                };
+              }
               return { role: s.role, username: s.username, signs: s.signs !== false, marks: s.marks };
             }),
           }, pdfPayload),
@@ -4812,14 +5286,58 @@
         var real = (data.steps || []).filter(function (st) {
           return p.key === 'step-' + st.position;
         })[0];
+        var isExt = p.role === 'external';
+        var extStatus = null;
+        if (isExt) {
+          if (p.state === 'approved') extStatus = t('docExtStatusSigned');
+          else if (p.state === 'rejected') extStatus = t('docReject');
+          else if (p.viewedAt) extStatus = t('docExtStatusViewed');
+          else if (p.hasToken) extStatus = t('docExtStatusSent');
+          else if (p.tokenExpiresAt && new Date(p.tokenExpiresAt).getTime() <= Date.now()) extStatus = t('docExtStatusExpired');
+          else extStatus = t('docExtStatusQueued');
+        }
+        var isActiveWaiting = Boolean(real && real.state === 'waiting' &&
+          (data.steps || []).filter(function (st) { return st.state === 'waiting'; })[0] === real);
+
         return h('li', { class: 'ds ' + p.state }, [
           h('span', { class: 'ds-dot' }),
           h('div', { class: 'ds-main' }, [
             h('div', { class: 'ds-label' }, [
               p.label,
               p.signs ? h('span', { class: 'chip unit', text: t('docSigns') }) : null,
+              extStatus ? h('span', { class: 'chip dept', text: extStatus }) : null,
             ]),
-            p.username ? h('div', { class: 'ds-who' }, [avatarNode(p.username, 'sm'), nameOf(p.username)]) : null,
+            isExt
+              ? h('div', { class: 'ds-who' }, [
+                h('b', { text: p.extName || t('docExtRole') }),
+                p.extPosition ? h('small', { style: 'margin-left:6px;color:var(--ink-faint)', text: p.extPosition }) : null,
+                p.extEmail ? h('small', { style: 'margin-left:6px;color:var(--ink-soft)', text: '<' + p.extEmail + '>' }) : null,
+              ])
+              : (p.username ? h('div', { class: 'ds-who' }, [avatarNode(p.username, 'sm'), nameOf(p.username)]) : null),
+            (isExt && data.mayManageExt && real && real.state === 'waiting' && doc.stage === 'approving')
+              ? h('div', { class: 'ds-ext-tools' }, [
+                isActiveWaiting ? h('button', {
+                  type: 'button', class: 'btn sm', text: t('docExtResend'),
+                  onclick: function (e) {
+                    var b = e.target; b.disabled = true;
+                    API.documents.extResend({ id: doc.id, stepId: real.id }).then(function () {
+                      alert(t('docExtResentOk')); load();
+                    }).catch(function (err) { b.disabled = false; alert(errText(err.code)); });
+                  },
+                }) : null,
+                h('button', {
+                  type: 'button', class: 'btn sm ghost', text: t('docExtEditEmail'),
+                  onclick: function () {
+                    var next = prompt(t('docExtEditEmailPrompt'), p.extEmail || '');
+                    if (next === null) return;
+                    next = next.trim();
+                    if (!DOC_EMAIL_RE.test(next)) { alert(t('docBadEmail').replace('%s', next)); return; }
+                    API.documents.extEmail({ id: doc.id, stepId: real.id, email: next })
+                      .then(function () { load(); })
+                      .catch(function (err) { alert(errText(err.code)); });
+                  },
+                }),
+              ]) : null,
             /**
              * Who actually dealt with it, when that was not the person whose
              * step it is. Anybody in a letter's chain may approve or bounce
@@ -4947,6 +5465,20 @@
        */
       var waitingStep = (data.steps || []).filter(function (s) { return s.state === 'waiting'; })[0];
       var standingIn = Boolean(waitingStep && waitingStep.username !== S.user.username);
+      var mine = (data.steps || []).filter(function (s) {
+        return s.state === 'waiting' && s.username === S.user.username;
+      })[0];
+      var inlinePad = null;
+      var inlineSaveChk = null;
+      if (data.myTurn && mine && mine.signs && !mine.hasSignature) {
+        inlinePad = createSignaturePad();
+        inlineSaveChk = h('input', { type: 'checkbox', checked: true });
+        pane.appendChild(h('div', { class: 'inline-pad-box' }, [
+          h('h4', { text: t('docInlinePadTitle') }),
+          inlinePad.el,
+          h('label', { class: 'inline-check' }, [inlineSaveChk, t('docInlinePadSaveNext')]),
+        ]));
+      }
       function okToActFor() {
         if (!standingIn) return true;
         return confirm(t('docActForSure')
@@ -4963,7 +5495,18 @@
         }
         footer.appendChild(h('button', {
           class: 'btn primary', text: t('docApprove'),
-          onclick: function () { if (okToActFor()) act('approve'); },
+          onclick: function () {
+            if (!okToActFor()) return;
+            if (inlinePad) {
+              if (inlinePad.isEmpty()) { alert(t('sigDrawFirst')); return; }
+              act('approve', {
+                signaturePng: inlinePad.toPngBase64(),
+                saveSignature: Boolean(inlineSaveChk && inlineSaveChk.checked),
+              });
+              return;
+            }
+            act('approve');
+          },
         }));
 
         /**
@@ -4973,9 +5516,6 @@
          * letter and putting your name on its face are different things, and
          * some heads want the first without the second.
          */
-        var mine = (data.steps || []).filter(function (s) {
-          return s.state === 'waiting' && s.username === S.user.username;
-        })[0];
         if (mine && mine.signs) {
           footer.appendChild(h('button', {
             class: 'btn', text: t('docApproveNoSign'),
@@ -6638,7 +7178,7 @@
                     inner.push(h('span', { class: 'sig-text-main', text: thaiShortDateNow() }));
                   } else if (kind === 'nameTitle') {
                     inner.push(h('span', { class: 'sig-text-main', text: m.step.fullName || nameOf(m.step.username) }));
-                    if (m.step.position) inner.push(h('span', { class: 'sig-text-sub', text: m.step.position }));
+                    if (m.step.jobTitle) inner.push(h('span', { class: 'sig-text-sub', text: m.step.jobTitle }));
                   } else {
                     if (m.step.hasSignature) inner.push(signatureImg(m.step.username));
                     inner.push(h('span', { class: 'sig-name', text: nameOf(m.step.username) }));
@@ -6703,7 +7243,7 @@
       username: step.username,
       displayName: step.displayName || nameOf(step.username),
       fullName: step.fullName || nameOf(step.username),
-      position: step.position || '',
+      position: step.jobTitle || '',
       hasSignature: step.hasSignature,
       sigW: step.sigW,
       sigH: step.sigH,

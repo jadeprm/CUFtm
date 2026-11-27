@@ -105,7 +105,7 @@
   /* ---------- domain service clients ------------------------------------- */
 
   var FairAPI = {
-    version: '2026-11-27d',
+    version: '2026-11-27e',
     url: resolveUrl,
     qs: qs,
     request: request,
@@ -184,6 +184,11 @@
       propose: function (payload) { return request('/api/documents?do=propose', { method: 'POST', body: payload }); },
       create: function (payload) { return request('/api/documents?do=create', { method: 'POST', body: payload }); },
       uploadPdfPart: function (payload) { return request('/api/documents?do=pdf-part', { method: 'POST', body: payload }); },
+      extView: function (token) { return request('/api/documents' + qs({ do: 'ext-view', token: token })); },
+      extFileBytes: function (token) { return fetchBytes('/api/documents' + qs({ do: 'ext-file', token: token })); },
+      extAct: function (payload) { return request('/api/documents?do=ext-act', { method: 'POST', body: payload }); },
+      extResend: function (payload) { return request('/api/documents?do=ext-resend', { method: 'POST', body: payload }); },
+      extEmail: function (payload) { return request('/api/documents?do=ext-email', { method: 'POST', body: payload }); },
       approve: function (payload) { return request('/api/documents?do=approve', { method: 'POST', body: payload }); },
       reject: function (payload) { return request('/api/documents?do=reject', { method: 'POST', body: payload }); },
       moveMark: function (payload) { return request('/api/documents?do=move-mark', { method: 'POST', body: payload }); },

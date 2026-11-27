@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { sortRecipients } from '../lib/notifyprefs.js';
 import { getSql, toBuffer } from '../lib/db.js';
 import { currentUser } from '../lib/auth.js';
@@ -16,8 +17,10 @@ import {
   canMoveMark, canRevive,
 } from '../lib/approval.js';
 import {
-  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize, BOX_KINDS,
+  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize, BOX_KINDS, formatThaiDate,
 } from '../lib/pdfsign.js';
+import { sendMail } from '../lib/mail.js';
+import { externalSignEmailHtml } from '../lib/templates.js';
 import { sendToMany, unreadCount } from '../lib/push.js';
 import { lineConfigured, push as linePush, pageLink } from '../lib/line.js';
 import { flex, listBubble } from '../lib/lineflex.js';
@@ -156,6 +159,18 @@ async function handler(request) {
   const { sql, ready } = getSql();
   await ready;
 
+  // Public token-authorized external signer endpoints (no login required).
+  if (request.method === 'GET' && action === 'ext-view') {
+    return extView(sql, request, url.searchParams.get('token'));
+  }
+  if (request.method === 'GET' && action === 'ext-file') {
+    return extFile(sql, request, url.searchParams.get('token'));
+  }
+  if (request.method === 'POST' && action === 'ext-act') {
+    const extBody = await request.json().catch(() => ({}));
+    return extAct(sql, request, extBody);
+  }
+
   const me = await currentUser(request, sql);
   if (!me) return json({ error: 'NOT_SIGNED_IN' }, 401);
 
@@ -191,6 +206,9 @@ async function handler(request) {
     case 'source-part': return putSourcePart(sql, me, body);
     // A PDF over ~2 MB assembled in pieces before create/replace/revive.
     case 'pdf-part':  return putPdfPart(sql, me, body);
+    // Owner / secretary tools for managing waiting external signers.
+    case 'ext-resend': return extResend(sql, me, body);
+    case 'ext-email':  return extUpdateEmail(sql, me, body);
     case 'delegates': return setDelegates(sql, me, body);
     case 'send':      return markSent(sql, me, body);
     case 'secretaries': return changeSecretaries(sql, me, body);
@@ -261,6 +279,12 @@ const shapeStep = (s) => ({
   // and a step created before that flag existed falls back to its role.
   signs: s.signs === undefined || s.signs === null ? signsPdf(s.role) : s.signs,
   mark: s.x === null ? null : { page: s.page, x: s.x, y: s.y, w: s.w, h: s.h },
+  extName: s.ext_name || null,
+  extEmail: s.ext_email || null,
+  extPosition: s.ext_position || null,
+  viewedAt: s.viewed_at || null,
+  tokenExpiresAt: s.token_expires_at || null,
+  hasToken: Boolean(s.token_hash),
 });
 
 async function listDocuments(sql, me) {
@@ -280,7 +304,7 @@ async function listDocuments(sql, me) {
       return {
         ...shapeDoc(d),
         steps: mine.map(shapeStep),
-        waitingOn: waiting ? waiting.username : null,
+        waitingOn: waiting ? (waiting.role === 'external' ? (waiting.ext_name || waiting.ext_email) : waiting.username) : null,
         waitingRole: waiting ? (ROLE_TH[waiting.role] || waiting.role) : null,
         myTurn: canAct(me, d, mine),
         progress: progressFraction(d, mine),
@@ -340,13 +364,14 @@ async function oneDocument(sql, me, id) {
     ? await sql`SELECT step_id, page, x, y, w, h, kind FROM doc_boxes
                 WHERE step_id = ANY(${steps.map((st) => st.id)})`
     : [];
-  const sigs = steps.length
+  const internalUsernames = [...new Set(steps.map((st) => st.username).filter(Boolean))];
+  const sigs = internalUsernames.length
     ? await sql`SELECT username, width, height FROM signatures
-                WHERE username = ANY(${steps.map((st) => st.username)})`
+                WHERE username = ANY(${internalUsernames})`
     : [];
-  const profiles = steps.length
+  const profiles = internalUsernames.length
     ? await sql`SELECT username, full_name, display_name, position FROM users
-                WHERE username = ANY(${steps.map((st) => st.username)})`
+                WHERE username = ANY(${internalUsernames})`
     : [];
   const sigOf = new Map(sigs.map((g) => [g.username, g]));
   const profileOf = new Map(profiles.map((u) => [u.username, u]));
@@ -361,23 +386,25 @@ async function oneDocument(sql, me, id) {
     document: shapeDoc(doc),
     steps: steps.map((st) => {
       const shaped = shapeStep(st);
-      const sig = sigOf.get(st.username);
-      const prof = profileOf.get(st.username);
+      const isExt = st.role === 'external';
+      const sig = isExt ? null : sigOf.get(st.username);
+      const prof = isExt ? null : profileOf.get(st.username);
       const own = boxesOfStep(st.id);
       return {
         ...shaped,
         marks: own.length ? own : (shaped.mark ? [{ ...shaped.mark, kind: 'signature' }] : []),
-        hasSignature: Boolean(sig && sig.width && sig.height),
+        hasSignature: isExt ? Boolean(st.ext_sig_png) : Boolean(sig && sig.width && sig.height),
         // Whether this person may still move where this signature is drawn,
         // now that it is on the page — see canMoveMark.
         mayMove: canMoveMark(me, doc, st) && Boolean(own.length || shaped.mark),
         sigW: Number(sig?.width) || 0,
         sigH: Number(sig?.height) || 0,
-        fullName: prof?.full_name || '',
-        displayName: prof?.display_name || st.username || '',
-        position: prof?.position || '',
+        fullName: isExt ? (st.ext_name || '') : (prof?.full_name || ''),
+        displayName: isExt ? (st.ext_name || st.ext_email || '') : (prof?.display_name || st.username || ''),
+        jobTitle: isExt ? (st.ext_position || '') : (prof?.position || ''),
       };
     }),
+    mayManageExt: doc.created_by === me.username || isSecretary(me) || me.access === 'admin' || me.access === 'coadmin',
     events: events.map((e) => ({ id: e.id, at: e.at, kind: e.kind, username: e.username, detail: e.detail })),
     files: files.map((f) => ({
       kind: f.kind, size: f.byte_size, pages: f.pages, at: f.updated_at,
@@ -695,11 +722,19 @@ async function createDocument(sql, me, body) {
 
   // A step nobody was chosen for is a different problem from a step naming
   // somebody who has left, and the person uploading needs to be told which.
-  const unchosen = steps.filter((s) => !s.username);
+  const extSteps = steps.filter((s) => s.role === 'external');
+  for (const es of extSteps) {
+    const extName = clean(es.extName || es.ext_name, 120);
+    const extEmail = clean(es.extEmail || es.ext_email, 200);
+    if (!extName) return json({ error: 'EXT_NAME_REQUIRED' }, 400);
+    if (!EMAIL_RE.test(extEmail)) return json({ error: 'BAD_EMAIL', bad: extEmail || 'external' }, 400);
+  }
+  const internalSteps = steps.filter((s) => s.role !== 'external');
+  const unchosen = internalSteps.filter((s) => !s.username);
   if (unchosen.length) {
     return json({ error: 'APPROVER_NOT_CHOSEN', roles: unchosen.map((s) => s.role) }, 400);
   }
-  const bad = steps.filter((s) => !known.has(s.username));
+  const bad = internalSteps.filter((s) => !known.has(s.username));
   if (bad.length) return json({ error: 'UNKNOWN_APPROVER', who: bad.map((s) => s.username) }, 400);
 
   /**
@@ -801,16 +836,21 @@ async function createDocument(sql, me, body) {
      * 'waiting' would park every such document on its own writer.
      */
     const isAuthor = role === 'author';
+    const isExt = role === 'external';
     const stepId = newId('st');
+    const extName = isExt ? clean(step.extName || step.ext_name, 120) : null;
+    const extEmail = isExt ? clean(step.extEmail || step.ext_email, 200) : null;
+    const extPos = isExt ? (clean(step.extPosition || step.ext_position, 120) || null) : null;
 
     await sql`
-      INSERT INTO doc_steps (id, doc_id, position, role, username, page, x, y, w, h, signs, state, acted_at)
-      VALUES (${stepId}, ${id}, ${position}, ${role}, ${step.username},
+      INSERT INTO doc_steps (id, doc_id, position, role, username, page, x, y, w, h, signs, state, acted_at,
+                             ext_name, ext_email, ext_position)
+      VALUES (${stepId}, ${id}, ${position}, ${role}, ${isExt ? null : step.username},
               ${Math.max(1, Math.round(first.page || 1))},
               ${boxes.length ? Number(first.x) : null}, ${boxes.length ? Number(first.y) : null},
               ${boxes.length ? Number(first.w) : null}, ${boxes.length ? Number(first.h) : null},
               ${boxes.length > 0}, ${isAuthor ? 'approved' : 'waiting'},
-              ${isAuthor ? new Date() : null})`;
+              ${isAuthor ? new Date() : null}, ${extName}, ${extEmail}, ${extPos})`;
 
     for (const m of boxes) {
       await sql`
@@ -846,32 +886,38 @@ async function createDocument(sql, me, body) {
    * appear until somebody else acted — and for a director's letter, where the
    * author step may be the only signing one, possibly never.
    */
+  const createdSteps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
   if (steps.some((s) => clean(s.role, 20) === 'author')) {
-    const fresh = await sql`SELECT * FROM doc_steps WHERE doc_id = ${id} ORDER BY position`;
-    await rebuildSigned(sql, id, fresh);
+    await rebuildSigned(sql, id, createdSteps);
   }
 
   // Whoever is actually waiting — not simply the first step, which for a
   // letter the author signed is already done.
-  const first = steps.find((s) => clean(s.role, 20) !== 'author') || steps[0];
+  const firstRow = pendingStep(createdSteps) || createdSteps[0];
   const watchers = await secretaries(sql);
   const numberTag = numbering?.ok ? ` · เลขที่ ${numbering.number}` : '';
-  /**
-   * Said as what it actually is. The first person to see a letter is now
-   * usually เลขานุการ, who is being asked to CHECK it, not to sign it —
-   * telling them a document is waiting for their signature would be asking
-   * for the wrong thing in the one message that sets the whole chain going.
-   */
-  const checking = clean(first.role, 20) === 'secretaryCheck';
-  await tellPeople(sql, {
-    usernames: [first.username, ...watchers],
-    actor: first.username,
-    docId: id,
-    priority: body.priority,
-    title: `${urgencyTag(body.priority)}${checking ? 'เอกสารรอตรวจ' : 'เอกสารรออนุมัติ'}: ${title}`,
-    body: `${me.display_name || me.username} ส่งเอกสาร` +
-      (checking ? 'ให้คุณตรวจก่อนส่งต่อให้ผู้ลงนาม' : 'ให้คุณลงนาม/อนุมัติ') + numberTag,
-  });
+  if (firstRow && firstRow.role === 'external') {
+    const [docRow] = await sql`SELECT * FROM documents WHERE id = ${id}`;
+    await issueExternalInvite(sql, docRow, firstRow, me);
+    await tellPeople(sql, {
+      usernames: watchers,
+      docId: id,
+      priority: body.priority,
+      title: `${urgencyTag(body.priority)}ส่งคำเชิญผู้ลงนามภายนอก: ${title}`,
+      body: `ส่งอีเมลให้ ${firstRow.ext_name} (${firstRow.ext_email}) ลงนามแล้ว${numberTag}`,
+    });
+  } else if (firstRow) {
+    const checking = clean(firstRow.role, 20) === 'secretaryCheck';
+    await tellPeople(sql, {
+      usernames: [firstRow.username, ...watchers],
+      actor: firstRow.username,
+      docId: id,
+      priority: body.priority,
+      title: `${urgencyTag(body.priority)}${checking ? 'เอกสารรอตรวจ' : 'เอกสารรออนุมัติ'}: ${title}`,
+      body: `${me.display_name || me.username} ส่งเอกสาร` +
+        (checking ? 'ให้คุณตรวจก่อนส่งต่อให้ผู้ลงนาม' : 'ให้คุณลงนาม/อนุมัติ') + numberTag,
+    });
+  }
 
   /**
    * And the writer is told their own number, in the chat as well as the bell.
@@ -1087,9 +1133,27 @@ async function approve(sql, me, body) {
     : [];
 
   let signature = null;
+  let stepInlinePng = null;
   if (willSign && signsPdf(step.role)) {
     const [row] = await sql`SELECT png FROM signatures WHERE username = ${signer}`;
     signature = toBuffer(row?.png);
+    // Inline pad for internal approver signing without a previously saved signature (D4).
+    if (!signature && !standingIn && body.signaturePng) {
+      const gotPng = fromBase64(body.signaturePng, MAX_PNG);
+      if (gotPng.error) return json({ error: gotPng.error }, 400);
+      if (!looksLikePng(gotPng.buffer)) return json({ error: 'NOT_A_PNG' }, 400);
+      signature = gotPng.buffer;
+      if (body.saveSignature !== false) {
+        const dim = pngSize(gotPng.buffer);
+        await sql`
+          INSERT INTO signatures (username, png, width, height, updated_at)
+          VALUES (${me.username}, ${gotPng.buffer}, ${dim.width || 0}, ${dim.height || 0}, now())
+          ON CONFLICT (username) DO UPDATE
+            SET png = EXCLUDED.png, width = EXCLUDED.width, height = EXCLUDED.height, updated_at = now()`;
+      } else {
+        stepInlinePng = gotPng.buffer;
+      }
+    }
     // No falling back to the presser's own — that is the bug this fixes. The
     // named person has to have saved a signature before anybody signs for them.
     if (!signature) return json({ error: 'NO_SIGNATURE', who: signer }, 400);
@@ -1099,6 +1163,7 @@ async function approve(sql, me, body) {
     UPDATE doc_steps SET state = 'approved', acted_at = now(), signs = ${willSign},
       acted_by = ${standingIn ? me.username : null},
       signed_by = ${willSign ? signer : null},
+      ext_sig_png = COALESCE(${stepInlinePng}, ext_sig_png),
       comment = ${clean(body.comment, 1000)}
     WHERE id = ${step.id}`;
 
@@ -1151,7 +1216,17 @@ async function approve(sql, me, body) {
   }
 
   const watchers = await secretaries(sql);
-  if (next) {
+  if (next && next.role === 'external') {
+    const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
+    await issueExternalInvite(sql, doc, next, uploader || me);
+    await tellPeople(sql, {
+      usernames: [doc.created_by, ...watchers],
+      docId: doc.id,
+      priority: doc.priority,
+      title: `${urgencyTag(doc.priority)}ส่งคำเชิญผู้ลงนามภายนอก: ${doc.title}`,
+      body: `ส่งอีเมลให้ ${next.ext_name} (${next.ext_email}) ลงนามแล้ว`,
+    });
+  } else if (next) {
     await tellPeople(sql, {
       usernames: [next.username, ...watchers],
       actor: next.username,
@@ -1395,11 +1470,15 @@ async function revive(sql, me, body) {
     });
   }
 
-  const restored = after.filter((s) => s.state === 'approved' && s.signs !== false).map((s) => s.username);
+  const restored = after.filter((s) => s.state === 'approved' && s.signs !== false).map((s) => s.username).filter(Boolean);
   const watchers = await secretaries(sql);
+  if (next && next.role === 'external') {
+    const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
+    await issueExternalInvite(sql, doc, next, uploader || me);
+  }
   await tellPeople(sql, {
-    usernames: [doc.created_by, next?.username, ...restored, ...watchers],
-    actor: next?.username,
+    usernames: [doc.created_by, next && next.role !== 'external' ? next.username : null, ...restored, ...watchers],
+    actor: next && next.role !== 'external' ? next.username : null,
     docId: doc.id,
     priority: doc.priority,
     title: `เอกสารถูกแก้ไขและส่งกลับเข้าสาย: ${doc.title}`,
@@ -1438,17 +1517,19 @@ async function rebuildSigned(sql, docId, steps) {
   const signing = steps.filter((s) => s.state === 'approved' && s.signs !== false);
   const marks = [];
   for (const step of signing) {
-    // Whoever's signature this step put on: the named signer normally, the
-    // person who stood in for them when somebody else pressed — see approve.
-    const owner = step.signed_by || step.signedBy || step.username;
-    const [row] = owner ? await sql`SELECT png FROM signatures WHERE username = ${owner}` : [];
-    const png = toBuffer(row?.png);
-    const [prof] = owner
+    const isExt = step.role === 'external';
+    const owner = isExt ? (step.ext_name || step.ext_email || 'external') : (step.signed_by || step.signedBy || step.username);
+    // External signers' PNG (and internal one-off inline pad PNG) lives on the step row only.
+    let png = toBuffer(step.ext_sig_png);
+    if (!png && !isExt && owner) {
+      const [row] = await sql`SELECT png FROM signatures WHERE username = ${owner}`;
+      png = toBuffer(row?.png);
+    }
+    const [prof] = (!isExt && owner)
       ? await sql`SELECT full_name, display_name, position FROM users WHERE username = ${owner}`
       : [];
 
     const boxes = await sql`SELECT page, x, y, w, h, kind FROM doc_boxes WHERE step_id = ${step.id}`;
-    // Steps drawn before boxes existed still carry their one box inline.
     const spots = boxes.length
       ? boxes
       : (step.x === null || step.x === undefined
@@ -1465,9 +1546,9 @@ async function rebuildSigned(sql, docId, steps) {
         kind,
         png,
         actedAt: step.acted_at || new Date(),
-        fullName: prof?.full_name || prof?.display_name || owner || '',
-        displayName: prof?.display_name || owner || '',
-        position: prof?.position || '',
+        fullName: isExt ? (step.ext_name || '') : (prof?.full_name || prof?.display_name || owner || ''),
+        displayName: isExt ? (step.ext_name || step.ext_email || '') : (prof?.display_name || owner || ''),
+        position: isExt ? (step.ext_position || '') : (prof?.position || ''),
       });
     }
   }
@@ -2154,5 +2235,379 @@ export default withNode(handler);
  */
 export const approveDocument = (sql, me, id) => approve(sql, me, { id });
 export const rejectDocument = (sql, me, id, comment) => reject(sql, me, { id, comment });
+
+// ---------------------------------------------------------------------------
+// External signers by email (D1–D5)
+// ---------------------------------------------------------------------------
+
+const EXT_TOKEN_DAYS = 14;
+const sha256Hex = (value) => createHash('sha256').update(String(value || '')).digest('hex');
+const escHtml = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** Public origin used in external signing email links. Configure via APP_ORIGIN. */
+export function appOrigin() {
+  return String(process.env.APP_ORIGIN || process.env.SITE_URL || 'https://task.chulafair.com')
+    .replace(/\/+$/, '');
+}
+
+function clientIp(request) {
+  const fwd = request?.headers?.get?.('x-forwarded-for') || '';
+  if (fwd) return fwd.split(',')[0].trim().slice(0, 64);
+  return (request?.headers?.get?.('x-real-ip') || 'local').trim().slice(0, 64);
+}
+
+/** Sliding 15-minute IP rate limit for unauthenticated external signing endpoints. */
+async function checkExtRate(sql, request, bucket, limit) {
+  const ip = clientIp(request);
+  const [{ count }] = await sql`
+    SELECT count(*)::int AS count FROM ext_rate_limits
+    WHERE ip = ${ip} AND bucket = ${bucket}
+      AND hit_at > now() - interval '15 minutes'`;
+  if (count >= limit) return false;
+  await sql`INSERT INTO ext_rate_limits (ip, bucket) VALUES (${ip}, ${bucket})`;
+  return true;
+}
+
+/**
+ * Generates a one-time 32-byte base64url token, stores ONLY its SHA-256 hash
+ * on the external step with a 14-day expiry, and emails a bilingual signing
+ * invitation (Thai first, English below).
+ */
+export async function issueExternalInvite(sql, doc, step, uploader, { isReminder = false } = {}) {
+  const rawToken = randomBytes(32).toString('base64url');
+  const hash = sha256Hex(rawToken);
+  const expiresAt = new Date(Date.now() + EXT_TOKEN_DAYS * 86400 * 1000);
+
+  await sql`
+    UPDATE doc_steps
+       SET token_hash = ${hash},
+           token_expires_at = ${expiresAt.toISOString()},
+           ext_reminded_at = ${isReminder ? new Date().toISOString() : null}
+     WHERE id = ${step.id}`;
+
+  const link = `${appOrigin()}/sign/${rawToken}`;
+  const senderName = uploader?.full_name || uploader?.display_name || doc.created_by || 'ทีมงานจุฬาฯแฟร์';
+  const deptInfo = doc.department ? departmentByKey(doc.department) : null;
+  const senderDept = deptInfo ? deptInfo.th : (doc.department || '');
+  const expTh = formatThaiDate(expiresAt);
+  const expEn = expiresAt.toISOString().slice(0, 10);
+  const subject = `${isReminder ? '[เตือนความจำ] ' : ''}ขอความกรุณาลงนาม: ${doc.title}`;
+  const docNoLine = doc.doc_number ? `เลขที่เอกสาร: ${doc.doc_number}` : '';
+  const docNoLineEn = doc.doc_number ? `Document No.: ${doc.doc_number}` : '';
+
+  const text = [
+    `เรียน ${step.ext_name || 'ผู้ลงนาม'}`,
+    '',
+    `${senderName}${senderDept ? ` (${senderDept})` : ''} ขอความกรุณาพิจารณาและลงนามในเอกสาร:`,
+    `เรื่อง: ${doc.title}`,
+    docNoLine,
+    doc.note ? `หมายเหตุ: ${doc.note}` : '',
+    '',
+    `กรุณาเปิดลิงก์ด้านล่างเพื่อตรวจสอบและลงนาม (ไม่ต้องเข้าสู่ระบบ):`,
+    link,
+    '',
+    `ลิงก์นี้ใช้ได้ครั้งเดียวและหมดอายุวันที่ ${expTh} · ห้ามส่งต่อให้ผู้อื่น`,
+    'หากสงสัยความถูกต้อง กรุณาติดต่อผู้ส่งเอกสารโดยตรง',
+    '',
+    '------------------------------------------------------------',
+    `Dear ${step.ext_name || 'Signer'},`,
+    '',
+    `${senderName}${deptInfo ? ` (${deptInfo.en})` : ''} has requested your signature on:`,
+    `Title: ${doc.title}`,
+    docNoLineEn,
+    doc.note ? `Note: ${doc.note}` : '',
+    '',
+    `Review and sign (no login required):`,
+    link,
+    '',
+    `This one-time link expires on ${expEn}. Please do not forward it.`,
+  ].filter((l) => l !== null && l !== undefined).join('\n');
+
+  const html = externalSignEmailHtml({
+    isReminder,
+    extName: step.ext_name,
+    extPosition: step.ext_position,
+    senderName,
+    senderDept,
+    title: doc.title,
+    docNumber: doc.doc_number,
+    note: doc.note,
+    link,
+    expTh,
+    expEn,
+  });
+
+  const sent = await sendMail({ to: step.ext_email, subject, text, html });
+  await note(sql, doc.id, 'email_sent', null,
+    `${isReminder ? 'เตือนความจำ ' : ''}ส่งอีเมลถึง ${step.ext_name || ''} <${step.ext_email}>${sent.ok ? '' : ` (${sent.error})`}`);
+  return { ok: sent.ok, error: sent.error || null, expiresAt: expiresAt.toISOString() };
+}
+
+/** Looks up a waiting external step by raw token hash and verifies it is currently actionable. */
+async function resolveExternalToken(sql, request, rawToken) {
+  const token = clean(rawToken, 160);
+  if (!token || token.length < 16) {
+    await checkExtRate(sql, request, 'fail', 15);
+    return { error: 'EXT_INVALID', status: 404 };
+  }
+  const hash = sha256Hex(token);
+  const [step] = await sql`SELECT * FROM doc_steps WHERE token_hash = ${hash} AND role = 'external'`;
+  if (!step) {
+    const okFail = await checkExtRate(sql, request, 'fail', 15);
+    return { error: okFail ? 'EXT_INVALID' : 'TOO_MANY_ATTEMPTS', status: okFail ? 404 : 429 };
+  }
+  const [doc] = await sql`SELECT * FROM documents WHERE id = ${step.doc_id}`;
+  if (!doc) return { error: 'EXT_INVALID', status: 404 };
+  if (step.state !== 'waiting') return { error: 'EXT_USED', state: step.state, status: 410 };
+  if (doc.stage === 'rejected' || doc.stage === 'sent' || doc.stage === 'done') {
+    return { error: 'EXT_CLOSED', stage: doc.stage, status: 410 };
+  }
+  if (step.token_expires_at && new Date(step.token_expires_at).getTime() <= Date.now()) {
+    await sql`UPDATE doc_steps SET token_hash = NULL WHERE id = ${step.id}`;
+    await note(sql, doc.id, 'expired', null, `ลิงก์ลงนามของ ${step.ext_name || step.ext_email} หมดอายุแล้ว`);
+    return { error: 'EXT_EXPIRED', status: 410 };
+  }
+  const steps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
+  const cur = pendingStep(steps);
+  if (!cur || cur.id !== step.id) return { error: 'EXT_NOT_READY', status: 409 };
+  return { doc, step, steps };
+}
+
+async function extView(sql, request, rawToken) {
+  if (!(await checkExtRate(sql, request, 'view', 60))) {
+    return json({ error: 'TOO_MANY_ATTEMPTS' }, 429);
+  }
+  const found = await resolveExternalToken(sql, request, rawToken);
+  if (found.error) return json({ error: found.error, state: found.state, stage: found.stage }, found.status);
+  const { doc, step } = found;
+
+  if (!step.viewed_at) {
+    await sql`UPDATE doc_steps SET viewed_at = now() WHERE id = ${step.id} AND viewed_at IS NULL`;
+    await note(sql, doc.id, 'viewed', null, `${step.ext_name || ''} <${step.ext_email}> เปิดดูเอกสาร`);
+  }
+
+  const boxes = await sql`SELECT page, x, y, w, h, kind FROM doc_boxes WHERE step_id = ${step.id}`;
+  const [orig] = await sql`SELECT pages FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'original'`;
+  const [uploader] = await sql`SELECT full_name, display_name FROM users WHERE username = ${doc.created_by}`;
+  const dept = doc.department ? departmentByKey(doc.department) : null;
+
+  return json({
+    document: {
+      title: doc.title,
+      note: doc.note || '',
+      recipient: doc.recipient || '',
+      docNumber: doc.doc_number || null,
+      department: dept ? dept.th : (doc.department || ''),
+      departmentEn: dept ? dept.en : (doc.department || ''),
+      uploaderName: uploader?.full_name || uploader?.display_name || '',
+      pages: Number(orig?.pages || 1),
+      createdAt: doc.created_at,
+    },
+    step: {
+      extName: step.ext_name || '',
+      extEmail: step.ext_email || '',
+      extPosition: step.ext_position || '',
+      signs: step.signs !== false,
+      expiresAt: step.token_expires_at,
+      marks: boxes.length
+        ? boxes.map((b) => ({ page: b.page, x: Number(b.x), y: Number(b.y), w: Number(b.w), h: Number(b.h), kind: cleanKind(b.kind) }))
+        : (step.x !== null ? [{ page: step.page, x: Number(step.x), y: Number(step.y), w: Number(step.w), h: Number(step.h), kind: 'signature' }] : []),
+    },
+  });
+}
+
+async function extFile(sql, request, rawToken) {
+  if (!(await checkExtRate(sql, request, 'view', 60))) {
+    return json({ error: 'TOO_MANY_ATTEMPTS' }, 429);
+  }
+  const found = await resolveExternalToken(sql, request, rawToken);
+  if (found.error) return json({ error: found.error }, found.status);
+  const { doc } = found;
+
+  const rows = await sql`
+    SELECT kind, bytes FROM doc_files WHERE doc_id = ${doc.id} AND kind IN ('signed', 'original')`;
+  const signedRow = rows.find((r) => r.kind === 'signed');
+  const origRow = rows.find((r) => r.kind === 'original');
+  const buffer = toBuffer(signedRow?.bytes || origRow?.bytes);
+  if (!buffer) return json({ error: 'NO_FILE' }, 404);
+
+  return new Response(buffer, {
+    status: 200,
+    headers: {
+      'content-type': 'application/pdf',
+      'content-length': String(buffer.length),
+      'content-disposition': 'inline; filename="document.pdf"',
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+    },
+  });
+}
+
+async function extAct(sql, request, body) {
+  if (!(await checkExtRate(sql, request, 'act', 20))) {
+    return json({ error: 'TOO_MANY_ATTEMPTS' }, 429);
+  }
+  const found = await resolveExternalToken(sql, request, body.token);
+  if (found.error) return json({ error: found.error }, found.status);
+  const { doc, step } = found;
+
+  const decision = body.decision === 'reject' ? 'reject' : 'approve';
+  const comment = clean(body.comment, 1000);
+  const extLabel = `${step.ext_name || 'ผู้ลงนามภายนอก'} <${step.ext_email || ''}>`;
+
+  if (decision === 'reject') {
+    if (!comment) return json({ error: 'REASON_REQUIRED' }, 400);
+    await sql`
+      UPDATE doc_steps
+         SET state = 'rejected', acted_at = now(), comment = ${comment}, token_hash = NULL
+       WHERE id = ${step.id}`;
+    await sql`UPDATE documents SET stage = 'rejected', updated_at = now() WHERE id = ${doc.id}`;
+    await note(sql, doc.id, 'rejected', null, `${extLabel}: ${comment}`);
+
+    await sql`DELETE FROM doc_files WHERE doc_id = ${doc.id} AND kind <> 'source'`;
+    const [keptSource] = await sql`SELECT file_name FROM doc_files WHERE doc_id = ${doc.id} AND kind = 'source'`;
+    await note(sql, doc.id, 'files_removed', null, keptSource
+      ? `ลบไฟล์ PDF ออกจากระบบแล้ว เก็บไฟล์ต้นฉบับ (${keptSource.file_name}) ไว้ให้แก้ไข`
+      : 'ลบไฟล์ออกจากระบบแล้ว เก็บเฉพาะประวัติและเหตุผล');
+    if (doc.doc_number) {
+      await updateRegisterStatus({ tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.rejected });
+    }
+    const watchers = await secretaries(sql);
+    await tellPeople(sql, {
+      usernames: [doc.created_by, ...watchers],
+      actor: doc.created_by,
+      docId: doc.id,
+      priority: doc.priority,
+      title: `เอกสารถูกตีกลับโดยผู้ลงนามภายนอก: ${doc.title}`,
+      body: `${step.ext_name || step.ext_email} ตีกลับ: ${comment}`,
+    });
+    return json({ ok: true, decision: 'rejected', stage: 'rejected' });
+  }
+
+  // Approve / sign
+  if (body.consent !== true) return json({ error: 'CONSENT_REQUIRED' }, 400);
+  const willSign = step.signs !== false;
+  let sigPng = null;
+  if (willSign) {
+    const gotPng = fromBase64(body.signaturePng, MAX_PNG);
+    if (gotPng.error) return json({ error: gotPng.error }, 400);
+    if (!looksLikePng(gotPng.buffer)) return json({ error: 'NOT_A_PNG' }, 400);
+    sigPng = gotPng.buffer;
+  }
+
+  // Invalidate token immediately so it can never be reused.
+  await sql`
+    UPDATE doc_steps
+       SET state = 'approved', acted_at = now(), comment = ${comment},
+           ext_sig_png = ${sigPng}, token_hash = NULL
+     WHERE id = ${step.id}`;
+
+  const after = await sql`SELECT * FROM doc_steps WHERE doc_id = ${doc.id} ORDER BY position`;
+  const stamped = await rebuildSigned(sql, doc.id, after);
+
+  const next = pendingStep(after);
+  const stage = next ? (isSendingRole(next.role) ? 'secretary' : 'approving') : 'done';
+  await sql`
+    UPDATE documents SET stage = ${stage}, updated_at = now(),
+      finished_at = ${stage === 'done' ? new Date().toISOString() : null}
+    WHERE id = ${doc.id}`;
+
+  await note(sql, doc.id, willSign ? 'signed' : 'approved', null,
+    [extLabel, comment].filter(Boolean).join(' · '));
+
+  let numbering = null;
+  if (next && isSendingRole(next.role)) {
+    if (doc.doc_number) {
+      await updateRegisterStatus({ tab: doc.doc_tab, number: doc.doc_number, status: REGISTER_STATUS.secretary });
+    } else {
+      numbering = await issueNumber(sql, doc);
+    }
+  }
+
+  const watchers = await secretaries(sql);
+  if (next && next.role === 'external') {
+    const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
+    await issueExternalInvite(sql, doc, next, uploader);
+    await tellPeople(sql, {
+      usernames: [doc.created_by, ...watchers],
+      docId: doc.id,
+      priority: doc.priority,
+      title: `${urgencyTag(doc.priority)}ส่งคำเชิญผู้ลงนามภายนอก: ${doc.title}`,
+      body: `${step.ext_name || step.ext_email} ลงนามแล้ว · ส่งอีเมลให้ ${next.ext_name} (${next.ext_email}) ต่อแล้ว`,
+    });
+  } else if (next) {
+    await tellPeople(sql, {
+      usernames: [next.username, doc.created_by, ...watchers],
+      actor: next.username,
+      docId: doc.id,
+      priority: doc.priority,
+      title: `${urgencyTag(doc.priority)}${isSendingRole(next.role) ? 'เอกสารพร้อมส่ง' : 'เอกสารรออนุมัติ'}: ${doc.title}`,
+      body: isSendingRole(next.role)
+        ? `ลงนามครบแล้ว${doc.doc_number || numbering?.number ? ` · เลขที่ ${doc.doc_number || numbering.number}` : ''}`
+        : `${step.ext_name || step.ext_email} ลงนามแล้ว ถึงคิวของคุณ`,
+    });
+  } else {
+    await tellPeople(sql, {
+      usernames: [doc.created_by, ...watchers],
+      docId: doc.id,
+      priority: doc.priority,
+      title: `ลงนามครบแล้ว: ${doc.title}`,
+      body: `${step.ext_name || step.ext_email} ลงนามเรียบร้อย`,
+    });
+  }
+
+  return json({ ok: true, decision: 'approved', stage, signaturesPlaced: stamped.placed.length });
+}
+
+function canManageExternal(me, doc) {
+  return doc.created_by === me.username || isSecretary(me) || me.access === 'admin' || me.access === 'coadmin';
+}
+
+async function extResend(sql, me, body) {
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+  if (!canManageExternal(me, doc)) return json({ error: 'NOT_ALLOWED' }, 403);
+  if (doc.stage === 'rejected' || doc.stage === 'sent') return json({ error: 'ALREADY_SENT' }, 400);
+
+  const step = steps.find((s) => s.id === clean(body.stepId, 64) && s.role === 'external');
+  if (!step) return json({ error: 'NO_SUCH_STEP' }, 404);
+  if (step.state !== 'waiting') return json({ error: 'ALREADY_ACTED' }, 400);
+  if (pendingStep(steps)?.id !== step.id) return json({ error: 'EXT_NOT_READY' }, 409);
+
+  const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
+  const sent = await issueExternalInvite(sql, doc, step, uploader || me);
+  await note(sql, doc.id, 'resent', me.username, `ส่งลิงก์ใหม่ให้ ${step.ext_name} <${step.ext_email}>`);
+  return json({ ok: true, emailSent: sent.ok, mailError: sent.error, expiresAt: sent.expiresAt });
+}
+
+async function extUpdateEmail(sql, me, body) {
+  const found = await loadFor(sql, clean(body.id, 64));
+  if (!found) return json({ error: 'NO_SUCH_DOCUMENT' }, 404);
+  const { doc, steps } = found;
+  if (!canManageExternal(me, doc)) return json({ error: 'NOT_ALLOWED' }, 403);
+  if (doc.stage === 'rejected' || doc.stage === 'sent') return json({ error: 'ALREADY_SENT' }, 400);
+
+  const step = steps.find((s) => s.id === clean(body.stepId, 64) && s.role === 'external');
+  if (!step) return json({ error: 'NO_SUCH_STEP' }, 404);
+  if (step.state !== 'waiting') return json({ error: 'ALREADY_ACTED' }, 400);
+
+  const nextEmail = clean(body.email, 200);
+  if (!EMAIL_RE.test(nextEmail)) return json({ error: 'BAD_EMAIL', bad: nextEmail }, 400);
+
+  const oldEmail = step.ext_email;
+  await sql`UPDATE doc_steps SET ext_email = ${nextEmail}, viewed_at = NULL WHERE id = ${step.id}`;
+  step.ext_email = nextEmail;
+
+  let sent = { ok: false, expiresAt: null };
+  if (pendingStep(steps)?.id === step.id) {
+    const [uploader] = await sql`SELECT * FROM users WHERE username = ${doc.created_by}`;
+    sent = await issueExternalInvite(sql, doc, step, uploader || me);
+  }
+  await note(sql, doc.id, 'resent', me.username, `แก้อีเมล ${step.ext_name}: ${oldEmail} → ${nextEmail}`);
+  return json({ ok: true, email: nextEmail, emailSent: sent.ok, expiresAt: sent.expiresAt });
+}
 
 export { rebuildSigned };

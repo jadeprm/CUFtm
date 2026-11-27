@@ -10,6 +10,8 @@ import { sayDate, MARK, PRIORITY_TH, MENU as LINE_MENU } from '../lib/linecmd.js
 import { driveConfigured, archivePdf, archiveFile, archiveHolds } from '../lib/drive.js';
 import { updateStatus as updateRegisterStatus, REGISTER_STATUS } from '../lib/docregister.js';
 import { syncAllGoogleTasks } from '../lib/googletasks.js';
+import { issueExternalInvite } from './documents.js';
+import { pendingStep } from '../lib/approval.js';
 
 
 /**
@@ -449,8 +451,14 @@ async function handler(request) {
     console.error('[cron] google tasks sync failed:', err?.message || err);
   }
 
-  // Clean up any abandoned chunked PDF uploads older than 24 hours.
+  // Clean up any abandoned chunked PDF uploads older than 24 hours & old external rate limit logs.
   await sql`DELETE FROM doc_upload_parts WHERE created_at < now() - interval '24 hours'`.catch(() => {});
+  await sql`DELETE FROM ext_rate_limits WHERE hit_at < now() - interval '1 hour'`.catch(() => {});
+
+  // External signers: send 1 reminder after 3 days, and expire tokens past 14 days (D5).
+  const externalSigners = await sweepExternalSigners(sql).catch((err) => ({
+    error: String(err?.message || err).slice(0, 120),
+  }));
 
   await sql`
     INSERT INTO meta (key, value) VALUES ('last_cron', ${new Date().toISOString()})
@@ -469,6 +477,7 @@ async function handler(request) {
     archive,
     roster,
     googleTasks,
+    externalSigners,
     secured: Boolean(secret),
     // Which scheduler this run came from, so a glance at the answer says
     // whether Vercel's own cron is the thing calling it.
@@ -759,6 +768,68 @@ const addDaysIso = (iso, n) => {
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 };
+
+/**
+ * External signer housekeeping:
+ *  1) Expire waiting tokens whose 14-day window has passed, logging `expired`
+ *     and alerting the document owner in the bell.
+ *  2) Send one reminder email when a currently-waiting external signer has not
+ *     acted after 3 days (i.e. <= 11 days left on a 14-day token).
+ */
+async function sweepExternalSigners(sql) {
+  const expired = [];
+  const reminded = [];
+
+  const overdue = await sql`
+    SELECT s.*, d.title, d.created_by
+      FROM doc_steps s
+      JOIN documents d ON d.id = s.doc_id
+     WHERE s.role = 'external' AND s.state = 'waiting'
+       AND s.token_hash IS NOT NULL
+       AND s.token_expires_at IS NOT NULL
+       AND s.token_expires_at <= now()
+       AND d.stage = 'approving'`;
+
+  for (const row of overdue) {
+    await sql`UPDATE doc_steps SET token_hash = NULL WHERE id = ${row.id}`;
+    await sql`
+      INSERT INTO doc_events (id, doc_id, kind, username, detail)
+      VALUES (${'ev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)},
+              ${row.doc_id}, 'expired', NULL,
+              ${`ลิงก์ลงนามของ ${row.ext_name || row.ext_email} หมดอายุแล้ว`})`;
+    if (row.created_by) {
+      await sql`
+        INSERT INTO notifications (id, username, kind, title, body, task_id)
+        VALUES (${'nt_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)},
+                ${row.created_by}, 'doc',
+                ${`ลิงก์ลงนามหมดอายุ: ${row.title}`},
+                ${`${row.ext_name || row.ext_email} ยังไม่ได้ลงนามภายใน 14 วัน สามารถกดส่งอีเมลอีกครั้งได้ในหน้าเอกสาร`},
+                ${row.doc_id})`;
+    }
+    expired.push(row.id);
+  }
+
+  const dueReminder = await sql`
+    SELECT s.*, d.id AS d_id, d.title, d.note, d.department, d.doc_number, d.created_by
+      FROM doc_steps s
+      JOIN documents d ON d.id = s.doc_id
+     WHERE s.role = 'external' AND s.state = 'waiting'
+       AND s.token_hash IS NOT NULL
+       AND s.ext_reminded_at IS NULL
+       AND s.token_expires_at > now()
+       AND s.token_expires_at <= now() + interval '11 days'
+       AND d.stage = 'approving'`;
+
+  for (const row of dueReminder) {
+    const allSteps = await sql`SELECT * FROM doc_steps WHERE doc_id = ${row.doc_id} ORDER BY position`;
+    if (pendingStep(allSteps)?.id !== row.id) continue;
+    const [uploader] = await sql`SELECT * FROM users WHERE username = ${row.created_by}`;
+    await issueExternalInvite(sql, { ...row, id: row.d_id }, row, uploader, { isReminder: true });
+    reminded.push(row.id);
+  }
+
+  return { expired, reminded };
+}
 
 /** Vercel's Node runtime calls this with (req, res); the adapter bridges it. */
 export default withNode(handler);

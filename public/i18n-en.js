@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-27d';
+window.STRINGS_EN_VERSION = '2026-11-27e';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -1279,6 +1279,41 @@ Object.assign(window.STRINGS, {
     docResizeAllForSigner: 'Resize all for this signer',
     docAutoPlace: 'Place where suggested',
     docGhostTip: 'Tap to place here',
+    docAddExternal: 'Add external signer',
+    docExtRole: 'External signer',
+    docExtName: 'Signer full name',
+    docExtEmail: 'Email address for signing link',
+    docExtPosition: 'Position / title (optional)',
+    docExtNeedName: 'Please enter a name for every external signer',
+    docExtStatusSent: 'Email sent',
+    docExtStatusViewed: 'Viewed',
+    docExtStatusSigned: 'Signed',
+    docExtStatusExpired: 'Link expired',
+    docExtStatusQueued: 'Queued (emails on turn)',
+    docExtResend: 'Resend email',
+    docExtResentOk: 'A fresh signing link has been sent (the old link was invalidated).',
+    docExtEditEmail: 'Edit email',
+    docExtEditEmailPrompt: 'Enter the new email address (a fresh link will be sent automatically)',
+    docInlinePadTitle: 'Draw or upload your signature to sign this document',
+    docInlinePadSaveNext: 'Save for next time',
+    sigUndo: 'Undo',
+    sigInkBlack: 'Black ink',
+    sigInkBlue: 'Blue ink',
+    extPageTitle: 'Electronic Document Signing',
+    extConsent: 'I consent to use my electronic signature on this document',
+    extConsentNeed: 'Please tick the electronic signature consent box first',
+    extSignNow: 'Sign & Approve',
+    extApproveOnly: 'Confirm Approval',
+    extRejectBtn: 'Send back for edits',
+    extSignedDone: 'Document signed successfully. Thank you!',
+    extRejectedDone: 'Document sent back. The sender has been notified.',
+    extErrInvalid: 'This signing link is invalid or has already been used.',
+    extErrExpired: 'This signing link has expired. Please contact the sender for a new link.',
+    extErrUsed: 'This document has already been acted on. One-time links cannot be reused.',
+    extErrClosed: 'This document has already been closed or cancelled.',
+    extErrNotReady: 'It is not your turn to sign yet. Please wait for the email notification.',
+    extYourSpots: 'Your signature box position(s) on this document (%n)',
+    extExpiresOn: 'Link expires on %s',
     docReject: 'Send back',
     docRejectWhy: 'Why are you sending it back? (the submitter will see this)',
     docReplace: 'Upload a corrected file instead',

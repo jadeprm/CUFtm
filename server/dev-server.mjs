@@ -104,7 +104,8 @@ async function handleBackend(req, res, handlers) {
 
 function serveFrontendStatic(req, res) {
   const pathname = decodeURIComponent((req.url || '/').split('?')[0]);
-  const rel = pathname === '/' ? '/index.html' : pathname;
+  const isSignRoute = /^\/sign\/[A-Za-z0-9_-]+\/?$/.test(pathname);
+  const rel = (pathname === '/' || isSignRoute) ? '/index.html' : pathname;
   const candidate = normalize(join(PUBLIC_DIR, rel));
 
   // Prevent directory traversal outside public/

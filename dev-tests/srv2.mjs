@@ -45,6 +45,7 @@ http.createServer(async(req,res)=>{let p=req.url.split('?')[0];
  if(fn){let raw='';for await(const c of req)raw+=c;
   if(raw&&(req.headers['content-type']||'').includes('json')){try{req.body=JSON.parse(raw);}catch{}}
   return void await fn(req,res);}
- const f=at('public'+(p==='/'?'/index.html':p));
+ const isSign = /^\/sign\/[A-Za-z0-9_-]+\/?$/.test(p);
+ const f=at('public'+(p==='/'||isSign?'/index.html':p));
  if(existsSync(f)){res.writeHead(200,{'content-type':(T[f.pathname.split('.').pop()]||'text/plain')+'; charset=utf-8'});return res.end(readFileSync(f));}
  res.writeHead(404);res.end();}).listen(4700,()=>console.log('up'));

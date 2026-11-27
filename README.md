@@ -345,6 +345,8 @@ Every list of work ends with a link to the work page. Picking a task in จั�
 
 The address comes from Vercel automatically. Set `SITE_URL` only if you move to a custom domain. If no address is known, the links are left out entirely rather than printing something broken.
 
+For external document-signing invitations (`/sign/<token>`), set `APP_ORIGIN` (e.g. `https://task.chulafair.com`) if you want an explicit origin for emailed signing links; otherwise it falls back to `SITE_URL` or `https://task.chulafair.com`.
+
 One thing this had to survive: a link opened on a laptop tab that has been sitting open all day, for a task added on a phone ten minutes ago. The page has never heard of that task, so a miss refetches the list once before saying anything — only a task that is genuinely gone, or genuinely not yours to see, gets "ไม่พบงานนี้".
 
 ### What the bot will not do

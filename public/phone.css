@@ -790,3 +790,8 @@ li.task:has(.role-watch) { border-style: solid; }
 .modal footer { display: flex; flex-wrap: wrap; gap: 8px; }
 .modal footer > .btn { flex: 1 1 42%; min-width: 0; }
 .modal footer .hint { flex: 1 0 100%; order: -1; text-align: center; margin: 0 0 2px; font-size: 12px; }
+.ext-fields { grid-template-columns: minmax(0, 1fr); }
+.ext-fields input { font-size: 16px; }
+.ext-pdf-grid { grid-template-columns: minmax(0, 1fr); }
+.ext-wrap { padding: 10px; }
+.spad-canvas { height: 140px; }
