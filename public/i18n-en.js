@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-27a';
+window.STRINGS_EN_VERSION = '2026-11-27b';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -1230,6 +1230,7 @@ Object.assign(window.STRINGS, {
     docMarkMissingFor: 'No signature box yet for: %s — pick the name above, then tap the document.',
     docPage: 'Page',
     docPdfViewFailed: 'Could not show the PDF preview. Please try again.',
+    docDiscardSure: 'Close this window? Your details and placed signature positions will be lost.',
     docSubmit: 'Submit',
     docSending: 'Sending…',
     docSubmittedOn: 'submitted',

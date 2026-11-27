@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-27a';
+window.STRINGS_VERSION = '2026-11-27b';
 
 window.STRINGS = {
   th: {
@@ -1250,6 +1250,7 @@ window.STRINGS = {
     docMarkMissingFor: 'ยังไม่ได้วางช่องลงนามของ: %s — เลือกชื่อด้านบนแล้วแตะบนเอกสาร',
     docPage: 'หน้า',
     docPdfViewFailed: 'แสดงตัวอย่าง PDF ไม่ได้ กรุณาลองใหม่',
+    docDiscardSure: 'ปิดหน้านี้? ข้อมูลและตำแหน่งลายเซ็นที่วางไว้จะหายทั้งหมด',
     docSubmit: 'ส่งเรื่อง',
     docSending: 'กำลังส่ง…',
     docSubmittedOn: 'ส่งเมื่อ',

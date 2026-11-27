@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-27a';
+  var APP_VERSION = '2026-11-27b';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -2174,7 +2174,12 @@
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
     var veils = document.querySelectorAll('#modal-root .veil');
-    if (veils.length) { veils[veils.length - 1].remove(); return; }
+    if (veils.length) {
+      var top = veils[veils.length - 1];
+      if (typeof top.__onClose === 'function') top.__onClose();
+      else top.remove();
+      return;
+    }
     ['bell-pop', 'me-pop'].forEach(function (id) { $(id).hidden = true; });
     $('me-avatar').setAttribute('aria-expanded', 'false');
   });
@@ -2556,6 +2561,42 @@
   }
 
   /**
+   * One parsed PDFDocumentProxy per byte buffer, and one active render per
+   * canvas.
+   *
+   * Re-parsing the whole PDF on every page turn burns CPU and memory on phones,
+   * and two overlapping page.render() calls on the same canvas corrupt the
+   * output or throw. Caching by buffer lets callers keep passing `Uint8Array`
+   * unchanged while cancelling stale renders and releasing worker memory via
+   * destroyPdfDoc() when the dialog closes.
+   */
+  var pdfDocCache = new WeakMap();
+  var pdfRenderTasks = new WeakMap();
+  var pdfRenderSeq = new WeakMap();
+
+  function getPdfDoc(lib, data) {
+    if (!data) return Promise.reject(new Error('no pdf data'));
+    var cached = pdfDocCache.get(data);
+    if (cached) return cached;
+    var promise = lib.getDocument({ data: data.slice(0) }).promise.catch(function (err) {
+      if (pdfDocCache.get(data) === promise) pdfDocCache.delete(data);
+      throw err;
+    });
+    pdfDocCache.set(data, promise);
+    return promise;
+  }
+
+  function destroyPdfDoc(data) {
+    if (!data) return;
+    var cached = pdfDocCache.get(data);
+    if (!cached) return;
+    pdfDocCache.delete(data);
+    cached.then(function (pdf) {
+      if (pdf && typeof pdf.destroy === 'function') pdf.destroy();
+    }).catch(function () {});
+  }
+
+  /**
    * Draws one page into a canvas and reports its on-screen size.
    *
    * The size matters as much as the picture: a box drawn on the page is stored
@@ -2563,8 +2604,22 @@
    * the click landed relative to the rendered page.
    */
   function renderPdfPage(lib, data, pageNumber, canvas, targetWidth) {
-    return lib.getDocument({ data: data.slice(0) }).promise.then(function (pdf) {
+    var seq = (pdfRenderSeq.get(canvas) || 0) + 1;
+    pdfRenderSeq.set(canvas, seq);
+    var prev = pdfRenderTasks.get(canvas);
+    if (prev) {
+      try { prev.cancel(); } catch (e) {}
+      pdfRenderTasks.delete(canvas);
+    }
+    return getPdfDoc(lib, data).then(function (pdf) {
+      if (pdfRenderSeq.get(canvas) !== seq) return { pages: pdf.numPages, cancelled: true };
       return pdf.getPage(Math.min(Math.max(1, pageNumber), pdf.numPages)).then(function (page) {
+        if (pdfRenderSeq.get(canvas) !== seq) return { pages: pdf.numPages, cancelled: true };
+        var running = pdfRenderTasks.get(canvas);
+        if (running) {
+          try { running.cancel(); } catch (e) {}
+          pdfRenderTasks.delete(canvas);
+        }
         var natural = page.getViewport({ scale: 1 });
         var scale = targetWidth / natural.width;
         var viewport = page.getViewport({ scale: scale });
@@ -2572,8 +2627,18 @@
         canvas.height = Math.round(viewport.height);
         canvas.style.width = '100%';
         canvas.style.height = 'auto';
-        return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport })
-          .promise.then(function () { return { pages: pdf.numPages }; });
+        var task = page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport });
+        pdfRenderTasks.set(canvas, task);
+        return task.promise.then(function () {
+          if (pdfRenderTasks.get(canvas) === task) pdfRenderTasks.delete(canvas);
+          return { pages: pdf.numPages, cancelled: false };
+        }, function (err) {
+          if (pdfRenderTasks.get(canvas) === task) pdfRenderTasks.delete(canvas);
+          if (err && err.name === 'RenderingCancelledException') {
+            return { pages: pdf.numPages, cancelled: true };
+          }
+          throw err;
+        });
       });
     });
   }
@@ -2919,6 +2984,7 @@
     var stage = 'details';
     var marking = null;          // which step we are placing a box for
     var pageShown = 1;
+    var submitted = false;
 
     var notice = h('div', { class: 'notice err', hidden: true });
     var bodyBox = h('div', { class: 'body' });
@@ -2929,11 +2995,30 @@
       notice.textContent = message;
     }
 
-    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    /**
+     * Guards against accidentally losing a half-filled form or placed boxes
+     * from a stray Escape tap or click on the dark backdrop.
+     */
+    function hasDraftData() {
+      if (submitted) return false;
+      if (pdfBytes || sourceFile) return true;
+      if ((draft.title || '').trim() || (draft.note || '').trim() ||
+          (draft.recipient || '').trim() || (draft.recipientEmail || '').trim()) return true;
+      return chain.some(function (s) { return s.marks && s.marks.length > 0; });
+    }
+
+    function closeUpload(force) {
+      if (!force && hasDraftData() && !confirm(t('docDiscardSure'))) return;
+      destroyPdfDoc(pdfBytes);
+      veil.remove();
+    }
+
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) closeUpload(false); } });
+    veil.__onClose = function () { closeUpload(false); };
     var modal = h('div', { class: 'modal wide' }, [
       h('header', {}, [
         h('h2', { text: t('docNew') }),
-        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { closeUpload(false); } }),
       ]),
       bodyBox, footer,
     ]);
@@ -2943,10 +3028,13 @@
       clear(bodyBox); clear(footer);
       var title = h('input', { type: 'text', maxlength: '200', value: draft.title,
         placeholder: t('docTitlePlaceholder') });
+      title.addEventListener('input', function () { draft.title = title.value; });
       var note = h('textarea', { maxlength: '2000', rows: '2', placeholder: t('docNotePlaceholder') });
       note.value = draft.note;
+      note.addEventListener('input', function () { draft.note = note.value; });
       var recipient = h('input', { type: 'text', maxlength: '200', value: draft.recipient,
         placeholder: t('docRecipientPlaceholder') });
+      recipient.addEventListener('input', function () { draft.recipient = recipient.value; });
 
       var prio = h('div', { class: 'seg wrap' }, PRIORITY_LIST.slice().reverse().map(function (p) {
         return h('button', {
@@ -3095,6 +3183,7 @@
         }
         notice.hidden = true;
         fileToBase64(file).then(function (b64) {
+          destroyPdfDoc(pdfBytes);
           pdfBase64 = b64;
           pdfBytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
           fileNote.textContent = file.name + ' · ' + Math.round(file.size / 1024) + ' KB';
@@ -3543,6 +3632,7 @@
         withPdfJs().then(function (lib) {
           return renderPdfPage(lib, pdfBytes, pageShown, canvas, 900);
         }).then(function (info) {
+          if (info.cancelled) return;
           pages = info.pages;
           drawPager();
           paintOverlay();
@@ -3630,6 +3720,7 @@
     }
 
     function showNumber(data) {
+      submitted = true;
       clear(bodyBox); clear(footer);
       var got = data.numbering && data.numbering.ok;
       bodyBox.appendChild(h('div', { class: 'pane doc-done' }, [
@@ -3657,9 +3748,9 @@
       ]));
       footer.appendChild(h('button', {
         class: 'btn primary', text: t('docOpenIt'),
-        onclick: function () { veil.remove(); openDoc(data.id); },
+        onclick: function () { closeUpload(true); openDoc(data.id); },
       }));
-      footer.appendChild(h('button', { class: 'btn', text: t('close'), onclick: function () { veil.remove(); } }));
+      footer.appendChild(h('button', { class: 'btn', text: t('close'), onclick: function () { closeUpload(true); } }));
     }
 
     drawDetails();
@@ -3672,18 +3763,26 @@
    * One document: where it is, and what this person can do about it.
    */
   function openDoc(id) {
-    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var cleanups = [];
+    function runCleanups() {
+      cleanups.forEach(function (fn) { try { fn(); } catch (e) {} });
+      cleanups = [];
+    }
+    function closeDoc() { runCleanups(); veil.remove(); }
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) closeDoc(); } });
+    veil.__onClose = closeDoc;
     var bodyBox = h('div', { class: 'body' });
     var footer = h('footer', {});
     var head2 = h('h2', { text: '…' });
     var modal = h('div', { class: 'modal wide' }, [
-      h('header', {}, [head2, h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } })]),
+      h('header', {}, [head2, h('button', { class: 'btn ghost sm', text: '✕', onclick: closeDoc })]),
       bodyBox, footer,
     ]);
     veil.appendChild(modal);
     $('modal-root').appendChild(veil);
 
     function load() {
+      runCleanups();
       api('/api/documents?id=' + encodeURIComponent(id)).then(draw)
         .catch(function (err) {
           clear(bodyBox);
@@ -3844,7 +3943,7 @@
         return st.username === S.user.username && (st.marks || []).length;
       });
       if (mySteps.length && doc.stage !== 'rejected') {
-        bodyBox.appendChild(signaturePreview(doc, data, mySteps));
+        bodyBox.appendChild(signaturePreview(doc, data, mySteps, function (fn) { cleanups.push(fn); }));
       }
       bodyBox.appendChild(pane);
 
@@ -5459,7 +5558,7 @@
    * download. The signature is drawn with the same object-fit: contain that
    * the server stamps with, so the preview and the letter agree.
    */
-  function signaturePreview(doc, data, mySteps) {
+  function signaturePreview(doc, data, mySteps, onCleanup) {
     var marks = [];
     mySteps.forEach(function (st) {
       (st.marks || []).forEach(function (m) { marks.push(Object.assign({}, m, { step: st })); });
@@ -5471,6 +5570,8 @@
     var open = false;
     var shown = marks[0] ? marks[0].page : 1;
     var loaded = null;
+    var previewBytes = null;
+    if (onCleanup) onCleanup(function () { destroyPdfDoc(previewBytes); previewBytes = null; });
 
     var head = h('button', {
       type: 'button', class: 'sig-check-head',
@@ -5515,9 +5616,11 @@
       loaded = API.documents.fetchFileBytes(doc.id, 'original')
         .then(function (buf) {
           var bytes = new Uint8Array(buf);
+          previewBytes = bytes;
           return withPdfJs().then(function (lib) {
             function show() {
               return renderPdfPage(lib, bytes, shown, canvas, 760).then(function (info) {
+                if (info.cancelled) return;
                 if (note.className === 'hint') note.textContent = t('docCheckHint');
                 clear(pager);
                 if (info.pages > 1) {
@@ -5567,13 +5670,16 @@
    * see canMoveMark and moveMark on the server.
    */
   function openMoveSignature(doc, step, onSaved) {
-    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) veil.remove(); } });
+    var bytes = null;
+    function closeMove() { destroyPdfDoc(bytes); veil.remove(); }
+    var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) closeMove(); } });
+    veil.__onClose = closeMove;
     var bodyBox = h('div', { class: 'body' });
     var footer = h('footer', {});
     var modal = h('div', { class: 'modal wide' }, [
       h('header', {}, [
         h('h2', { text: t('docMoveSig') + ' · ' + nameOf(step.username) }),
-        h('button', { class: 'btn ghost sm', text: '✕', onclick: function () { veil.remove(); } }),
+        h('button', { class: 'btn ghost sm', text: '✕', onclick: closeMove }),
       ]),
       bodyBox, footer,
     ]);
@@ -5586,7 +5692,6 @@
     });
     var shown = marks[0] ? marks[0].page : 1;
     var pages = 1;
-    var bytes = null;
 
     var canvas = h('canvas', { class: 'pdf-canvas' });
     var overlay = h('div', { class: 'pdf-overlay' });
@@ -5680,6 +5785,7 @@
       return withPdfJs().then(function (lib) {
         return renderPdfPage(lib, bytes, shown, canvas, 860);
       }).then(function (info) {
+        if (info.cancelled) return;
         pages = info.pages;
         note.className = 'hint';
         note.textContent = t('docMoveSigHint');
@@ -5706,7 +5812,7 @@
             method: 'POST',
             body: { id: doc.id, stepId: step.id, marks: marks },
           }).then(function () {
-            veil.remove();
+            closeMove();
             if (onSaved) onSaved();
           }).catch(function (err) {
             saving = false; drawFooter();
@@ -5715,7 +5821,7 @@
         },
       }));
       footer.appendChild(h('button', {
-        class: 'btn', text: t('cancel'), onclick: function () { veil.remove(); },
+        class: 'btn', text: t('cancel'), onclick: closeMove,
       }));
       if (!marks.length) footer.appendChild(h('span', { class: 'hint', text: t('docMoveSigNeedOne') }));
     }
@@ -5803,11 +5909,12 @@
     veil.appendChild(modal);
     $('modal-root').appendChild(veil);
 
-    function close() { veil.remove(); }
+    var bytes = null;
+    function close() { destroyPdfDoc(bytes); veil.remove(); }
+    veil.__onClose = close;
 
     var shown = 1;
     var pages = 1;
-    var bytes = null;
 
     function drawPager() {
       clear(pager);
@@ -5827,6 +5934,7 @@
       return withPdfJs().then(function (lib) {
         return renderPdfPage(lib, bytes, shown, canvas, 1100);
       }).then(function (info) {
+        if (info.cancelled) return;
         pages = info.pages;
         note.hidden = true;
         drawPager();

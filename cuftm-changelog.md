@@ -11,6 +11,15 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-27 (b) — signing upgrade phase 1: rotated/CropBox PDF stamping, discard guard, pdf.js cache · version `2026-11-27b`
+
+First phase of the document-signing upgrade:
+
+* **Rotated & CropBox-offset PDF stamping (`lib/pdfsign.js`).** `boxToPdf()` now reads `page.getCropBox()` and `page.getRotation()` (`0°/90°/180°/270°`), computes `fit()` aspect-ratio centring in displayed (visual) space before mapping back to raw PDF coordinates with `degrees(rot)`, so signatures stay upright, unstretched, and aligned on scanned/landscape/cropped pages. Verified mathematically and pixel-by-pixel via real `pdf.js` rendering in `dev-tests/rotate.mjs` across all 6 orientations/CropBox cases.
+* **Discard confirmation (`public/app.js`, `public/i18n.js`, `public/i18n-en.js`).** `openDocUpload()` tracks live form/file/mark state and asks `docDiscardSure` before closing on veil click, `Escape`, or `✕` whenever any data has been entered, while empty or submitted dialogs still close immediately.
+* **Cached `PDFDocumentProxy` & render cancellation (`public/app.js`).** `renderPdfPage()` caches one `PDFDocumentProxy` per byte buffer (`WeakMap`), cancels any in-flight `RenderTask` on the same canvas before drawing the next page (suppressing benign `RenderingCancelledException`), and calls `pdf.destroy()` on modal close across all four callers (`openDocUpload`, `signaturePreview`, `openMoveSignature`, `openPdfViewer`).
+* **Tests.** `npm run check:separation` (7/7), `dev-tests/rotate.mjs` (13/13), `dev-tests/sigsize.mjs`, `dev-tests/movesig.mjs`, `dev-tests/pdfread.mjs`, plus desktop & phone browser verification on `localhost:4700`.
+
 ## 2026-11-25 (a) — the redesign: calmer frame, grouped menu, colour by page · version `2026-11-25a`
 
 Asked for: a redesign of the look and the navigation — the pink-to-violet palette felt dated, pages were cluttered, the menu was one long list, and the phone showed a banner before any work. No routes, API or data changed; old addresses (`#/calendar`, `#/schedule`, `#/mine` …) all still land.
