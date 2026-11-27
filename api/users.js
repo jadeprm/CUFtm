@@ -81,12 +81,14 @@ const mayReadEmail = (viewer, u, grants) => {
  */
 async function everybody(sql) {
   const raw = await sql`
-    SELECT to_jsonb(u) - 'avatar' - 'password_hash' AS u,
-           left(md5(u.avatar), 10) AS avatar_v
+    SELECT to_jsonb(u) - 'avatar' - 'password_hash' - 'password_salt' AS u,
+           left(md5(u.avatar), 10) AS avatar_v,
+           (u.password_hash IS NOT NULL AND u.password_hash <> '') AS has_password
     FROM users u ORDER BY u.active DESC, u.display_name`;
   return raw.map((r) => ({
     ...(typeof r.u === 'string' ? JSON.parse(r.u) : r.u),
     avatar_v: r.avatar_v || null,
+    has_password: Boolean(r.has_password),
   }));
 }
 
@@ -164,7 +166,7 @@ const directoryRow = (u, grants = {}, viewer = null) => ({
   avatarV: u.avatar_v || null,
   active: u.active,
   suspended: u.suspended,
-  hasPassword: Boolean(u.password_hash),
+  hasPassword: Boolean(u.has_password ?? u.password_hash),
   // Whether they have proved an email — never the address itself.
   emailVerified: Boolean(u.email_verified_at),
   resetAllowed: u.reset_allowed,
