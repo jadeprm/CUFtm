@@ -148,7 +148,7 @@
    * the profile page says so when the two disagree, which is what a
    * half-finished deployment looks like from the outside.
    */
-  var APP_VERSION = '2026-11-27c';
+  var APP_VERSION = '2026-11-27d';
 
   var errText = function (code) {
     var key = window.ERROR_KEYS[code];
@@ -2766,6 +2766,718 @@
     } catch (e) {}
   }
 
+  var SIGNER_COLORS = [
+    'var(--accent)', 'var(--blue)', 'var(--teal)', 'var(--amber)', 'var(--violet)', 'var(--green)',
+  ];
+  var TH_SHORT_MO = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+    'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+  function thaiShortDateNow() {
+    try {
+      var parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(new Date());
+      var get = function (tp) {
+        var f = parts.filter(function (p) { return p.type === tp; })[0];
+        return f ? Number(f.value) : 0;
+      };
+      var y = get('year'), m = get('month'), d = get('day');
+      if (y && m && d) return d + ' ' + TH_SHORT_MO[m - 1] + ' ' + (y + 543);
+    } catch (e) {}
+    var now = new Date();
+    return now.getDate() + ' ' + TH_SHORT_MO[now.getMonth()] + ' ' + (now.getFullYear() + 543);
+  }
+
+  /**
+   * Scans one PDF page's text layer for common Thai signature cues
+   * ("ลงชื่อ", "ลงนาม", or parenthesised dotted/underscored runs) and maps
+   * their PDF coordinates into displayed top-left fractions for ghost boxes.
+   */
+  function scanSignatureGhosts(pdf, pageNum) {
+    return pdf.getPage(pageNum).then(function (page) {
+      var vp = page.getViewport({ scale: 1 });
+      if (!vp.width || !vp.height) return [];
+      return page.getTextContent().then(function (tc) {
+        var items = (tc && tc.items) || [];
+        var cueRe = /ลงชื่อ|ลงนาม|\(\s*[.\u2026_…]{3,}\s*\)|[.\u2026_]{6,}/;
+        var found = [];
+        items.forEach(function (it) {
+          var str = String(it.str || '').trim();
+          if (!str || !cueRe.test(str)) return;
+          var tr = it.transform || [1, 0, 0, 1, 0, 0];
+          var tx = tr[4], ty = tr[5];
+          var iw = Math.max(20, Number(it.width) || 80);
+          var ih = Math.max(10, Math.abs(tr[3]) || Number(it.height) || 14);
+          var rect = vp.convertToViewportRectangle([tx, ty, tx + iw, ty + ih]);
+          var x0 = Math.min(rect[0], rect[2]) / vp.width;
+          var x1 = Math.max(rect[0], rect[2]) / vp.width;
+          var y0 = Math.min(rect[1], rect[3]) / vp.height;
+          var y1 = Math.max(rect[1], rect[3]) / vp.height;
+          var w = 0.22;
+          var h = 0.065;
+          var isLabel = /ลงชื่อ|ลงนาม/.test(str);
+          // Place directly to the right of "ลงชื่อ"/"ลงนาม" or just above "(....)".
+          var gx = isLabel ? Math.min(1 - w, x1 + 0.01) : Math.max(0, Math.min(1 - w, (x0 + x1) / 2 - w / 2));
+          var gy = isLabel ? Math.max(0, Math.min(1 - h, y0 - h * 0.45)) : Math.max(0, Math.min(1 - h, y0 - h * 0.85));
+          // Deduplicate overlapping ghosts on the same line.
+          var dup = found.some(function (g) {
+            return Math.abs(g.x - gx) < 0.14 && Math.abs(g.y - gy) < 0.05;
+          });
+          if (!dup) found.push({ page: pageNum, x: gx, y: gy, w: w, h: h });
+        });
+        return found;
+      });
+    }).catch(function () { return []; });
+  }
+
+  /**
+   * Shared iLovePDF-style placement editor for both openDocUpload() stage 3
+   * and openMoveSignature().
+   *
+   * Handles lazy thumbnail rail with per-signer dots, zoom + phone pinch-zoom,
+   * pointer-events drag & corner resize, selection toolbar (delete + duplicate
+   * to all pages), per-box or per-signer size slider, auto-suggested ghost
+   * boxes from pdf.js text content, and typed stamp fields.
+   */
+  function createPlacementEditor(opts) {
+    var steps = opts.steps || [];
+    var getBytes = opts.getBytes;
+    var sigOf = opts.sigOf;
+    var profileOf = opts.profileOf || function (st) {
+      return {
+        fullName: st.fullName || nameOf(st.username),
+        displayName: st.displayName || nameOf(st.username),
+        position: st.position || '',
+      };
+    };
+    var onChange = opts.onChange || function () {};
+    var onError = opts.onError || function () {};
+
+    var activeStep = opts.activeStep && steps.indexOf(opts.activeStep) !== -1 ? opts.activeStep : steps[0];
+    var activeKind = 'signature';
+    var selected = null;       // { step, mark }
+    var applyAllForSigner = false;
+    var zoom = 1;
+    var pages = 1;
+    var currentPage = 1;
+    var initializedPage = false;
+    var ghostsByPage = {};     // pageNum -> [{ page, x, y, w, h }]
+    var thumbObserver = null;
+    var renderedThumbs = {};
+
+    var root = h('div', { class: 'pe-root' });
+    var topBar = h('div', { class: 'pe-bar' });
+    var signersBar = h('div', { class: 'seg wrap pe-signers' });
+    var kindsBar = h('div', { class: 'pe-kinds' });
+    var zoomBar = h('div', { class: 'pe-zoom' });
+    var autoBtn = h('button', {
+      type: 'button', class: 'btn sm', text: t('docAutoPlace'), hidden: true,
+    });
+    var warnSlot = h('div', {});
+    var selBar = h('div', { class: 'pe-selbar', hidden: true });
+
+    var sizePct = h('span', { class: 'sig-size-n' });
+    var sizeIn = h('input', {
+      type: 'range', min: '8', max: '55', step: '1', class: 'sig-size', value: '24',
+    });
+    var allChk = h('input', { type: 'checkbox', checked: false });
+    allChk.addEventListener('change', function () { applyAllForSigner = allChk.checked; });
+    var sizeRow = h('div', { class: 'sig-size-row' }, [
+      h('label', { text: t('docSigSize') }),
+      sizeIn,
+      sizePct,
+      h('label', { class: 'inline-check sm' }, [allChk, t('docResizeAllForSigner')]),
+    ]);
+
+    var rail = h('div', { class: 'pe-rail', hidden: true });
+    var pager = h('div', { class: 'pdf-pager' });
+    var canvas = h('canvas', { class: 'pdf-canvas' });
+    var overlay = h('div', { class: 'pdf-overlay' });
+    var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
+    var stage = h('div', { class: 'pe-stage' }, [sheet]);
+    var stageWrap = h('div', { class: 'pe-stage-wrap' }, [pager, stage]);
+    var workspace = h('div', { class: 'pe-workspace single-page' }, [rail, stageWrap]);
+
+    var colorFor = function (step) {
+      var idx = steps.indexOf(step);
+      return SIGNER_COLORS[(idx < 0 ? 0 : idx) % SIGNER_COLORS.length];
+    };
+
+    var kindLabel = function (k) {
+      if (k === 'date') return t('docKindDate');
+      if (k === 'nameTitle') return t('docKindNameTitle');
+      if (k === 'initials') return t('docKindInitials');
+      return t('docKindSignature');
+    };
+
+    var pageAspect = function () {
+      return (canvas.width && canvas.height) ? (canvas.width / canvas.height) : 0.707;
+    };
+
+    function boxSizeFor(step, kind, wantW) {
+      if (kind === 'date') {
+        var dw = Math.max(0.10, Math.min(0.55, wantW || 0.20));
+        return { w: dw, h: Math.max(0.028, Math.min(0.12, dw * 0.21 * pageAspect())) };
+      }
+      if (kind === 'nameTitle') {
+        var nw = Math.max(0.14, Math.min(0.65, wantW || 0.28));
+        return { w: nw, h: Math.max(0.045, Math.min(0.18, nw * 0.28 * pageAspect())) };
+      }
+      if (kind === 'initials') {
+        return sigBoxSize(sigOf(step), pageAspect(), Math.max(0.06, Math.min(0.30, wantW || 0.11)));
+      }
+      return sigBoxSize(sigOf(step), pageAspect(), Math.max(0.08, Math.min(0.55, wantW || 0.24)));
+    }
+
+    function ensureSelectedValid() {
+      if (selected && (steps.indexOf(selected.step) === -1 ||
+          (selected.step.marks || []).indexOf(selected.mark) === -1)) {
+        selected = null;
+      }
+    }
+
+    function paintSigners() {
+      clear(signersBar);
+      if (steps.length <= 1) { signersBar.hidden = true; return; }
+      signersBar.hidden = false;
+      steps.forEach(function (step) {
+        var sig = sigOf(step);
+        signersBar.appendChild(h('button', {
+          type: 'button',
+          class: activeStep === step ? 'on' : '',
+          onclick: function () {
+            activeStep = step;
+            selected = null;
+            paintSigners();
+            paintWarn();
+            paintSelBar();
+            paintSize();
+            paintOverlay();
+          },
+        }, [
+          h('span', { class: 'pe-signer-dot', style: 'background:' + colorFor(step) }),
+          (step.marks && step.marks.length) ? h('span', { class: 'who-n', text: '\u2713' + step.marks.length }) : null,
+          step.displayName || nameOf(step.username),
+          sig ? null : h('span', { class: 'no-sig-dot', title: t('docNoSignatureYet'), text: '!' }),
+        ]));
+      });
+    }
+
+    function paintKinds() {
+      clear(kindsBar);
+      ['signature', 'date', 'nameTitle', 'initials'].forEach(function (k) {
+        kindsBar.appendChild(h('button', {
+          type: 'button',
+          class: activeKind === k ? 'on' : '',
+          'data-kind': k,
+          text: kindLabel(k),
+          onclick: function () {
+            activeKind = k;
+            paintKinds();
+          },
+        }));
+      });
+    }
+
+    function paintZoom() {
+      clear(zoomBar);
+      zoomBar.appendChild(h('button', {
+        type: 'button', class: 'btn sm ghost', text: '\u2212',
+        disabled: zoom <= 0.55,
+        onclick: function () { setZoom(Math.max(0.5, Math.round((zoom - 0.2) * 10) / 10)); },
+      }));
+      zoomBar.appendChild(h('span', { class: 'pe-zoom-pct', text: Math.round(zoom * 100) + '%' }));
+      zoomBar.appendChild(h('button', {
+        type: 'button', class: 'btn sm ghost', text: '+',
+        disabled: zoom >= 2.45,
+        onclick: function () { setZoom(Math.min(2.5, Math.round((zoom + 0.2) * 10) / 10)); },
+      }));
+      zoomBar.appendChild(h('button', {
+        type: 'button', class: 'btn sm ghost', text: t('docZoomFit'),
+        onclick: function () { setZoom(1); },
+      }));
+    }
+
+    function applySheetScale() {
+      var stageW = Math.max(260, stage.clientWidth - 20);
+      sheet.style.width = Math.round(stageW * zoom) + 'px';
+    }
+
+    function setZoom(next) {
+      zoom = Math.max(0.5, Math.min(2.5, next));
+      paintZoom();
+      applySheetScale();
+    }
+
+    function paintWarn() {
+      clear(warnSlot);
+      if (!activeStep) return;
+      if (!sigOf(activeStep) && (activeKind === 'signature' || activeKind === 'initials')) {
+        warnSlot.appendChild(h('div', {
+          class: 'notice warn',
+          text: t('docNoSignatureFor').replace('%s', activeStep.displayName || nameOf(activeStep.username)),
+        }));
+      }
+    }
+
+    function paintSize() {
+      ensureSelectedValid();
+      var target = selected ? selected.mark : (activeStep && activeStep.marks && activeStep.marks[activeStep.marks.length - 1]);
+      var pct = Math.round(((target ? target.w : (activeKind === 'initials' ? 0.11 : 0.24))) * 100);
+      sizeIn.value = String(Math.max(8, Math.min(55, pct)));
+      sizePct.textContent = sizeIn.value + '%';
+      sizeIn.disabled = !target;
+    }
+
+    sizeIn.addEventListener('input', function () {
+      ensureSelectedValid();
+      var targetStep = selected ? selected.step : activeStep;
+      var targetMark = selected ? selected.mark : (targetStep && targetStep.marks && targetStep.marks[targetStep.marks.length - 1]);
+      if (!targetStep || !targetMark) return;
+      var want = Number(sizeIn.value) / 100;
+      var list = applyAllForSigner
+        ? (targetStep.marks || []).filter(function (m) { return (m.kind || 'signature') === (targetMark.kind || 'signature'); })
+        : [targetMark];
+      list.forEach(function (m) {
+        var b = boxSizeFor(targetStep, m.kind || 'signature', want);
+        m.x = Math.max(0, Math.min(1 - b.w, m.x + (m.w - b.w) / 2));
+        m.y = Math.max(0, Math.min(1 - b.h, m.y + (m.h - b.h) / 2));
+        m.w = b.w; m.h = b.h;
+      });
+      sizePct.textContent = sizeIn.value + '%';
+      paintOverlay();
+      onChange();
+    });
+
+    function paintSelBar() {
+      ensureSelectedValid();
+      clear(selBar);
+      if (!selected) { selBar.hidden = true; return; }
+      selBar.hidden = false;
+      var st = selected.step;
+      var mk = selected.mark;
+      selBar.appendChild(h('span', { class: 'pe-signer-dot', style: 'background:' + colorFor(st) }));
+      selBar.appendChild(h('b', { text: (st.displayName || nameOf(st.username)) + ' · ' + kindLabel(mk.kind || 'signature') }));
+      selBar.appendChild(h('span', { class: 'grow' }));
+      if (pages > 1) {
+        selBar.appendChild(h('button', {
+          type: 'button', class: 'btn sm', text: t('docDupAllPages'),
+          onclick: function () {
+            for (var p = 1; p <= pages; p++) {
+              if (p === mk.page) continue;
+              var exists = (st.marks || []).some(function (m) {
+                return m.page === p && (m.kind || 'signature') === (mk.kind || 'signature') &&
+                  Math.abs(m.x - mk.x) < 0.01 && Math.abs(m.y - mk.y) < 0.01;
+              });
+              if (!exists) {
+                st.marks.push({ page: p, x: mk.x, y: mk.y, w: mk.w, h: mk.h, kind: mk.kind || 'signature' });
+              }
+            }
+            refreshAll();
+          },
+        }));
+      }
+      selBar.appendChild(h('button', {
+        type: 'button', class: 'btn sm danger', text: t('docDelBox'),
+        onclick: function () {
+          st.marks = (st.marks || []).filter(function (m) { return m !== mk; });
+          selected = null;
+          refreshAll();
+        },
+      }));
+    }
+
+    function paintAutoBtn() {
+      var needZero = steps.some(function (s) { return !(s.marks && s.marks.length); });
+      var allGhosts = [];
+      Object.keys(ghostsByPage).forEach(function (k) {
+        allGhosts = allGhosts.concat(ghostsByPage[k] || []);
+      });
+      autoBtn.hidden = !(needZero && allGhosts.length > 0);
+    }
+
+    autoBtn.addEventListener('click', function () {
+      var emptySteps = steps.filter(function (s) { return !(s.marks && s.marks.length); });
+      if (!emptySteps.length) return;
+      // Prefer ghosts on the current page first, then other pages from last to first.
+      var orderedGhosts = (ghostsByPage[currentPage] || []).slice();
+      for (var p = pages; p >= 1; p--) {
+        if (p === currentPage) continue;
+        orderedGhosts = orderedGhosts.concat(ghostsByPage[p] || []);
+      }
+      emptySteps.forEach(function (st, idx) {
+        var g = orderedGhosts[idx];
+        if (!g) return;
+        var sz = boxSizeFor(st, 'signature', g.w);
+        st.marks = st.marks || [];
+        st.marks.push({
+          page: g.page,
+          x: Math.max(0, Math.min(1 - sz.w, g.x)),
+          y: Math.max(0, Math.min(1 - sz.h, g.y)),
+          w: sz.w, h: sz.h, kind: 'signature',
+        });
+        // Remove consumed ghost
+        ghostsByPage[g.page] = (ghostsByPage[g.page] || []).filter(function (x) { return x !== g; });
+      });
+      refreshAll();
+    });
+
+    function paintRailDots() {
+      if (pages <= 1) return;
+      rail.querySelectorAll('.pe-thumb').forEach(function (btn) {
+        var p = Number(btn.getAttribute('data-page'));
+        btn.classList.toggle('on', p === currentPage);
+        var dots = btn.querySelector('.pe-dots');
+        if (!dots) return;
+        clear(dots);
+        steps.forEach(function (st) {
+          if ((st.marks || []).some(function (m) { return m.page === p; })) {
+            dots.appendChild(h('span', { class: 'pe-dot', style: 'background:' + colorFor(st), title: st.displayName || nameOf(st.username) }));
+          }
+        });
+      });
+    }
+
+    function buildRail(lib, bytes) {
+      if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+      renderedThumbs = {};
+      clear(rail);
+      if (pages <= 1) {
+        rail.hidden = true;
+        workspace.classList.add('single-page');
+        return;
+      }
+      rail.hidden = false;
+      workspace.classList.remove('single-page');
+
+      var renderThumb = function (p, cv) {
+        if (renderedThumbs[p]) return;
+        renderedThumbs[p] = true;
+        getPdfDoc(lib, bytes).then(function (pdf) {
+          return pdf.getPage(p).then(function (page) {
+            var nat = page.getViewport({ scale: 1 });
+            var vp = page.getViewport({ scale: 140 / nat.width });
+            cv.width = Math.round(vp.width);
+            cv.height = Math.round(vp.height);
+            return page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+          });
+        }).catch(function () {});
+      };
+
+      if (typeof IntersectionObserver !== 'undefined') {
+        thumbObserver = new IntersectionObserver(function (entries) {
+          entries.forEach(function (ent) {
+            if (!ent.isIntersecting) return;
+            var p = Number(ent.target.getAttribute('data-page'));
+            var cv = ent.target.querySelector('canvas');
+            if (p && cv) renderThumb(p, cv);
+          });
+        }, { root: rail, rootMargin: '120px' });
+      }
+
+      for (var p = 1; p <= pages; p++) {
+        (function (pageNum) {
+          var cv = h('canvas', {});
+          var dots = h('span', { class: 'pe-dots' });
+          var btn = h('button', {
+            type: 'button',
+            class: 'pe-thumb' + (pageNum === currentPage ? ' on' : ''),
+            'data-page': String(pageNum),
+            onclick: function () { currentPage = pageNum; showPage(); },
+          }, [
+            cv,
+            h('span', { class: 'pe-thumb-foot' }, [h('span', { text: String(pageNum) }), dots]),
+          ]);
+          rail.appendChild(btn);
+          if (thumbObserver) thumbObserver.observe(btn);
+          else renderThumb(pageNum, cv);
+        }(p));
+      }
+      paintRailDots();
+    }
+
+    function drawPager() {
+      clear(pager);
+      if (pages < 2) return;
+      pager.appendChild(h('button', {
+        type: 'button', class: 'btn sm', text: '‹', disabled: currentPage <= 1,
+        onclick: function () { currentPage -= 1; showPage(); },
+      }));
+      pager.appendChild(h('span', { text: t('docPage') + ' ' + currentPage + ' / ' + pages }));
+      pager.appendChild(h('button', {
+        type: 'button', class: 'btn sm', text: '›', disabled: currentPage >= pages,
+        onclick: function () { currentPage += 1; showPage(); },
+      }));
+    }
+
+    function paintOverlay() {
+      ensureSelectedValid();
+      clear(overlay);
+
+      // Dashed ghost suggestions for this page
+      (ghostsByPage[currentPage] || []).forEach(function (g) {
+        var ghostEl = h('button', {
+          type: 'button',
+          class: 'sig-ghost',
+          title: t('docGhostTip'),
+          style: 'left:' + (g.x * 100) + '%;top:' + (g.y * 100) + '%;width:' + (g.w * 100) + '%;height:' + (g.h * 100) + '%',
+          text: '+ ' + (activeStep ? (activeStep.displayName || nameOf(activeStep.username)) : ''),
+          onclick: function (e) {
+            e.stopPropagation();
+            if (!activeStep) return;
+            var sz = boxSizeFor(activeStep, activeKind, g.w);
+            var mk = {
+              page: currentPage,
+              x: Math.max(0, Math.min(1 - sz.w, g.x)),
+              y: Math.max(0, Math.min(1 - sz.h, g.y)),
+              w: sz.w, h: sz.h, kind: activeKind,
+            };
+            activeStep.marks = activeStep.marks || [];
+            activeStep.marks.push(mk);
+            ghostsByPage[currentPage] = (ghostsByPage[currentPage] || []).filter(function (x) { return x !== g; });
+            selected = { step: activeStep, mark: mk };
+            refreshAll();
+          },
+        });
+        overlay.appendChild(ghostEl);
+      });
+
+      // Real placed boxes across all signers
+      steps.forEach(function (s) {
+        (s.marks || []).forEach(function (m) {
+          if (m.page !== currentPage) return;
+          var kind = m.kind || 'signature';
+          var sig = sigOf(s);
+          var isSel = selected && selected.step === s && selected.mark === m;
+          var prof = profileOf(s);
+
+          var inner = [];
+          if (kind === 'date') {
+            inner.push(h('span', { class: 'sig-text-main', text: thaiShortDateNow() }));
+          } else if (kind === 'nameTitle') {
+            inner.push(h('span', { class: 'sig-text-main', text: prof.fullName || prof.displayName }));
+            if (prof.position) inner.push(h('span', { class: 'sig-text-sub', text: prof.position }));
+          } else {
+            if (sig && s.username) inner.push(signatureImg(s.username));
+            inner.push(h('span', {
+              class: 'sig-name',
+              text: (kind === 'initials' ? t('docKindInitials') + ' · ' : '') + (s.displayName || nameOf(s.username)),
+            }));
+          }
+
+          var resizeHandle = isSel ? h('span', { class: 'sig-resize', title: t('docSigSize') }) : null;
+          if (resizeHandle) inner.push(resizeHandle);
+
+          var boxEl = h('div', {
+            class: 'sig-box kind-' + kind + (s === activeStep ? ' on' : '') + (isSel ? ' sel' : '') +
+              ((kind === 'signature' || kind === 'initials') ? (sig ? ' real' : ' empty') : ''),
+            style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%;' +
+              'border-color:' + colorFor(s),
+            title: (s.displayName || nameOf(s.username)) + ' · ' + kindLabel(kind),
+          }, inner);
+
+          // Corner resize handle (aspect-ratio preserving)
+          if (resizeHandle) {
+            resizeHandle.addEventListener('pointerdown', function (e) {
+              e.stopPropagation();
+              e.preventDefault();
+              resizeHandle.setPointerCapture(e.pointerId);
+              var startX = e.clientX;
+              var startW = m.w;
+              var rect = canvas.getBoundingClientRect();
+              function onMove(ev) {
+                if (!rect.width) return;
+                var dw = (ev.clientX - startX) / rect.width;
+                var nextW = Math.max(0.06, Math.min(1 - m.x, Math.min(0.65, startW + dw)));
+                var fitted = boxSizeFor(s, kind, nextW);
+                m.w = Math.min(1 - m.x, fitted.w);
+                m.h = Math.min(1 - m.y, fitted.h);
+                boxEl.style.width = (m.w * 100) + '%';
+                boxEl.style.height = (m.h * 100) + '%';
+                sizeIn.value = String(Math.max(8, Math.min(55, Math.round(m.w * 100))));
+                sizePct.textContent = sizeIn.value + '%';
+              }
+              function onUp() {
+                resizeHandle.removeEventListener('pointermove', onMove);
+                resizeHandle.removeEventListener('pointerup', onUp);
+                resizeHandle.removeEventListener('pointercancel', onUp);
+                onChange();
+              }
+              resizeHandle.addEventListener('pointermove', onMove);
+              resizeHandle.addEventListener('pointerup', onUp);
+              resizeHandle.addEventListener('pointercancel', onUp);
+            });
+          }
+
+          // Drag box to move or tap to select
+          boxEl.addEventListener('pointerdown', function (e) {
+            if (e.target === resizeHandle) return;
+            e.stopPropagation();
+            e.preventDefault();
+            boxEl.setPointerCapture(e.pointerId);
+            var startX = e.clientX, startY = e.clientY;
+            var origX = m.x, origY = m.y;
+            var moved = false;
+            var rect = canvas.getBoundingClientRect();
+
+            function onMove(ev) {
+              if (!rect.width || !rect.height) return;
+              if (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4) moved = true;
+              if (!moved) return;
+              var dx = (ev.clientX - startX) / rect.width;
+              var dy = (ev.clientY - startY) / rect.height;
+              m.x = Math.max(0, Math.min(1 - m.w, origX + dx));
+              m.y = Math.max(0, Math.min(1 - m.h, origY + dy));
+              boxEl.style.left = (m.x * 100) + '%';
+              boxEl.style.top = (m.y * 100) + '%';
+            }
+
+            function onUp() {
+              boxEl.removeEventListener('pointermove', onMove);
+              boxEl.removeEventListener('pointerup', onUp);
+              boxEl.removeEventListener('pointercancel', onUp);
+              activeStep = s;
+              selected = { step: s, mark: m };
+              refreshAll();
+            }
+
+            boxEl.addEventListener('pointermove', onMove);
+            boxEl.addEventListener('pointerup', onUp);
+            boxEl.addEventListener('pointercancel', onUp);
+          });
+
+          overlay.appendChild(boxEl);
+        });
+      });
+    }
+
+    // Tap empty page area to add a new box for the active signer & field kind
+    sheet.addEventListener('pointerdown', function (e) {
+      if (e.target !== canvas && e.target !== overlay && e.target !== sheet) return;
+      if (activePointers.size > 0) return; // ignore during 2-finger pinch
+      if (!activeStep) return;
+      var rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var fx = (e.clientX - rect.left) / rect.width;
+      var fy = (e.clientY - rect.top) / rect.height;
+      if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+
+      var wantW = activeKind === 'signature' ? (Number(sizeIn.value) / 100 || 0.24) : undefined;
+      var sz = boxSizeFor(activeStep, activeKind, wantW);
+      var mk = {
+        page: currentPage,
+        x: Math.max(0, Math.min(1 - sz.w, fx - sz.w / 2)),
+        y: Math.max(0, Math.min(1 - sz.h, fy - sz.h / 2)),
+        w: sz.w, h: sz.h, kind: activeKind,
+      };
+      activeStep.marks = activeStep.marks || [];
+      activeStep.marks.push(mk);
+      selected = { step: activeStep, mark: mk };
+      refreshAll();
+    });
+
+    // Two-finger pinch-zoom on phones / touchpads inside .pe-stage
+    var activePointers = new Map();
+    var pinchStartDist = 0;
+    var pinchStartZoom = 1;
+    stage.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'touch') return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointers.size === 2) {
+        var pts = Array.from(activePointers.values());
+        pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        pinchStartZoom = zoom;
+      }
+    });
+    stage.addEventListener('pointermove', function (e) {
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointers.size === 2 && pinchStartDist > 10) {
+        var pts = Array.from(activePointers.values());
+        var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        setZoom(pinchStartZoom * (dist / pinchStartDist));
+      }
+    });
+    var endPinch = function (e) { activePointers.delete(e.pointerId); if (activePointers.size < 2) pinchStartDist = 0; };
+    stage.addEventListener('pointerup', endPinch);
+    stage.addEventListener('pointercancel', endPinch);
+
+    function refreshAll() {
+      paintSigners();
+      paintWarn();
+      paintSelBar();
+      paintSize();
+      paintAutoBtn();
+      paintRailDots();
+      paintOverlay();
+      onChange();
+    }
+
+    function showPage() {
+      var bytes = getBytes();
+      if (!bytes) return Promise.resolve();
+      return withPdfJs().then(function (lib) {
+        return getPdfDoc(lib, bytes).then(function (pdf) {
+          pages = pdf.numPages;
+          if (!initializedPage) {
+            initializedPage = true;
+            currentPage = opts.initialPage === 'last'
+              ? pages
+              : Math.min(pages, Math.max(1, Number(opts.initialPage) || pages));
+            buildRail(lib, bytes);
+            // Scan all pages in background for ghost signature positions (C4)
+            Promise.all(Array.from({ length: pages }, function (_, idx) {
+              var pn = idx + 1;
+              return scanSignatureGhosts(pdf, pn).then(function (list) {
+                ghostsByPage[pn] = list;
+              });
+            })).then(function () {
+              paintAutoBtn();
+              paintOverlay();
+            });
+          }
+          return renderPdfPage(lib, bytes, currentPage, canvas, 920).then(function (info) {
+            if (info.cancelled) return;
+            pages = info.pages;
+            applySheetScale();
+            drawPager();
+            paintRailDots();
+            paintOverlay();
+            if (opts.onLoaded) opts.onLoaded(info);
+          });
+        });
+      }).catch(function (err) { onError(err); });
+    }
+
+    topBar.appendChild(signersBar);
+    topBar.appendChild(kindsBar);
+    topBar.appendChild(autoBtn);
+    topBar.appendChild(zoomBar);
+
+    root.appendChild(topBar);
+    root.appendChild(warnSlot);
+    root.appendChild(selBar);
+    root.appendChild(sizeRow);
+    root.appendChild(workspace);
+
+    paintSigners();
+    paintKinds();
+    paintZoom();
+    paintWarn();
+    paintSize();
+
+    return {
+      el: root,
+      load: showPage,
+      refresh: refreshAll,
+      getPage: function () { return currentPage; },
+      getPages: function () { return pages; },
+      destroy: function () {
+        if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+      },
+    };
+  }
+
   function sendSourceInParts(docId, source, onProgress) {
     var file = source.file;
     var parts = Math.max(1, Math.ceil(file.size / SOURCE_PART_BYTES));
@@ -3086,7 +3798,7 @@
     var roleChoices = [];
     var stage = 'details';
     var marking = null;          // which step we are placing a box for
-    var pageShown = 1;
+    var activeEditor = null;
     var submitted = false;
 
     var notice = h('div', { class: 'notice err', hidden: true });
@@ -3112,6 +3824,7 @@
 
     function closeUpload(force) {
       if (!force && hasDraftData() && !confirm(t('docDiscardSure'))) return;
+      if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
       destroyPdfDoc(pdfBytes);
       veil.remove();
     }
@@ -3858,199 +4571,67 @@
       footer.appendChild(h('button', { class: 'btn', text: t('back'), onclick: drawDetails }));
     }
 
-    /* ---- stage 3: where the signatures go ---- */
+    /* ---- stage 3: where the signatures go (iLovePDF-style editor) ---- */
     function drawMarks() {
+      if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
       clear(bodyBox); clear(footer);
       var needMarks = chain.filter(function (s) { return s.signs; });
       if (!needMarks.length) { submit(); return; }
 
-      // A step that has been removed since cannot be the one being placed.
       if (needMarks.indexOf(marking) === -1) marking = needMarks[0];
-      var canvas = h('canvas', { class: 'pdf-canvas' });
-      var overlay = h('div', { class: 'pdf-overlay' });
-      var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
-      var pager = h('div', { class: 'pdf-pager' });
 
-      /** What we know about each signer's saved signature. */
-      var sigOf = function (username) {
-        var p = people.filter(function (x) { return x.username === username; })[0];
+      var sigOf = function (step) {
+        var p = people.filter(function (x) { return x.username === step.username; })[0];
         return p && p.hasSignature ? p : null;
       };
-      /** The page's own proportions, so a box is sized against the real sheet. */
-      var pageAspect = function () {
-        return (canvas.width && canvas.height) ? (canvas.width / canvas.height) : 0.707;
+      var profileOf = function (step) {
+        var p = people.filter(function (x) { return x.username === step.username; })[0] || {};
+        return {
+          fullName: p.fullName || p.displayName || nameOf(step.username),
+          displayName: p.displayName || nameOf(step.username),
+          position: p.position || '',
+        };
       };
-
-      var who = h('div', { class: 'seg wrap' }, needMarks.map(function (step) {
-        return h('button', {
-          type: 'button', class: marking === step ? 'on' : '',
-          onclick: function () { marking = step; drawMarks(); },
-        }, [
-          step.marks.length ? h('span', { class: 'who-n', text: '\u2713' + step.marks.length }) : null,
-          nameOf(step.username),
-          sigOf(step.username) ? null : h('span', { class: 'no-sig-dot', title: t('docNoSignatureYet'), text: '!' }),
-        ]);
-      }));
-
-      function paintOverlay() {
-        clear(overlay);
-        chain.forEach(function (s) {
-          (s.marks || []).forEach(function (m) {
-            if (m.page !== pageShown) return;
-            var sig = sigOf(s.username);
-            overlay.appendChild(h('div', {
-              class: 'sig-box' + (s === marking ? ' on' : '') + (sig ? ' real' : ' empty'),
-              style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
-                     'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
-              title: nameOf(s.username),
-            }, [
-              // The real thing, fitted exactly as the stamp will fit it.
-              sig ? signatureImg(s.username) : null,
-              h('span', { class: 'sig-name', text: nameOf(s.username) }),
-            ]));
-          });
-        });
-      }
-
-      /**
-       * How big this person's signature should be, in one slider.
-       *
-       * Seeing the real signature is only half of it — the other half is
-       * being able to do something about it. The slider is the width of the
-       * box as a fraction of the page; the height follows the signature's own
-       * proportions, so it never stretches. It moves every box this person
-       * has, because somebody signing in three places wants them the same.
-       */
-      var sizePct = h('span', { class: 'sig-size-n' });
-      var sizeIn = h('input', {
-        type: 'range', min: '8', max: '45', step: '1', class: 'sig-size',
-        value: String(Math.round((marking.marks[0] ? marking.marks[0].w : 0.26) * 100)),
-      });
-      function paintSize() {
-        var pct = Number(sizeIn.value);
-        sizePct.textContent = pct + '%';
-        sizeIn.disabled = !marking.marks.length;
-      }
-      sizeIn.addEventListener('input', function () {
-        var want = Number(sizeIn.value) / 100;
-        var box = sigBoxSize(sigOf(marking.username), pageAspect(), want);
-        marking.marks.forEach(function (m) {
-          // Grown about its own centre, so it does not crawl across the page.
-          m.x = Math.max(0, Math.min(1 - box.w, m.x + (m.w - box.w) / 2));
-          m.y = Math.max(0, Math.min(1 - box.h, m.y + (m.h - box.h) / 2));
-          m.w = box.w; m.h = box.h;
-        });
-        paintSize();
-        paintOverlay();
-      });
-
-      var sizeRow = h('div', { class: 'sig-size-row' }, [
-        h('label', { text: t('docSigSize') }), sizeIn, sizePct,
-      ]);
-
-      /**
-       * A tap puts the box's CENTRE where the finger went.
-       *
-       * Measured against the canvas rather than the window, and stored as a
-       * fraction of it, so the same box lands in the same place whether this
-       * was drawn on a phone or a desktop and whatever size the PDF's pages are.
-       */
-      function place(e) {
-        var rect = canvas.getBoundingClientRect();
-        if (!rect.width) return;
-        var point = e.touches && e.touches[0] ? e.touches[0] : e;
-        // The box is the signature's own shape at the width the slider says,
-        // so what is drawn on screen is the size it will be stamped.
-        var want = Number(sizeIn.value) / 100;
-        var size = sigBoxSize(sigOf(marking.username), pageAspect(), want);
-        var w = size.w;
-        var hh = size.h;
-        var fx = (point.clientX - rect.left) / rect.width;
-        var fy = (point.clientY - rect.top) / rect.height;
-
-        /**
-         * Tapping one of your own boxes takes it away again.
-         *
-         * A signer may need several spots — an initial on every page as well
-         * as a signature at the end — so a tap ADDS rather than replaces, and
-         * the only way back from a misplaced box would otherwise be to start
-         * the upload over.
-         */
-        var hit = -1;
-        marking.marks.forEach(function (m, i) {
-          if (m.page === pageShown && fx >= m.x && fx <= m.x + m.w &&
-              fy >= m.y && fy <= m.y + m.h) hit = i;
-        });
-        if (hit >= 0) {
-          marking.marks.splice(hit, 1);
-        } else {
-          marking.marks.push({
-            page: pageShown,
-            x: Math.max(0, Math.min(1 - w, fx - w / 2)),
-            y: Math.max(0, Math.min(1 - hh, fy - hh / 2)),
-            w: w, h: hh,
-          });
-        }
-        paintOverlay();
-        paintSize();
-        drawFooter();
-      }
-      sheet.addEventListener('click', place);
-
-      bodyBox.appendChild(h('div', { class: 'pane' }, [
-        notice,
-        // One instruction, not two saying the same thing in different words.
-        h('p', { class: 'hint', text: t('docMarkHelp') }),
-        who,
-        h('p', { class: 'hint', text: t('docMarkAdd') }),
-        // Said plainly rather than left as an empty box they cannot explain.
-        sigOf(marking.username) ? null : h('div', { class: 'notice warn', text: t('docNoSignatureFor').replace('%s', nameOf(marking.username)) }),
-        sizeRow,
-        pager,
-        sheet,
-      ]));
-      paintSize();
-
-      function drawPager() {
-        clear(pager);
-        if (pages < 2) return;
-        pager.appendChild(h('button', {
-          class: 'btn sm', text: '‹', disabled: pageShown <= 1,
-          onclick: function () { pageShown--; show(); },
-        }));
-        pager.appendChild(h('span', { text: t('docPage') + ' ' + pageShown + ' / ' + pages }));
-        pager.appendChild(h('button', {
-          class: 'btn sm', text: '›', disabled: pageShown >= pages,
-          onclick: function () { pageShown++; show(); },
-        }));
-      }
-
-      function show() {
-        withPdfJs().then(function (lib) {
-          return renderPdfPage(lib, pdfBytes, pageShown, canvas, 900);
-        }).then(function (info) {
-          if (info.cancelled) return;
-          pages = info.pages;
-          drawPager();
-          paintOverlay();
-        }).catch(function () { fail(t('docPdfViewFailed')); });
-      }
-      show();
 
       function drawFooter() {
         clear(footer);
-        var ready = needMarks.every(function (s) { return s.marks.length; });
+        var ready = needMarks.every(function (s) { return s.marks && s.marks.length; });
         footer.appendChild(h('button', {
           class: 'btn primary', text: t('docSubmit'), disabled: !ready, onclick: submit,
         }));
-        footer.appendChild(h('button', { class: 'btn', text: t('back'), onclick: drawWho }));
+        footer.appendChild(h('button', {
+          class: 'btn', text: t('back'),
+          onclick: function () {
+            if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
+            drawWho();
+          },
+        }));
         if (!ready) {
           footer.appendChild(h('span', { class: 'hint',
             text: t('docMarkRemaining').replace('{n}',
-              String(needMarks.filter(function (s) { return !s.marks.length; }).length)) }));
+              String(needMarks.filter(function (s) { return !(s.marks && s.marks.length); }).length)) }));
         }
       }
+
+      activeEditor = createPlacementEditor({
+        steps: needMarks,
+        activeStep: marking,
+        initialPage: 'last',
+        getBytes: function () { return pdfBytes; },
+        sigOf: sigOf,
+        profileOf: profileOf,
+        onChange: drawFooter,
+        onError: function () { fail(t('docPdfViewFailed')); },
+        onLoaded: function (info) { pages = info.pages; },
+      });
+
+      bodyBox.appendChild(h('div', { class: 'pane' }, [
+        notice,
+        h('p', { class: 'hint', style: 'margin:0', text: t('docMarkAdd') }),
+        activeEditor.el,
+      ]));
       drawFooter();
+      activeEditor.load();
     }
 
     function submit() {
@@ -6051,14 +6632,22 @@
                 clear(overlay);
                 marks.forEach(function (m) {
                   if (m.page !== shown) return;
+                  var kind = m.kind || 'signature';
+                  var inner = [];
+                  if (kind === 'date') {
+                    inner.push(h('span', { class: 'sig-text-main', text: thaiShortDateNow() }));
+                  } else if (kind === 'nameTitle') {
+                    inner.push(h('span', { class: 'sig-text-main', text: m.step.fullName || nameOf(m.step.username) }));
+                    if (m.step.position) inner.push(h('span', { class: 'sig-text-sub', text: m.step.position }));
+                  } else {
+                    if (m.step.hasSignature) inner.push(signatureImg(m.step.username));
+                    inner.push(h('span', { class: 'sig-name', text: nameOf(m.step.username) }));
+                  }
                   overlay.appendChild(h('div', {
-                    class: 'sig-box real mine on',
+                    class: 'sig-box real mine on kind-' + kind,
                     style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
                            'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
-                  }, [
-                    m.step.hasSignature ? signatureImg(m.step.username) : null,
-                    h('span', { class: 'sig-name', text: nameOf(m.step.username) }),
-                  ]));
+                  }, inner));
                 });
               });
             }
@@ -6089,7 +6678,12 @@
    */
   function openMoveSignature(doc, step, onSaved) {
     var bytes = null;
-    function closeMove() { destroyPdfDoc(bytes); veil.remove(); }
+    var editor = null;
+    function closeMove() {
+      if (editor) { editor.destroy(); editor = null; }
+      destroyPdfDoc(bytes);
+      veil.remove();
+    }
     var veil = h('div', { class: 'veil', onclick: function (e) { if (e.target === veil) closeMove(); } });
     veil.__onClose = closeMove;
     var bodyBox = h('div', { class: 'body' });
@@ -6105,130 +6699,30 @@
     $('modal-root').appendChild(veil);
 
     // Worked on as a copy, so cancelling really does leave the letter alone.
-    var marks = (step.marks || []).map(function (m) {
-      return { page: m.page, x: m.x, y: m.y, w: m.w, h: m.h };
-    });
-    var shown = marks[0] ? marks[0].page : 1;
-    var pages = 1;
-
-    var canvas = h('canvas', { class: 'pdf-canvas' });
-    var overlay = h('div', { class: 'pdf-overlay' });
-    var sheet = h('div', { class: 'pdf-sheet' }, [canvas, overlay]);
-    var pager = h('div', { class: 'pdf-pager' });
-    var note = h('p', { class: 'hint', text: t('loading') });
-
-    var sizePct = h('span', { class: 'sig-size-n' });
-    var sizeIn = h('input', {
-      type: 'range', min: '8', max: '45', step: '1', class: 'sig-size',
-      value: String(Math.round((marks[0] ? marks[0].w : 0.26) * 100)),
-    });
-    var sizeRow = h('div', { class: 'sig-size-row' }, [h('label', { text: t('docSigSize') }), sizeIn, sizePct]);
-
-    bodyBox.appendChild(h('div', { class: 'pane' }, [
-      note,
-      h('p', { class: 'hint', text: t('docMarkAdd') }),
-      step.hasSignature ? null : h('div', { class: 'notice warn', text: t('docNoSignatureFor').replace('%s', nameOf(step.username)) }),
-      sizeRow, pager, sheet,
-    ]));
-
-    var pageAspect = function () {
-      return (canvas.width && canvas.height) ? (canvas.width / canvas.height) : 0.707;
+    var copyStep = {
+      username: step.username,
+      displayName: step.displayName || nameOf(step.username),
+      fullName: step.fullName || nameOf(step.username),
+      position: step.position || '',
+      hasSignature: step.hasSignature,
+      sigW: step.sigW,
+      sigH: step.sigH,
+      marks: (step.marks || []).map(function (m) {
+        return { page: m.page, x: m.x, y: m.y, w: m.w, h: m.h, kind: m.kind || 'signature' };
+      }),
     };
-
-    function paintOverlay() {
-      clear(overlay);
-      marks.forEach(function (m) {
-        if (m.page !== shown) return;
-        overlay.appendChild(h('div', {
-          class: 'sig-box on ' + (step.hasSignature ? 'real' : 'empty'),
-          style: 'left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%;' +
-                 'width:' + (m.w * 100) + '%;height:' + (m.h * 100) + '%',
-        }, [
-          step.hasSignature ? signatureImg(step.username) : null,
-          h('span', { class: 'sig-name', text: nameOf(step.username) }),
-        ]));
-      });
-    }
-
-    function paintSize() {
-      sizePct.textContent = sizeIn.value + '%';
-      sizeIn.disabled = !marks.length;
-    }
-    sizeIn.addEventListener('input', function () {
-      var box = sigBoxSize(step, pageAspect(), Number(sizeIn.value) / 100);
-      marks.forEach(function (m) {
-        // About its own centre, so resizing does not walk it across the page.
-        m.x = Math.max(0, Math.min(1 - box.w, m.x + (m.w - box.w) / 2));
-        m.y = Math.max(0, Math.min(1 - box.h, m.y + (m.h - box.h) / 2));
-        m.w = box.w; m.h = box.h;
-      });
-      paintSize(); paintOverlay();
-    });
-
-    sheet.addEventListener('click', function (e) {
-      var rect = canvas.getBoundingClientRect();
-      if (!rect.width) return;
-      var point = e.touches && e.touches[0] ? e.touches[0] : e;
-      var fx = (point.clientX - rect.left) / rect.width;
-      var fy = (point.clientY - rect.top) / rect.height;
-      var hit = -1;
-      marks.forEach(function (m, i) {
-        if (m.page === shown && fx >= m.x && fx <= m.x + m.w && fy >= m.y && fy <= m.y + m.h) hit = i;
-      });
-      if (hit >= 0) {
-        marks.splice(hit, 1);
-      } else {
-        var size = sigBoxSize(step, pageAspect(), Number(sizeIn.value) / 100);
-        marks.push({
-          page: shown,
-          x: Math.max(0, Math.min(1 - size.w, fx - size.w / 2)),
-          y: Math.max(0, Math.min(1 - size.h, fy - size.h / 2)),
-          w: size.w, h: size.h,
-        });
-      }
-      paintSize(); paintOverlay(); drawFooter();
-    });
-
-    function drawPager() {
-      clear(pager);
-      if (pages < 2) return;
-      pager.appendChild(h('button', { class: 'btn sm', text: '‹', disabled: shown <= 1,
-        onclick: function () { shown -= 1; show(); } }));
-      pager.appendChild(h('span', { text: t('docPage') + ' ' + shown + ' / ' + pages }));
-      pager.appendChild(h('button', { class: 'btn sm', text: '›', disabled: shown >= pages,
-        onclick: function () { shown += 1; show(); } }));
-    }
-
-    function show() {
-      return withPdfJs().then(function (lib) {
-        return renderPdfPage(lib, bytes, shown, canvas, 860);
-      }).then(function (info) {
-        if (info.cancelled) return;
-        pages = info.pages;
-        note.className = 'hint';
-        note.textContent = t('docMoveSigHint');
-        drawPager(); paintOverlay();
-      });
-    }
-
-    /** The unsigned original: it is the sheet the box is measured against. */
-    API.documents.fetchFileBytes(doc.id, 'original')
-      .then(function (buf) { bytes = new Uint8Array(buf); return show(); })
-      .catch(function () {
-        note.className = 'notice err';
-        note.textContent = t('docCheckUnavailable');
-      });
-
+    var note = h('p', { class: 'hint', text: t('loading') });
     var saving = false;
+
     function drawFooter() {
       clear(footer);
       footer.appendChild(h('button', {
-        class: 'btn primary', text: t('save'), disabled: !marks.length || saving,
+        class: 'btn primary', text: t('save'), disabled: !(copyStep.marks && copyStep.marks.length) || saving,
         onclick: function () {
           saving = true; drawFooter();
           api('/api/documents?do=move-mark', {
             method: 'POST',
-            body: { id: doc.id, stepId: step.id, marks: marks },
+            body: { id: doc.id, stepId: step.id, marks: copyStep.marks },
           }).then(function () {
             closeMove();
             if (onSaved) onSaved();
@@ -6241,10 +6735,38 @@
       footer.appendChild(h('button', {
         class: 'btn', text: t('cancel'), onclick: closeMove,
       }));
-      if (!marks.length) footer.appendChild(h('span', { class: 'hint', text: t('docMoveSigNeedOne') }));
+      if (!(copyStep.marks && copyStep.marks.length)) {
+        footer.appendChild(h('span', { class: 'hint', text: t('docMoveSigNeedOne') }));
+      }
     }
-    paintSize();
+
+    editor = createPlacementEditor({
+      steps: [copyStep],
+      activeStep: copyStep,
+      initialPage: copyStep.marks[0] ? copyStep.marks[0].page : 'last',
+      getBytes: function () { return bytes; },
+      sigOf: function () { return copyStep.hasSignature ? copyStep : null; },
+      onChange: drawFooter,
+      onLoaded: function () {
+        note.className = 'hint';
+        note.textContent = t('docMoveSigHint');
+      },
+      onError: function () {
+        note.className = 'notice err';
+        note.textContent = t('docCheckUnavailable');
+      },
+    });
+
+    bodyBox.appendChild(h('div', { class: 'pane' }, [note, editor.el]));
     drawFooter();
+
+    /** The unsigned original: it is the sheet the box is measured against. */
+    API.documents.fetchFileBytes(doc.id, 'original')
+      .then(function (buf) { bytes = new Uint8Array(buf); return editor.load(); })
+      .catch(function () {
+        note.className = 'notice err';
+        note.textContent = t('docCheckUnavailable');
+      });
   }
 
 

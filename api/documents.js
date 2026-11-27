@@ -16,7 +16,7 @@ import {
   canMoveMark, canRevive,
 } from '../lib/approval.js';
 import {
-  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize,
+  stampSignatures, inspectPdf, looksLikePdf, looksLikePng, pngSize, BOX_KINDS,
 } from '../lib/pdfsign.js';
 import { sendToMany, unreadCount } from '../lib/push.js';
 import { lineConfigured, push as linePush, pageLink } from '../lib/line.js';
@@ -108,6 +108,7 @@ async function putSource(sql, docId, source) {
 }
 
 const PRIORITIES = ['low', 'medium', 'high', 'highest'];
+const cleanKind = (k) => (BOX_KINDS.includes(k) ? k : 'signature');
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const clean = (v, max = 400) => String(v ?? '').trim().slice(0, max);
 
@@ -336,33 +337,45 @@ async function oneDocument(sql, me, id) {
    * the uploader had when they placed it.
    */
   const boxes = steps.length
-    ? await sql`SELECT step_id, page, x, y, w, h FROM doc_boxes
+    ? await sql`SELECT step_id, page, x, y, w, h, kind FROM doc_boxes
                 WHERE step_id = ANY(${steps.map((st) => st.id)})`
     : [];
   const sigs = steps.length
     ? await sql`SELECT username, width, height FROM signatures
                 WHERE username = ANY(${steps.map((st) => st.username)})`
     : [];
+  const profiles = steps.length
+    ? await sql`SELECT username, full_name, display_name, position FROM users
+                WHERE username = ANY(${steps.map((st) => st.username)})`
+    : [];
   const sigOf = new Map(sigs.map((g) => [g.username, g]));
+  const profileOf = new Map(profiles.map((u) => [u.username, u]));
   const boxesOfStep = (stepId) => boxes
     .filter((b) => b.step_id === stepId)
-    .map((b) => ({ page: b.page, x: Number(b.x), y: Number(b.y), w: Number(b.w), h: Number(b.h) }));
+    .map((b) => ({
+      page: b.page, x: Number(b.x), y: Number(b.y), w: Number(b.w), h: Number(b.h),
+      kind: cleanKind(b.kind),
+    }));
 
   return json({
     document: shapeDoc(doc),
     steps: steps.map((st) => {
       const shaped = shapeStep(st);
       const sig = sigOf.get(st.username);
+      const prof = profileOf.get(st.username);
       const own = boxesOfStep(st.id);
       return {
         ...shaped,
-        marks: own.length ? own : (shaped.mark ? [shaped.mark] : []),
+        marks: own.length ? own : (shaped.mark ? [{ ...shaped.mark, kind: 'signature' }] : []),
         hasSignature: Boolean(sig && sig.width && sig.height),
         // Whether this person may still move where this signature is drawn,
         // now that it is on the page — see canMoveMark.
         mayMove: canMoveMark(me, doc, st) && Boolean(own.length || shaped.mark),
         sigW: Number(sig?.width) || 0,
         sigH: Number(sig?.height) || 0,
+        fullName: prof?.full_name || '',
+        displayName: prof?.display_name || st.username || '',
+        position: prof?.position || '',
       };
     }),
     events: events.map((e) => ({ id: e.id, at: e.at, kind: e.kind, username: e.username, detail: e.detail })),
@@ -801,9 +814,9 @@ async function createDocument(sql, me, body) {
 
     for (const m of boxes) {
       await sql`
-        INSERT INTO doc_boxes (id, step_id, page, x, y, w, h)
+        INSERT INTO doc_boxes (id, step_id, page, x, y, w, h, kind)
         VALUES (${newId('box')}, ${stepId}, ${Math.max(1, Math.round(m.page || 1))},
-                ${Number(m.x)}, ${Number(m.y)}, ${Number(m.w)}, ${Number(m.h)})`;
+                ${Number(m.x)}, ${Number(m.y)}, ${Number(m.w)}, ${Number(m.h)}, ${cleanKind(m.kind)})`;
     }
   }
 
@@ -1250,6 +1263,7 @@ async function moveMark(sql, me, body) {
       return {
         page: Math.max(1, Math.round(Number(m.page) || 1)),
         x: span(m.x, 0, 1 - w), y: span(m.y, 0, 1 - h), w, h,
+        kind: cleanKind(m.kind),
       };
     });
 
@@ -1259,8 +1273,8 @@ async function moveMark(sql, me, body) {
   await sql`DELETE FROM doc_boxes WHERE step_id = ${step.id}`;
   for (const m of marks) {
     await sql`
-      INSERT INTO doc_boxes (id, step_id, page, x, y, w, h)
-      VALUES (${newId('box')}, ${step.id}, ${m.page}, ${m.x}, ${m.y}, ${m.w}, ${m.h})`;
+      INSERT INTO doc_boxes (id, step_id, page, x, y, w, h, kind)
+      VALUES (${newId('box')}, ${step.id}, ${m.page}, ${m.x}, ${m.y}, ${m.w}, ${m.h}, ${m.kind})`;
   }
   // The inline copy of the first box, kept in step with the table for the
   // sake of anything still reading the older shape.
@@ -1427,22 +1441,33 @@ async function rebuildSigned(sql, docId, steps) {
     // Whoever's signature this step put on: the named signer normally, the
     // person who stood in for them when somebody else pressed — see approve.
     const owner = step.signed_by || step.signedBy || step.username;
-    const [row] = await sql`SELECT png FROM signatures WHERE username = ${owner}`;
+    const [row] = owner ? await sql`SELECT png FROM signatures WHERE username = ${owner}` : [];
     const png = toBuffer(row?.png);
-    if (!png) continue;
+    const [prof] = owner
+      ? await sql`SELECT full_name, display_name, position FROM users WHERE username = ${owner}`
+      : [];
 
-    const boxes = await sql`SELECT page, x, y, w, h FROM doc_boxes WHERE step_id = ${step.id}`;
+    const boxes = await sql`SELECT page, x, y, w, h, kind FROM doc_boxes WHERE step_id = ${step.id}`;
     // Steps drawn before boxes existed still carry their one box inline.
     const spots = boxes.length
       ? boxes
       : (step.x === null || step.x === undefined
         ? []
-        : [{ page: step.page, x: step.x, y: step.y, w: step.w, h: step.h }]);
+        : [{ page: step.page, x: step.x, y: step.y, w: step.w, h: step.h, kind: 'signature' }]);
 
     for (const spot of spots) {
+      const kind = cleanKind(spot.kind);
+      if ((kind === 'signature' || kind === 'initials') && !png) continue;
       marks.push({
-        username: owner, page: spot.page,
-        x: spot.x, y: spot.y, w: spot.w, h: spot.h, png,
+        username: owner,
+        page: spot.page,
+        x: Number(spot.x), y: Number(spot.y), w: Number(spot.w), h: Number(spot.h),
+        kind,
+        png,
+        actedAt: step.acted_at || new Date(),
+        fullName: prof?.full_name || prof?.display_name || owner || '',
+        displayName: prof?.display_name || owner || '',
+        position: prof?.position || '',
       });
     }
   }

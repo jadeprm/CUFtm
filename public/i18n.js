@@ -14,7 +14,7 @@
  * ctlWhoTitle — which looks like a broken app and is really a half-finished
  * upload. The stamp turns that into a sentence naming the two files.
  */
-window.STRINGS_VERSION = '2026-11-27c';
+window.STRINGS_VERSION = '2026-11-27d';
 
 window.STRINGS = {
   th: {
@@ -1288,7 +1288,17 @@ window.STRINGS = {
     docApproveNoSignSure: 'อนุมัติโดยไม่ให้ลายเซ็นปรากฏบนเอกสาร ระบบจะบันทึกว่าคุณอนุมัติแล้ว ยืนยันหรือไม่',
     docActForNote: 'ขั้นตอนนี้เป็นของ %s คุณกำลังจะกดแทน',
     docActForSure: 'ขั้นตอนนี้เป็นของ %s (%r) ไม่ใช่ของคุณ\n\nยืนยันว่าดำเนินการแทนเขาใช่ไหม ระบบจะบันทึกชื่อคุณไว้ว่าเป็นคนกด',
-    docMarkAdd: 'แตะบนเอกสารเพื่อวางช่องลงนาม แตะซ้ำที่ช่องเดิมเพื่อลบ วางได้หลายจุด',
+    docMarkAdd: 'แตะพื้นที่ว่างเพื่อวางช่อง ลากเพื่อย้าย หรือแตะช่องเพื่อปรับขนาดและลบ',
+    docKindSignature: 'ลายเซ็น',
+    docKindDate: 'วันที่',
+    docKindNameTitle: 'ชื่อ-ตำแหน่ง',
+    docKindInitials: 'ลายเซ็นย่อ',
+    docZoomFit: 'พอดีหน้า',
+    docDelBox: 'ลบ',
+    docDupAllPages: 'ทำซ้ำทุกหน้า',
+    docResizeAllForSigner: 'ปรับทุกจุดของคนนี้',
+    docAutoPlace: 'วางตามที่ระบบแนะนำ',
+    docGhostTip: 'แตะเพื่อวางที่นี่',
     docReject: 'ตีกลับ',
     docRejectWhy: 'เหตุผลที่ตีกลับ (ผู้ส่งจะเห็นข้อความนี้)',
     docReplace: 'อัปโหลดไฟล์แก้ไขแทน',

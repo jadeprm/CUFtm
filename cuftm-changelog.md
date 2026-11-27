@@ -11,6 +11,17 @@ The rule the zips existed to enforce still holds and is now the reason the singl
 **Working on this in a new container:** copy `Downloads/CUFtm-clean` across, `npm install`, create the `fairv2` database, and run `node srv2.mjs` — `dev-tests/neon-local.mjs` points the Neon driver at the local Postgres. The suites call `chromium.launch()` with no path, so they use whatever Chromium Playwright has — they used to name `/opt/pw-browsers/chromium-1194/...` and stopped working the day the container shipped a different build (19 November).
 
 
+## 2026-11-27 (d) — signing upgrade phase 3: iLovePDF placement editor, ghost suggestions, Thai date & name/title fields · version `2026-11-27d`
+
+Third phase of the document-signing upgrade (`C1`–`C6`):
+
+* **Shared iLovePDF-style placement editor (`public/app.js`, `public/styles.css`, `public/phone.css`).** Rebuilt `drawMarks()` in `openDocUpload()` and reused the same `createPlacementEditor()` in `openMoveSignature()`:
+  * Opens on the **last page** by default (`C3`) with a lazy-rendered left thumbnail rail showing per-signer coloured dots on desktop and a horizontal thumbnail strip + pinch-zoom on phones (`C1`), plus `−`, `%`, `+`, and `พอดีหน้า` zoom controls.
+  * Unified pointer events (`C2`): tap empty space to add a box, drag boxes smoothly clamped to page bounds, tap a box to select it for the selection bar (`ลบ`, `ทำซ้ำทุกหน้า`) and aspect-ratio corner resize handle; size slider applies to the selected box only with a "ปรับทุกจุดของคนนี้" checkbox.
+  * Auto-suggests signature spots (`C4`) via `pdf.js` `getTextContent()` matching `"ลงชื่อ"`, `"ลงนาม"`, and dotted/underscored runs in parentheses, rendered as clickable dashed ghost boxes plus a "วางตามที่ระบบแนะนำ" button assigning ghosts in chain order only to signers with 0 boxes.
+* **Typed stamp fields & Thai PDF rendering (`lib/db.js`, `lib/pdfsign.js`, `api/documents.js`).** Added `doc_boxes.kind` (`signature`, `date`, `nameTitle`, `initials`, defaulting legacy rows to `signature`). Thai Buddhist dates (e.g. `27 พ.ย. 2569`, `Asia/Bangkok`) and signer full-name + position stamps are rendered with `pdfkit` + TH Sarabun New (`lib/fonts.js`) and embedded as PDF pages into `pdf-lib` using the rotated/CropBox `boxToPdf()` transform — never `pdf-lib` `drawText`.
+* **Tests.** `npm run check:separation` (7/7), `dev-tests/editor-fields.mjs` (15/15 desktop & phone), `dev-tests/rotate.mjs` (13/13), plus `npm test` (zero new failures).
+
 ## 2026-11-27 (c) — signing upgrade phase 2: drop zone, 10 MB chunked PDF, searchable combobox, drag reorder · version `2026-11-27c`
 
 Second phase of the document-signing upgrade (`B1`–`B8`):

@@ -780,3 +780,13 @@ li.task:has(.role-watch) { border-style: solid; }
 .pcombo-btn, .pcombo-search { font-size: 16px; min-height: 44px; }
 .pcombo-opt { min-height: 44px; justify-content: center; padding: 8px 12px; }
 .chain-drag { width: 30px; height: 36px; font-size: 17px; }
+.pe-workspace { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.pe-rail { flex-direction: row; max-height: none; overflow-x: auto; overflow-y: hidden; padding: 6px; -webkit-overflow-scrolling: touch; }
+.pe-thumb { width: 68px; flex: none; }
+.pe-thumb canvas { min-height: 52px; }
+.pe-stage { max-height: 52vh; padding: 4px; }
+.pe-zoom { margin-left: 0; }
+.sig-resize { width: 22px; height: 22px; right: -9px; bottom: -9px; }
+.modal footer { display: flex; flex-wrap: wrap; gap: 8px; }
+.modal footer > .btn { flex: 1 1 42%; min-width: 0; }
+.modal footer .hint { flex: 1 0 100%; order: -1; text-align: center; margin: 0 0 2px; font-size: 12px; }

@@ -2044,3 +2044,50 @@ button.pressed { opacity: .6; cursor: progress; }
 .chain-row.dragging { opacity: .45; }
 .chain-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
 .chain-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
+
+/* ---- Phase 3: iLovePDF-style placement editor (C1–C5) ---- */
+.pe-root { display: flex; flex-direction: column; gap: 10px; }
+.pe-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pe-signers { display: flex; flex-wrap: wrap; gap: 6px; }
+.pe-signer-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; margin-right: 5px; }
+.pe-kinds { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line-soft); }
+.pe-kinds button { border: 0; background: transparent; color: var(--ink-soft); font: inherit; font-size: 12px;
+  font-weight: 600; padding: 4px 9px; border-radius: 7px; cursor: pointer; }
+.pe-kinds button.on { background: var(--surface); color: var(--accent); box-shadow: var(--shadow-1); }
+.pe-zoom { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.pe-zoom-pct { min-width: 44px; text-align: center; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+.pe-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 10px;
+  border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12.5px; }
+.pe-selbar b { color: var(--ink); }
+.pe-workspace { display: grid; grid-template-columns: 122px minmax(0, 1fr); gap: 12px; align-items: start; }
+.pe-workspace.single-page { grid-template-columns: minmax(0, 1fr); }
+.pe-rail { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow-y: auto;
+  padding: 6px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--surface-2); }
+.pe-thumb { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 5px; border: 2px solid transparent; border-radius: 8px; background: var(--surface);
+  cursor: pointer; font: inherit; width: 100%; }
+.pe-thumb:hover { border-color: var(--line-strong); }
+.pe-thumb.on { border-color: var(--accent); background: var(--accent-soft); }
+.pe-thumb canvas { width: 100%; height: auto; display: block; border-radius: 4px; background: var(--surface); border: 1px solid var(--line-soft); min-height: 68px; }
+.pe-thumb-foot { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 4px; font-size: 11px; color: var(--ink-soft); }
+.pe-dots { display: inline-flex; gap: 3px; flex-wrap: wrap; }
+.pe-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.pe-stage-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pe-stage { overflow: auto; max-height: 62vh; padding: 8px; border: 1px solid var(--line-soft);
+  border-radius: 11px; background: var(--surface-2); display: flex; justify-content: center; align-items: flex-start; touch-action: pan-x pan-y; }
+.pe-stage .pdf-sheet { flex: none; margin: 0 auto; user-select: none; touch-action: none; }
+.sig-box { touch-action: none; cursor: grab; box-sizing: border-box; pointer-events: auto; }
+.sig-box:active { cursor: grabbing; }
+.sig-box.sel { outline: 2px solid var(--accent); outline-offset: 1px; z-index: 5; }
+.sig-box.kind-date, .sig-box.kind-nameTitle { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 2px 4px; background: var(--surface); border: 1.5px solid var(--accent); color: var(--ink); line-height: 1.2; }
+.sig-box .sig-text-main { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.sig-box .sig-text-sub { font-size: 9.5px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.sig-resize { position: absolute; right: -6px; bottom: -6px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface); cursor: nwse-resize; touch-action: none; z-index: 6; pointer-events: auto; }
+.sig-ghost { position: absolute; border: 2px dashed var(--accent); border-radius: 6px; padding: 0 4px; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis; background: var(--accent-soft); opacity: .72; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--accent);
+  transition: opacity .12s; z-index: 2; pointer-events: auto; }
+.sig-ghost:hover { opacity: .95; }
+.sig-size-row { flex-wrap: wrap; }

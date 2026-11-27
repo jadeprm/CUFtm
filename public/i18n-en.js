@@ -6,7 +6,7 @@
  * first time somebody is in English — see ensureLang. Keys must match the
  * Thai table exactly; test/run.mjs checks both files together.
  */
-window.STRINGS_EN_VERSION = '2026-11-27c';
+window.STRINGS_EN_VERSION = '2026-11-27d';
 window.STRINGS = window.STRINGS || {};
 Object.assign(window.STRINGS, {
   en: {
@@ -1268,7 +1268,17 @@ Object.assign(window.STRINGS, {
     docApproveNoSignSure: 'Approve without your signature appearing on the document. Your approval is still recorded. Continue?',
     docActForNote: 'This step belongs to %s. You are about to press it for them.',
     docActForSure: 'This step belongs to %s (%r), not to you.\n\nGo ahead on their behalf? Your name is recorded as the one who pressed it.',
-    docMarkAdd: 'Tap the document to place a signature box. Tap a box again to remove it. You may place several.',
+    docMarkAdd: 'Tap empty space to add a box, drag to move, or tap a box to resize or delete.',
+    docKindSignature: 'Signature',
+    docKindDate: 'Date',
+    docKindNameTitle: 'Name & title',
+    docKindInitials: 'Initials',
+    docZoomFit: 'Fit width',
+    docDelBox: 'Delete',
+    docDupAllPages: 'Duplicate on all pages',
+    docResizeAllForSigner: 'Resize all for this signer',
+    docAutoPlace: 'Place where suggested',
+    docGhostTip: 'Tap to place here',
     docReject: 'Send back',
     docRejectWhy: 'Why are you sending it back? (the submitter will see this)',
     docReplace: 'Upload a corrected file instead',
